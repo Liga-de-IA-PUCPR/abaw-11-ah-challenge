@@ -22,17 +22,6 @@ TODO
   </ol>
 </details>
 
-## Adjusting .gitignore
-
-Ensure you adjust the `.gitignore` file according to your project needs. For example, since this is a template, the `/data/` folder is commented out and data will not be exlucded from source control:
-
-```plaintext
-# exclude data from source control by default
-# /data/
-```
-
-Typically, you want to exclude this folder if it contains either sensitive data or large files that you do not want to trac. 
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Author
