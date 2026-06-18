@@ -18,13 +18,13 @@ class TextVectorizer(nn.Module):
 
         with torch.no_grad():
             out = self.model(**encoded_input)
-            
+
         # Mean pool over non-padding tokens → (batch, hidden_dim)
         mask = attention_mask.unsqueeze(-1).expand(out[0].size()).float()
         mean_pooled = torch.sum(out[0] * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
         # normalize
         return F.normalize(mean_pooled, p=2, dim=1)
-        
+
 
 class AudioVectorizer(nn.Module):
     def __init__(self, model_name="facebook/wav2vec2-base"):
@@ -48,12 +48,12 @@ class ImageVectorizer(nn.Module):
         super().__init__()
 
         self.model = AutoModel.from_pretrained(
-            model_name, 
-            device_map="auto", 
+            model_name,
+            device_map="auto",
         )
         self.processor = AutoImageProcessor.from_pretrained(model_name)
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:  
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
         inputs = self.processor(images=image, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
@@ -61,21 +61,40 @@ class ImageVectorizer(nn.Module):
 
         return outputs.pooler_output
 
+def extract_filename_from_id(id: str) -> str:
+    return id.split('/')[-1].split('.')[0]
 
-def main():
+def load_audio_from_id(id: str, audio_dir: Path, sr: int = 16000) -> torch.Tensor:
+    audio_path = audio_dir / id / f"{extract_filename_from_id(id)}.flac"
+    waveform, sr = torchaudio.load(audio_path)
+    waveform = waveform.mean(dim=0)  # stereo → mono
+    return waveform
 
-    waveforms = load_waveforms()
-    audio_feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
 
-    # waveforms: list of 1-D numpy arrays at 16 kHz
-    inputs = audio_feature_extractor(
-        waveforms,
-        sampling_rate=16_000,
-        return_tensors="pt",
-        padding=True,      
+def load_annotations_from_id(id: str, annotations_dir: Path) -> dict:
+    annotation_path = annotations_dir / id / f"{extract_filename_from_id(id)}.yml"
+
+    def _construct_python_tuple(loader, node):
+        return tuple(loader.construct_sequence(node))
+
+    yaml.SafeLoader.add_constructor(
+        "tag:yaml.org,2002:python/tuple",
+        _construct_python_tuple,
     )
 
-    audio_model = AudioVectorizer()
-    vectors = audio_model(inputs)
+    with open(annotation_path, "r") as f:
+        return yaml.safe_load(f)
 
-    imgs:list[str] = load_images()
+
+def iter_frames_from_id(id: str, frames_dir: str | Path) -> Iterator[Image.Image]:
+    frames_dir = Path(frames_dir) / id
+    n = 0
+    while True:
+        path = frames_dir / f"frame-{n}.jpg"
+        if not path.exists():
+            return
+        yield Image.open(path).convert("RGB")
+        n += 1
+
+
+def main():
