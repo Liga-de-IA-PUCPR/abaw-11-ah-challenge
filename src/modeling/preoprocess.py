@@ -1,10 +1,21 @@
+from importlib.resources import path
+from pathlib import Path
+from typing import Iterator
+
+import librosa
+import polars as pl
+import pyarrow
 import torch
-from torch import nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer, AutoImageProcessor, AutoFeatureExtractor
-from transformers.image_utils import load_image
-
-
+import torchaudio
+import yaml
+from PIL import Image
+from torch import nn
+from transformers import (
+    AutoImageProcessor,
+    AutoModel,
+    AutoTokenizer,
+)
 
 
 class TextVectorizer(nn.Module):
@@ -13,14 +24,18 @@ class TextVectorizer(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
 
-    def forward(self, input, attention_mask):
-        encoded_input = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
+    def forward(self, input):
+        encoded_input = self.tokenizer(
+            input, padding=True, truncation=True, return_tensors="pt"
+        )  # type: ignore
 
         with torch.no_grad():
             out = self.model(**encoded_input)
 
         # Mean pool over non-padding tokens → (batch, hidden_dim)
-        mask = attention_mask.unsqueeze(-1).expand(out[0].size()).float()
+        mask = (
+            encoded_input["attention_mask"].unsqueeze(-1).expand(out[0].size()).float()
+        )
         mean_pooled = torch.sum(out[0] * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
         # normalize
         return F.normalize(mean_pooled, p=2, dim=1)
@@ -29,17 +44,15 @@ class TextVectorizer(nn.Module):
 class AudioVectorizer(nn.Module):
     def __init__(self, model_name="facebook/wav2vec2-base"):
         super().__init__()
-        self.model = AutoModel.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained("facebook/wav2vec2-base")
 
     def forward(self, input_values: torch.Tensor) -> torch.Tensor:
-        out = self.model(input_values=input_values, attention_mask=attention_mask)
+
+        with torch.no_grad():
+            out = self.model(input_values=input_values)
+
         # Mean pool over time → (batch, hidden_dim)
-        hidden = out.last_hidden_state          # (batch, T, hidden_dim)
-        if attention_mask is not None:
-            # Build a mask aligned to the encoder's output length
-            mask = self.model._get_feature_vector_attention_mask(hidden.shape[1], attention_mask)
-            mask = mask.unsqueeze(-1).float()
-            return (hidden * mask).sum(1) / mask.sum(1).clamp(min=1)
+        hidden = out.last_hidden_state
         return hidden.mean(dim=1)
 
 
@@ -61,14 +74,18 @@ class ImageVectorizer(nn.Module):
 
         return outputs.pooler_output
 
+
 def extract_filename_from_id(id: str) -> str:
-    return id.split('/')[-1].split('.')[0]
+    return id.split("/")[-1].split(".")[0]
+
 
 def load_audio_from_id(id: str, audio_dir: Path, sr: int = 16000) -> torch.Tensor:
-    audio_path = audio_dir / id / f"{extract_filename_from_id(id)}.flac"
-    waveform, sr = torchaudio.load(audio_path)
-    waveform = waveform.mean(dim=0)  # stereo → mono
-    return waveform
+    audio_path = (
+        audio_dir / id.rpartition("/")[0] / f"{extract_filename_from_id(id)}.flac"
+    )
+    waveform, _ = librosa.load(audio_path, sr=sr, mono=True)
+    # add any alterations youd like to make to the audio here
+    return torch.from_numpy(waveform)
 
 
 def load_annotations_from_id(id: str, annotations_dir: Path) -> dict:
@@ -98,3 +115,15 @@ def iter_frames_from_id(id: str, frames_dir: str | Path) -> Iterator[Image.Image
 
 
 def main():
+    audio_dir = Path("data/interim/Audio")
+    annotations_dir = Path("data/raw/data/transcription")
+    frames_dir = Path("data/raw/data/cropped-aligned-faces")
+
+    video_df = pl.read_csv("data/raw/data/bah-video.csv")
+    video_df = video_df.filter(pl.col("video-path").str.contains("82553|82554|82555"))
+
+    for video in video_df.iter_rows():
+        video_id = video[0]
+        audio_tensor = load_audio_from_id(video_id, audio_dir)
+        transcription_dict = load_annotations_from_id(video_id, annotations_dir)
+        frames = iter_frames_from_id(video_id, frames_dir)
