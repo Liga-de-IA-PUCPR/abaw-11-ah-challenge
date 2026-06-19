@@ -1,4 +1,3 @@
-from importlib.resources import path
 from pathlib import Path
 from typing import Iterator
 
@@ -7,7 +6,6 @@ import polars as pl
 import pyarrow
 import torch
 import torch.nn.functional as F
-import torchaudio
 import yaml
 from PIL import Image
 from torch import nn
@@ -115,6 +113,11 @@ def iter_frames_from_id(id: str, frames_dir: str | Path) -> Iterator[Image.Image
 
 
 def main():
+
+    audio_model = AudioVectorizer()
+    text_model = TextVectorizer()
+    image_model = ImageVectorizer()
+
     audio_dir = Path("data/interim/Audio")
     annotations_dir = Path("data/raw/data/transcription")
     frames_dir = Path("data/raw/data/cropped-aligned-faces")
@@ -124,6 +127,14 @@ def main():
 
     for video in video_df.iter_rows():
         video_id = video[0]
+
         audio_tensor = load_audio_from_id(video_id, audio_dir)
         transcription_dict = load_annotations_from_id(video_id, annotations_dir)
         frames = iter_frames_from_id(video_id, frames_dir)
+
+        audio_emb = audio_model.forward(audio_tensor)
+        print(audio_emb)
+
+
+if __name__ == "__main__":
+    main()
