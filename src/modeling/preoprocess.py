@@ -3,7 +3,8 @@ from typing import Iterator
 
 import librosa
 import polars as pl
-import pyarrow
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 import torch.nn.functional as F
 import yaml
@@ -49,7 +50,6 @@ class AudioVectorizer(nn.Module):
         with torch.no_grad():
             out = self.model(input_values=input_values)
 
-        # Mean pool over time → (batch, hidden_dim)
         hidden = out.last_hidden_state
         return hidden.mean(dim=1)
 
@@ -83,7 +83,8 @@ def load_audio_from_id(id: str, audio_dir: Path, sr: int = 16000) -> torch.Tenso
     )
     waveform, _ = librosa.load(audio_path, sr=sr, mono=True)
     # add any alterations youd like to make to the audio here
-    return torch.from_numpy(waveform)
+    tensor = torch.from_numpy(waveform)
+    return tensor.unsqueeze(0)  # [1, length]
 
 
 def load_annotations_from_id(id: str, annotations_dir: Path) -> dict:
@@ -113,27 +114,51 @@ def iter_frames_from_id(id: str, frames_dir: str | Path) -> Iterator[Image.Image
 
 
 def main():
-
     audio_model = AudioVectorizer()
     text_model = TextVectorizer()
-    image_model = ImageVectorizer()
+    # image_model = ImageVectorizer()
 
     audio_dir = Path("data/interim/Audio")
     annotations_dir = Path("data/raw/data/transcription")
-    frames_dir = Path("data/raw/data/cropped-aligned-faces")
+    # frames_dir = Path("data/raw/data/cropped-aligned-faces")
 
     video_df = pl.read_csv("data/raw/data/bah-video.csv")
     video_df = video_df.filter(pl.col("video-path").str.contains("82553|82554|82555"))
 
+    schema = pa.schema(
+        [
+            ("id", pa.string()),
+            ("audio_emb", pa.list_(pa.float32())),
+            ("text_emb", pa.list_(pa.float32())),
+            ("label", pa.int32()),
+        ]
+    )
+    writer = pq.ParquetWriter("data/processed/text_audio.parquet", schema)
+
     for video in video_df.iter_rows():
         video_id = video[0]
+        label = video[1]
 
         audio_tensor = load_audio_from_id(video_id, audio_dir)
         transcription_dict = load_annotations_from_id(video_id, annotations_dir)
-        frames = iter_frames_from_id(video_id, frames_dir)
+        # frames = iter_frames_from_id(video_id, frames_dir)
 
         audio_emb = audio_model.forward(audio_tensor)
-        print(audio_emb)
+        transcription_emb = text_model.forward(transcription_dict.get("text"))
+
+        batch = pa.record_batch(
+            {
+                "id": [video_id],
+                "audio_emb": [audio_emb.squeeze().cpu().numpy().tolist()],
+                "text_emb": [transcription_emb.squeeze().cpu().numpy().tolist()],
+                "label": [label],
+            },
+            schema=schema,
+        )
+
+        writer.write_batch(batch)
+
+    writer.close()
 
 
 if __name__ == "__main__":
