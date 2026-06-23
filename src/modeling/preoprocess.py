@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import yaml
 from PIL import Image
 from torch import nn
+from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
     AutoModel,
@@ -135,7 +136,7 @@ def main():
     )
     writer = pq.ParquetWriter("data/processed/text_audio.parquet", schema)
 
-    for video in video_df.iter_rows():
+    for video in tqdm(video_df.iter_rows()):
         video_id = video[0]
         label = video[1]
 
@@ -149,8 +150,8 @@ def main():
         batch = pa.record_batch(
             {
                 "id": [video_id],
-                "audio_emb": [audio_emb.squeeze().cpu().numpy().tolist()],
-                "text_emb": [transcription_emb.squeeze().cpu().numpy().tolist()],
+                "audio_emb": [audio_emb.squeeze().cpu().numpy()],
+                "text_emb": [transcription_emb.squeeze().cpu().numpy()],
                 "label": [label],
             },
             schema=schema,

@@ -3,7 +3,7 @@ from torch import nn, optim
 
 
 class CrossAttentionFusionModel(nn.Module):
-    def __init__(self, dim_a, dim_b, common_dim=512, num_heads=4, num_classes=2):
+    def __init__(self, dim_a, dim_b, common_dim=512, num_heads=4, num_classes=1):
         super().__init__()
         # Project features to common dimension
         self.proj_a = nn.Linear(dim_a, common_dim)
@@ -39,11 +39,14 @@ class CrossAttention(L.LightningModule):
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
         # it is independent of forward
-        x, _ = batch
-        x = x.view(x.size(0), -1)
-        x_hat = self.model(x)
+        feat_a = batch["audio_emb"].unsqueeze(1)  # [B, 768] → [B, 1, 768]
+        feat_b = batch["text_emb"].unsqueeze(1)  # [B, 384] → [B, 1, 384]
+        label = batch["label"].float().unsqueeze(1)  # [B] → [B, 1]
 
-        loss = nn.functional.mse_loss(x_hat, x)
+        x_hat = self.model(feat_a, feat_b)
+
+        loss = nn.functional.binary_cross_entropy_with_logits(x_hat, label)
+
         # Logging to TensorBoard (if installed) by default
         self.log("train_loss", loss)
         return loss
