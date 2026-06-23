@@ -1,0 +1,6 @@
+dim_a: 768
+dim_b: 384
+common_dim: 512
+num_heads: 4
+num_classes: 1
+lr: 1e-3

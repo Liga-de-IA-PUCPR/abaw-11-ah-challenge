@@ -1,0 +1,7 @@
+defaults:
+  - model: cross_attention
+  - data: default
+  - trainer: default
+  - _self_
+
+experiment_name: "abaw-cross-attention"
