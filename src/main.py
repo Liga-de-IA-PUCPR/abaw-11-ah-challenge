@@ -62,11 +62,12 @@ def main(cfg: DictConfig):
     )
     module = CrossAttention(model, lr=cfg.model.lr)
 
+    run_name = f"lr-{cfg.model.lr}_h{cfg.model.num_heads}_d{cfg.model.common_dim}"
     wandb_logger = WandbLogger(
         project=cfg.experiment_name,
+        name=run_name,
         group="multirun",
         log_model=True,
-        reinit=True,
     )
 
     checkpoint_callback = ModelCheckpoint(
