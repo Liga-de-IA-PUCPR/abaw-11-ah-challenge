@@ -1,0 +1,7 @@
+# configs/text_embedder/minilm.yaml  (leve, multilíngue — reusa MiniLM da branch matheus)
+name: minilm
+model_name: sentence-transformers/all-MiniLM-L6-v2
+pooling: mean
+max_length: 128
+batch_size: 64
+dim: 384

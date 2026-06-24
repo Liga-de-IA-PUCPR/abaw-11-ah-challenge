@@ -1,0 +1,5 @@
+# Janela → vídeo + calibração de limiar (README §6.5). RF agrega probas de janela;
+# cross_attention já prediz 1 logit/vídeo (ainda calibra o limiar do sigmoid).
+method: mean_proba                     # mean_proba | max_proba | frac_positive | any
+threshold: auto                        # "auto" = calibrado na val; ou float fixo
+metric: macro_f1
