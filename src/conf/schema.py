@@ -33,7 +33,7 @@ log = get_logger("conf.schema")
 # ==============================================================================
 
 
-def resolve_device(device: str = "auto") -> "torch.device":
+def resolve_device(device: str = "auto") -> torch.device:
     """Resolve a string de ``device`` da config para um ``torch.device`` concreto.
 
     Importa ``torch`` *lazy* (o caminho ``random_forest`` não precisa de torch para
@@ -74,7 +74,7 @@ def resolve_device(device: str = "auto") -> "torch.device":
     return torch.device(device)
 
 
-def device_to_accelerator(device: str | "torch.device") -> str:
+def device_to_accelerator(device: str | torch.device) -> str:
     """Mapeia o ``device`` para o ``accelerator`` do PyTorch Lightning.
 
     Mapeamento canônico (README §3): ``cpu→"cpu"`` · ``mps→"mps"`` · ``cuda→"gpu"``.
@@ -144,8 +144,8 @@ class WindowConfig:
     ``>= min_overlap_for_positive`` (README §2/§6.1).
     """
 
-    size_s: float = 5.0                         # ≈ duração média de A/H (4,3 s)
-    hop_s: float = 2.5                          # 50% de sobreposição
+    size_s: float = 5.0  # ≈ duração média de A/H (4,3 s)
+    hop_s: float = 2.5  # 50% de sobreposição
     min_overlap_for_positive: float = 0.5
     pad_last: bool = True
     label_source: Literal["time_detailed_ah"] = "time_detailed_ah"
@@ -243,7 +243,7 @@ class AudioEmbedderConfig:
     # deep (wav2vec2/hubert)
     model_name: str | None = None
     pooling: Literal["mean", "cls"] = "mean"
-    dim: int | None = None                      # derivado em runtime (FASE 3)
+    dim: int | None = None  # derivado em runtime (FASE 3)
 
 
 @dataclass
@@ -302,7 +302,7 @@ class AggregationConfig:
     """Grupo ``aggregation`` — janela → vídeo + calibração de limiar (README §6.5)."""
 
     method: Literal["mean_proba", "max_proba", "frac_positive", "any"] = "mean_proba"
-    threshold: float | str = "auto"            # "auto" = calibrado na val; ou float fixo
+    threshold: float | str = "auto"  # "auto" = calibrado na val; ou float fixo
     metric: str = "macro_f1"
 
 

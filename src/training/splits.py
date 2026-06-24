@@ -113,9 +113,7 @@ def _assert_no_participant_leakage(tables: dict[str, SplitTable]) -> None:
     for split, table in tables.items():
         for pid in table.participants:
             if pid in seen and seen[pid] != split:
-                raise ValueError(
-                    f"Vazamento de participante: '{pid}' em '{seen[pid]}' e '{split}'"
-                )
+                raise ValueError(f"Vazamento de participante: '{pid}' em '{seen[pid]}' e '{split}'")
             seen[pid] = split
     log.info("Verificação OK: nenhum vazamento de participante entre splits.")
 
@@ -128,8 +126,6 @@ def group_kfold_indices(
     """Folds de ``GroupKFold`` agrupados por participante (CV interna sem vazamento)."""
     gkf = GroupKFold(n_splits=n_splits)
     dummy_y = np.zeros(len(video_ids))
-    folds = [
-        (tr, va) for tr, va in gkf.split(video_ids, dummy_y, groups=participant_ids)
-    ]
+    folds = [(tr, va) for tr, va in gkf.split(video_ids, dummy_y, groups=participant_ids)]
     log.info(f"GroupKFold gerado: {len(folds)} folds, agrupado por participante.")
     return folds

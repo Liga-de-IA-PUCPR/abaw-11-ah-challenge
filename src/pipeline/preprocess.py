@@ -47,12 +47,12 @@ def run_preprocess(cfg: DictConfig) -> dict[str, Any]:
     force = bool(data.get("force", False))
 
     interim_dir = Path(data.paths.interim_dir)
-    audio_dir = interim_dir / "Audio"      # data/interim/Audio/ (README §4)
+    audio_dir = interim_dir / "Audio"  # data/interim/Audio/ (README §4)
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 1. Índice do dataset (todos os splits de uma vez) ---------------------
     log.info(f"Indexando o dataset em '{data.paths.data_root}'...")
-    records = build_video_index(cfg)       # data_root default = data/raw/data
+    records = build_video_index(cfg)  # data_root default = data/raw/data
     log.info(f"{len(records)} vídeos indexados (train/val/test).")
 
     # --- 2. Extração de áudio (mp4 → flac 16 kHz mono, reusa extract_audio.py) --
@@ -62,23 +62,25 @@ def run_preprocess(cfg: DictConfig) -> dict[str, Any]:
             extract_audio(
                 mp4_path=rec.video_path,
                 out_path=flac_path,
-                sample_rate=data.audio.sample_rate,   # 16000
-                mono=data.audio.mono,                 # True
+                sample_rate=data.audio.sample_rate,  # 16000
+                mono=data.audio.mono,  # True
                 overwrite=force,
             )
         rec.audio_path = flac_path
 
     # --- 3. Janelamento (deslizante + alinhamento texto⟷áudio + rótulo) --------
     window_gen = WindowGenerator(
-        size_s=data.window.size_s,                       # 5.0
-        hop_s=data.window.hop_s,                         # 2.5
+        size_s=data.window.size_s,  # 5.0
+        hop_s=data.window.hop_s,  # 2.5
         min_overlap_for_positive=data.window.min_overlap_for_positive,
         pad_last=data.window.pad_last,
     )
     windows: list = []
     for rec in records:
-        windows.extend(window_gen.generate(rec))   # rótulo via time_detailed_ah; vídeo via global_ah
-    log.info(f"{len(windows)} janelas geradas (size={data.window.size_s}s, hop={data.window.hop_s}s).")
+        windows.extend(window_gen.generate(rec))  # rótulo via time_detailed_ah; vídeo via global_ah
+    log.info(
+        f"{len(windows)} janelas geradas (size={data.window.size_s}s, hop={data.window.hop_s}s)."
+    )
 
     # --- 4. Cache do índice de janelas (Parquet, 1 linha/janela; sem embeddings) -
     windows_index = interim_dir / "windows_index.parquet"

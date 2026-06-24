@@ -8,7 +8,8 @@ Hydra (FASE 6) compartilham a mesma lógica.
 
 Uso (ver README §10):
     python -m src.scripts.extract_audio
-    python -m src.scripts.extract_audio --source data/raw/data/Videos --out data/interim/Audio/Videos
+    python -m src.scripts.extract_audio \
+        --source data/raw/data/Videos --out data/interim/Audio/Videos
 """
 
 from __future__ import annotations

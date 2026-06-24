@@ -148,12 +148,15 @@ class WandbRun(AbstractContextManager):
                 name=self.run_name,
                 group=self.group,
                 tags=self.tags,
-                mode=self.mode,            # online | offline
+                mode=self.mode,  # online | offline
                 config=self.config,
                 reinit=True,
             )
             self.active = True
-            log.info(f"W&B run iniciada: project='{self.project}' name='{self.run_name}' mode='{self.mode}'")
+            log.info(
+                f"W&B run iniciada: project='{self.project}' "
+                f"name='{self.run_name}' mode='{self.mode}'"
+            )
         except Exception as exc:  # noqa: BLE001 — nunca derrubar o pipeline por causa do tracker
             log.warning(f"Falha ao iniciar W&B ({exc}); seguindo só com Reporter local.")
             self._run = None
@@ -211,11 +214,7 @@ class WandbRun(AbstractContextManager):
             # probs (n, 2) p/ a API de curvas do W&B
             probs = np.stack([1.0 - y_proba, y_proba], axis=1)
             self._run.log(
-                {
-                    "pr_curve": self._wandb.plot.pr_curve(
-                        y_true, probs, labels=["sem_AH", "com_AH"]
-                    )
-                }
+                {"pr_curve": self._wandb.plot.pr_curve(y_true, probs, labels=["sem_AH", "com_AH"])}
             )
         except Exception as exc:  # noqa: BLE001
             log.warning(f"W&B log_pr_curve falhou: {exc}")

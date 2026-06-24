@@ -72,11 +72,11 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
 
     # --- 2. Embedders (FASE 3) — deep honram o device --------------------------
     text_embedder = TextEmbedder(
-        model_name=cfg.text_embedder.model_name,      # roberta-emotion default
+        model_name=cfg.text_embedder.model_name,  # roberta-emotion default
         pooling=cfg.text_embedder.pooling,
         device=device,
     )
-    audio_embedder = create_audio_embedder(           # factory: librosa | wav2vec2 | hubert
+    audio_embedder = create_audio_embedder(  # factory: librosa | wav2vec2 | hubert
         backend=cfg.audio_embedder.backend,
         model_name=cfg.audio_embedder.get("model_name", None),
         feature_set=cfg.audio_embedder.get("feature_set", None),

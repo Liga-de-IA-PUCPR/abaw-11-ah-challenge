@@ -100,7 +100,13 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
-ignore = ["PLR0913"]  # muitos argumentos é aceitável em factories/configs
+ignore = [
+    "PLR0913",  # muitos argumentos é aceitável em factories/configs
+    "PLC0415",  # import fora do topo: INTENCIONAL — imports LAZY mantêm o caminho
+                # random_forest livre de torch/lightning (Lightning é opcional).
+    "PLR2004",  # comparação com "magic value": ruidoso em thresholds/limiares.
+    "PLW2901",  # reuso de nome de variável de loop: aceitável nos parsers/loops.
+]
 
 # -----------------------------------------------------------------------------
 # mypy — type checking (gradual)

@@ -86,9 +86,7 @@ def _build_fusion_module(
             return self.classifier(pooled)  # (B, 1)
 
         @staticmethod
-        def _masked_mean(
-            x: torch.Tensor, key_padding_mask: torch.Tensor | None
-        ) -> torch.Tensor:
+        def _masked_mean(x: torch.Tensor, key_padding_mask: torch.Tensor | None) -> torch.Tensor:
             """Pooling temporal mascarado sobre T (média ignorando padding)."""
             if key_padding_mask is None:
                 return x.mean(dim=1)
@@ -170,9 +168,7 @@ class CrossAttentionFusion:
         module = self.build_module()
         # O LightningModule expõe a fusão em ``self.model`` → remove o prefixo "model.".
         prefix = "model."
-        fusion_state = {
-            k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)
-        }
+        fusion_state = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
         # Fallback: se não houver prefixo (ckpt já só com a fusão), usa o state_dict inteiro.
         module.load_state_dict(fusion_state or state_dict)
         module.eval()
@@ -255,9 +251,7 @@ def _build_lit_module(fusion, lr: float, weight_decay: float):
 
         # ---- otimização ---------------------------------------------------
         def configure_optimizers(self):
-            optimizer = optim.AdamW(
-                self.parameters(), lr=self._lr, weight_decay=self._weight_decay
-            )
+            optimizer = optim.AdamW(self.parameters(), lr=self._lr, weight_decay=self._weight_decay)
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode="min", factor=0.5, patience=10
             )

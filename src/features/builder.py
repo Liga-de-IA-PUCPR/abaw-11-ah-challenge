@@ -39,8 +39,17 @@ log = get_logger("features.builder")
 
 # Colunas EXATAS do README §6.2 (ordem canônica do Parquet).
 PARQUET_COLUMNS: list[str] = [
-    "id", "window_idx", "t0", "t1", "participant_id", "question_type",
-    "audio_emb", "text_emb", "tabular", "label", "video_label",
+    "id",
+    "window_idx",
+    "t0",
+    "t1",
+    "participant_id",
+    "question_type",
+    "audio_emb",
+    "text_emb",
+    "tabular",
+    "label",
+    "video_label",
 ]
 
 
@@ -112,16 +121,14 @@ class FeatureBuilder:
         log.info(f"Construindo features para split={split} ({n} janelas)...")
 
         # --- embeddings + tabular -------------------------------------------
-        text_emb = self.text_embedder.extract([w.text for w in windows])           # (n, d_text)
-        audio_emb = self.audio_embedder.extract(waveforms)                          # (n, d_audio)
-        tab = self.tabular.transform(windows, waveforms)                            # (n, d_tab)
+        text_emb = self.text_embedder.extract([w.text for w in windows])  # (n, d_text)
+        audio_emb = self.audio_embedder.extract(waveforms)  # (n, d_audio)
+        tab = self.tabular.transform(windows, waveforms)  # (n, d_tab)
 
         # --- video_label por vídeo (global_ah dos VideoRecord) --------------
         # global_ah é campo de VideoRecord — NÃO existe em WindowSample.meta.
         video_labels: dict[str, int] = {
-            rec.video_id: int(rec.global_ah)
-            for rec in (records or [])
-            if rec.global_ah is not None
+            rec.video_id: int(rec.global_ah) for rec in (records or []) if rec.global_ah is not None
         }
 
         # --- monta 1 linha por janela (README §6.2) -------------------------
@@ -140,8 +147,11 @@ class FeatureBuilder:
                 "video_label": [video_labels.get(w.video_id, -1) for w in windows],
             },
             schema_overrides={
-                "window_idx": pl.Int32, "t0": pl.Float32, "t1": pl.Float32,
-                "label": pl.Int8, "video_label": pl.Int8,
+                "window_idx": pl.Int32,
+                "t0": pl.Float32,
+                "t1": pl.Float32,
+                "label": pl.Int8,
+                "video_label": pl.Int8,
             },
         ).select(PARQUET_COLUMNS)
 
@@ -191,7 +201,9 @@ class FeatureBuilder:
                         "d_tab": len(self.tabular.feature_names()),
                     },
                 },
-                f, ensure_ascii=False, indent=2,
+                f,
+                ensure_ascii=False,
+                indent=2,
             )
 
     def _config_hash(self) -> str:
@@ -221,6 +233,7 @@ class FeatureBuilder:
 # =============================================================================
 # Factory: monta os componentes de feature a partir de uma Config Hydra
 # =============================================================================
+
 
 def build_feature_components(
     cfg,

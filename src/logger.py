@@ -12,10 +12,10 @@ o W&B (FASE 5): o W&B cuida das métricas/curvas; este logger cuida do texto/arq
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
-from pathlib import Path
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import TextIO
 
 # ==============================================================================

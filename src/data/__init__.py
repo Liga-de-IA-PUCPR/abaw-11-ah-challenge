@@ -11,25 +11,25 @@ Fornece:
 
 from __future__ import annotations
 
-from src.data.schema import VideoRecord, WindowSample
+from src.data.audio_io import extract_audio, load_segment, pad_or_trim
+from src.data.datasets import (
+    VideoSequenceDataset,
+    WindowMatrixView,
+    collate_sequences,
+    load_split,
+    load_train_val,
+)
 from src.data.indexing import (
     QUESTION_TYPE_MAP,
     build_video_index,
     parse_video_filename,
 )
-from src.data.audio_io import extract_audio, load_segment, pad_or_trim
+from src.data.schema import VideoRecord, WindowSample
 from src.data.windowing import (
     WindowGenerator,
+    load_window_index,
     overlap_seconds,
     save_window_index,
-    load_window_index,
-)
-from src.data.datasets import (
-    WindowMatrixView,
-    VideoSequenceDataset,
-    collate_sequences,
-    load_train_val,
-    load_split,
 )
 
 __all__ = [

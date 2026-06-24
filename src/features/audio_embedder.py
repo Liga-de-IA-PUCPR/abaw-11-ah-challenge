@@ -39,6 +39,7 @@ _AGG_FUNCS = {"mean": np.mean, "std": np.std, "min": np.min, "max": np.max}
 # Factory (entrada da FASE 6 / build_feature_components)
 # =============================================================================
 
+
 def create_audio_embedder(
     backend: Literal["librosa", "wav2vec2", "hubert"] = "librosa",
     *,
@@ -49,7 +50,7 @@ def create_audio_embedder(
     sample_rate: int = _SR_DEFAULT,
     batch_size: int = 8,
     device: str = "auto",
-) -> "AudioEmbedder":
+) -> AudioEmbedder:
     """Instancia o embedder de áudio conforme ``audio_embedder.backend``.
 
     Args:
@@ -82,6 +83,7 @@ def create_audio_embedder(
 # Base comum (alias do tipo de retorno da factory)
 # =============================================================================
 
+
 class AudioEmbedder(BaseEmbedder):
     """Tipo base dos embedders de áudio (factory: :func:`create_audio_embedder`)."""
 
@@ -91,6 +93,7 @@ class AudioEmbedder(BaseEmbedder):
 # =============================================================================
 # Backend (a): librosa — prosódia/espectral, CPU
 # =============================================================================
+
 
 class LibrosaAudioEmbedder(AudioEmbedder):
     """Vetor acústico/prosódico de tamanho FIXO por janela via LIBROSA (CPU/numpy).
@@ -119,7 +122,14 @@ class LibrosaAudioEmbedder(AudioEmbedder):
     ) -> None:
         self.backend = "librosa"
         self.feature_set = feature_set or [
-            "mfcc", "delta", "spectral", "chroma", "zcr", "rms", "f0", "tempo",
+            "mfcc",
+            "delta",
+            "spectral",
+            "chroma",
+            "zcr",
+            "rms",
+            "f0",
+            "tempo",
         ]
         self.n_mfcc = n_mfcc
         self.agg_stats = agg_stats or ["mean", "std", "min", "max"]
@@ -143,7 +153,9 @@ class LibrosaAudioEmbedder(AudioEmbedder):
             return np.zeros((0, self._dim), dtype=np.float32)
         rows = [self._extract_one(wav) for wav in inputs]
         result = np.vstack(rows).astype(np.float32)
-        log.debug(f"LibrosaAudioEmbedder.extract: {result.shape[0]} janelas -> dim {result.shape[1]}")
+        log.debug(
+            f"LibrosaAudioEmbedder.extract: {result.shape[0]} janelas -> dim {result.shape[1]}"
+        )
         return result
 
     def feature_names(self) -> list[str]:
@@ -204,7 +216,8 @@ class LibrosaAudioEmbedder(AudioEmbedder):
             f0_std = float(np.std(f0_voiced)) if f0_voiced.size else 0.0
             voiced_fraction = (
                 float(np.mean(voiced_flag.astype(np.float32)))
-                if voiced_flag is not None and len(voiced_flag) else 0.0
+                if voiced_flag is not None and len(voiced_flag)
+                else 0.0
             )
             feats += [f0_mean, f0_std, voiced_fraction]
 
@@ -246,8 +259,11 @@ class LibrosaAudioEmbedder(AudioEmbedder):
             add_series("mfcc_delta2_", self.n_mfcc)
         if "spectral" in self.feature_set:
             for name in [
-                "spectral_centroid", "spectral_bandwidth", "spectral_rolloff",
-                "spectral_flatness", "spectral_contrast",
+                "spectral_centroid",
+                "spectral_bandwidth",
+                "spectral_rolloff",
+                "spectral_flatness",
+                "spectral_contrast",
             ]:
                 for stat in self.agg_stats:
                     names.append(f"audio_{name}_{stat}")
@@ -269,6 +285,7 @@ class LibrosaAudioEmbedder(AudioEmbedder):
 # =============================================================================
 # Backend (b): wav2vec2 / hubert — deep, device-aware (reusa AudioVectorizer)
 # =============================================================================
+
 
 class DeepAudioEmbedder(AudioEmbedder):
     """Embedder de áudio deep via transformers (``last_hidden_state.mean(1)``).
@@ -310,7 +327,10 @@ class DeepAudioEmbedder(AudioEmbedder):
         self.model.to(self.device)
         self.model.eval()
         self._dim = int(self.model.config.hidden_size)
-        log.info(f"DeepAudioEmbedder pronto: dim={self._dim}, backend={self.backend}, device={self.device}")
+        log.info(
+            f"DeepAudioEmbedder pronto: dim={self._dim}, "
+            f"backend={self.backend}, device={self.device}"
+        )
 
     @property
     def dim(self) -> int:

@@ -129,7 +129,7 @@ class RandomForestModel(BaseModel):
         """
         clf = RandomForestClassifier(
             n_estimators=config.get("n_estimators", 600),
-            max_depth=config.get("max_depth", None),
+            max_depth=config.get("max_depth"),
             min_samples_leaf=config.get("min_samples_leaf", 2),
             max_features=config.get("max_features", "sqrt"),
             class_weight=config.get("class_weight", "balanced_subsample"),

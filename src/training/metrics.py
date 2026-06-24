@@ -67,5 +67,7 @@ def evaluate_video_predictions(
         y_score = np.array([video_score.get(v, 0.0) for v in ids], dtype=np.float32)
         report["average_precision"] = average_precision(y_true, y_score)
 
-    log.info(f"Avaliação (vídeo): macro_f1={report['macro_f1']:.4f} sobre {report['n_videos']} vídeos")
+    log.info(
+        f"Avaliação (vídeo): macro_f1={report['macro_f1']:.4f} sobre {report['n_videos']} vídeos"
+    )
     return report

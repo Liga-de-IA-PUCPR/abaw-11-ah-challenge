@@ -88,8 +88,7 @@ class BaseEmbedder(ABC):
         feats = np.asarray(feats, dtype=np.float32)
         if feats.ndim != 2 or feats.shape != (n_inputs, self.dim):
             raise ValueError(
-                f"{self.name}: shape de saída {feats.shape} != esperado "
-                f"({n_inputs}, {self.dim})"
+                f"{self.name}: shape de saída {feats.shape} != esperado ({n_inputs}, {self.dim})"
             )
         if not np.all(np.isfinite(feats)):
             n_bad = int((~np.isfinite(feats)).sum())

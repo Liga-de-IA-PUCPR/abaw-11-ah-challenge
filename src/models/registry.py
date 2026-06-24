@@ -92,9 +92,7 @@ def create_model(name: str, config: Any) -> tuple[Any, Family]:
         KeyError: se o modelo não estiver registrado.
     """
     if name not in MODEL_REGISTRY:
-        raise KeyError(
-            f"Modelo '{name}' não está no registry. Disponíveis: {list_models()}"
-        )
+        raise KeyError(f"Modelo '{name}' não está no registry. Disponíveis: {list_models()}")
     entry = MODEL_REGISTRY[name]
     cls = entry.loader()  # importa o módulo lazy aqui, se for o caso
     log.info(f"Criando modelo: {name} [{entry.family}] ({cls.__name__})")

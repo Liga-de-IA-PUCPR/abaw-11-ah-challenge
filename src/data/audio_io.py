@@ -71,26 +71,25 @@ def extract_audio(
     return out_path
 
 
-def _extract_ffmpeg(
-    mp4_path: Path, out_path: Path, sample_rate: int, mono: bool
-) -> None:
+def _extract_ffmpeg(mp4_path: Path, out_path: Path, sample_rate: int, mono: bool) -> None:
     """Extrai áudio via binário ffmpeg (subprocess) — idêntico ao matheus."""
     cmd = [
         "ffmpeg",
         "-y",
-        "-i", str(mp4_path),
-        "-vn",                       # descarta vídeo (nunca usamos frames)
-        "-ar", str(sample_rate),     # resample
-        "-ac", "1" if mono else "2",  # mono
-        str(out_path),               # extensão .flac define o codec
+        "-i",
+        str(mp4_path),
+        "-vn",  # descarta vídeo (nunca usamos frames)
+        "-ar",
+        str(sample_rate),  # resample
+        "-ac",
+        "1" if mono else "2",  # mono
+        str(out_path),  # extensão .flac define o codec
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     log.debug(f"ffmpeg → {out_path.name}")
 
 
-def _extract_torchaudio(
-    mp4_path: Path, out_path: Path, sample_rate: int, mono: bool
-) -> None:
+def _extract_torchaudio(mp4_path: Path, out_path: Path, sample_rate: int, mono: bool) -> None:
     """Fallback de extração via torchaudio + resample."""
     import torch
     import torchaudio
@@ -137,9 +136,7 @@ def load_segment(
     if duration <= 0.0:
         return np.zeros(0, dtype=np.float32)
 
-    waveform, _ = librosa.load(
-        str(path), sr=sr, mono=True, offset=t0, duration=duration
-    )
+    waveform, _ = librosa.load(str(path), sr=sr, mono=True, offset=t0, duration=duration)
     return waveform.astype(np.float32, copy=False)
 
 

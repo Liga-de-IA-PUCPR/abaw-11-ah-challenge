@@ -106,5 +106,7 @@ def calibrate_threshold(
         if f1 > best_score:
             best_score, best_thr = f1, float(thr)
 
-    log.info(f"Limiar calibrado (method='{method}'): thr={best_thr:.3f} -> macro_f1={best_score:.4f}")
+    log.info(
+        f"Limiar calibrado (method='{method}'): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+    )
     return best_thr, best_score

@@ -26,12 +26,22 @@ log = get_logger("features.tabular")
 
 # 7 tipos de pergunta do BAH (README §2). Ordem fixa → one-hot determinístico.
 QUESTION_TYPES: list[str] = [
-    "neutral", "positive", "negative", "ambivalent", "willing", "resistant", "hesitant",
+    "neutral",
+    "positive",
+    "negative",
+    "ambivalent",
+    "willing",
+    "resistant",
+    "hesitant",
 ]
 
 # Campos demográficos categóricos (one-hot via vocabulário aprendido no train).
 _CATEGORICAL_META: list[str] = [
-    "age_range", "gender", "ethnicity_simplified", "province", "country",
+    "age_range",
+    "gender",
+    "ethnicity_simplified",
+    "province",
+    "country",
 ]
 # Campos demográficos numéricos / binários (passam direto).
 _NUMERIC_META: list[str] = ["age", "is_student"]
@@ -69,7 +79,7 @@ class TabularFeaturizer:
     # =========================================================================
 
     @classmethod
-    def from_config(cls, cfg=None) -> "TabularFeaturizer":
+    def from_config(cls, cfg=None) -> TabularFeaturizer:
         """Instancia o featurizer a partir de um nó de config (``cfg.data.tabular``).
 
         Tolera ``cfg=None`` (usa os defaults) e leitura via ``.get``/atributo, então
@@ -83,6 +93,7 @@ class TabularFeaturizer:
         Returns:
             ``TabularFeaturizer`` (ainda **não** fitted).
         """
+
         def _get(key, default):
             if cfg is None:
                 return default
@@ -110,7 +121,7 @@ class TabularFeaturizer:
     # Fit / Transform
     # =========================================================================
 
-    def fit(self, windows: list) -> "TabularFeaturizer":
+    def fit(self, windows: list) -> TabularFeaturizer:
         """Aprende vocabulários categóricos a partir das janelas de TREINO.
 
         Args:
@@ -148,10 +159,11 @@ class TabularFeaturizer:
             raise RuntimeError("TabularFeaturizer.transform chamado antes de fit().")
 
         wavs = waveforms if waveforms is not None else [None] * len(windows)
-        rows = [self._transform_one(w, wav) for w, wav in zip(windows, wavs)]
+        rows = [self._transform_one(w, wav) for w, wav in zip(windows, wavs, strict=False)]
         result = (
             np.vstack(rows).astype(np.float32)
-            if rows else np.zeros((0, len(self.feature_names_)), dtype=np.float32)
+            if rows
+            else np.zeros((0, len(self.feature_names_)), dtype=np.float32)
         )
         log.debug(f"TabularFeaturizer.transform: {result.shape}")
         return result

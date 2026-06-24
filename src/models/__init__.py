@@ -47,10 +47,8 @@ def __getattr__(name: str) -> Any:
         return CrossAttentionFusion
     if name == "LitCrossAttention":
         # Constrói uma instância mínima e devolve sua classe (closure interna).
-        from src.models.cross_attention import _build_lit_module, _build_fusion_module
+        from src.models.cross_attention import _build_fusion_module, _build_lit_module
 
-        fusion = _build_fusion_module(
-            dim_a=1, dim_b=1, common_dim=2, num_heads=1, dropout=0.0
-        )
+        fusion = _build_fusion_module(dim_a=1, dim_b=1, common_dim=2, num_heads=1, dropout=0.0)
         return type(_build_lit_module(fusion=fusion, lr=1e-3, weight_decay=1e-2))
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

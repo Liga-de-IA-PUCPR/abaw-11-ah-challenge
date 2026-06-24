@@ -163,9 +163,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     _, family = _build_trainer(cfg, device)
     # resolve_latest_checkpoint(output_root) — UM argumento (FASE 5); varre as duas
     # famílias (bundle.joblib | *.ckpt) sob a raiz e devolve o mais recente.
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root
-    )
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(cfg.data.paths.output_root)
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
@@ -191,9 +189,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
 
     _, family = _build_trainer(cfg, device)
     # resolve_latest_checkpoint(output_root) — UM argumento (FASE 5).
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root
-    )
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(cfg.data.paths.output_root)
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
 
     split = cfg.get("split", "test")

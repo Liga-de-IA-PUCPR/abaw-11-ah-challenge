@@ -28,7 +28,6 @@ import numpy as np
 from src.logger import get_logger
 from src.outputs.checkpoint import (
     CheckpointBundle,
-    NeuralSidecar,
     load_neural_sidecar,
     load_rf_bundle,
 )
@@ -186,7 +185,9 @@ def predict_from_checkpoint(
         Mapa ``{video_id: pred}`` (também persistido em ``out_path``).
     """
     ckpt_path = Path(checkpoint)
-    is_rf = ckpt_path.name == "bundle.joblib" or (ckpt_path.is_dir() and (ckpt_path / "bundle.joblib").exists())
+    is_rf = ckpt_path.name == "bundle.joblib" or (
+        ckpt_path.is_dir() and (ckpt_path / "bundle.joblib").exists()
+    )
 
     if is_rf:
         video_preds = _predict_rf(
@@ -240,9 +241,9 @@ def _predict_neural(
     import torch
     from torch.utils.data import DataLoader
 
-    from src.conf import resolve_device          # helper modular (README §3)
+    from src.conf import resolve_device  # helper modular (README §3)
     from src.data.datasets import collate_sequences  # collate module-level (FASE 2)
-    from src.models import create_model          # factory lazy (FASE 4 registry)
+    from src.models import create_model  # factory lazy (FASE 4 registry)
 
     run_dir = ckpt_path if ckpt_path.is_dir() else ckpt_path.parent
     sidecar = load_neural_sidecar(run_dir)
@@ -269,9 +270,9 @@ def _predict_neural(
     video_preds: dict[str, int] = {}
     with torch.no_grad():
         for batch in loader:
-            feat_a = batch["audio_seq"].to(dev)        # (B, T, d_audio)
-            feat_b = batch["text_seq"].to(dev)         # (B, T, d_text)
-            mask = batch["key_padding_mask"].to(dev)   # (B, T) True onde é padding
+            feat_a = batch["audio_seq"].to(dev)  # (B, T, d_audio)
+            feat_b = batch["text_seq"].to(dev)  # (B, T, d_text)
+            mask = batch["key_padding_mask"].to(dev)  # (B, T) True onde é padding
             logits = module(feat_a, feat_b, key_padding_mask=mask)  # (B, 1)
             probs = torch.sigmoid(logits).squeeze(-1).cpu().numpy()
             for vid, p in zip(batch["video_id"], probs, strict=True):

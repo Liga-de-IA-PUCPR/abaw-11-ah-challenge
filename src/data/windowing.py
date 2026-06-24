@@ -170,16 +170,10 @@ class WindowGenerator:
             return ""
 
         selected = [
-            ch["text"]
-            for ch in chunks
-            if overlap_seconds(t0, t1, ch["start"], ch["end"]) > 0.0
+            ch["text"] for ch in chunks if overlap_seconds(t0, t1, ch["start"], ch["end"]) > 0.0
         ]
         if not selected:
-            selected = [
-                ch["text"]
-                for ch in chunks
-                if t0 <= (ch["start"] + ch["end"]) / 2.0 < t1
-            ]
+            selected = [ch["text"] for ch in chunks if t0 <= (ch["start"] + ch["end"]) / 2.0 < t1]
         return " ".join(s for s in selected if s).strip()
 
     # =========================================================================

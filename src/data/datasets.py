@@ -22,7 +22,6 @@ from omegaconf import DictConfig
 from src.logger import get_logger
 
 if TYPE_CHECKING:  # evita importar torch no caminho sklearn/CPU
-    import torch
     from torch.utils.data import Dataset
 else:  # base dummy p/ não forçar dependência neural no import do módulo
     Dataset = object
@@ -95,7 +94,7 @@ class WindowMatrixView:
         # Um rótulo de vídeo por id (primeiro valor; constante dentro do grupo).
         vl = df.group_by("id").agg(pl.col("video_label").first())
         self.video_labels: dict[str, int] = dict(
-            zip(vl["id"].to_list(), vl["video_label"].to_list())
+            zip(vl["id"].to_list(), vl["video_label"].to_list(), strict=False)
         )
         self.dims: dict[str, int] = {
             "audio": audio.shape[1],
@@ -103,8 +102,7 @@ class WindowMatrixView:
             "tabular": tab.shape[1],
         }
         log.info(
-            f"WindowMatrixView: X={self.X.shape}, "
-            f"vídeos={len(self.video_labels)}, dims={self.dims}"
+            f"WindowMatrixView: X={self.X.shape}, vídeos={len(self.video_labels)}, dims={self.dims}"
         )
 
     def __len__(self) -> int:
@@ -162,7 +160,7 @@ class VideoSequenceDataset(Dataset):
         self.lengths: list[int] = [a.shape[0] for a in self._audio]
         # Acessor público alinhado com WindowMatrixView (FASE_4 depende deste contrato):
         # {video_id: global_ah} (rótulo a nível de vídeo; -1 = test).
-        self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels))
+        self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels, strict=False))
         log.info(
             f"VideoSequenceDataset: {len(self.video_ids)} vídeos, "
             f"T∈[{min(self.lengths)}, {max(self.lengths)}], "
@@ -176,8 +174,8 @@ class VideoSequenceDataset(Dataset):
         torch = self._torch
         return {
             "audio_seq": torch.tensor(self._audio[idx], dtype=torch.float32),  # (T, d_a)
-            "text_seq": torch.tensor(self._text[idx], dtype=torch.float32),    # (T, d_b)
-            "tab_seq": torch.tensor(self._tab[idx], dtype=torch.float32),      # (T, d_tab)
+            "text_seq": torch.tensor(self._text[idx], dtype=torch.float32),  # (T, d_b)
+            "tab_seq": torch.tensor(self._tab[idx], dtype=torch.float32),  # (T, d_tab)
             "length": self.lengths[idx],
             "label": self._labels[idx],
             "video_id": self.video_ids[idx],
@@ -210,12 +208,12 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
     lengths = torch.tensor([b["length"] for b in batch], dtype=torch.long)
     t_max = int(audio.shape[1])
     # mask[b, t] = True quando t >= length[b] (posição de padding).
-    ar = torch.arange(t_max).unsqueeze(0)               # (1, T_max)
-    key_padding_mask = ar >= lengths.unsqueeze(1)        # (B, T_max)
+    ar = torch.arange(t_max).unsqueeze(0)  # (1, T_max)
+    key_padding_mask = ar >= lengths.unsqueeze(1)  # (B, T_max)
 
-    labels = torch.tensor(
-        [b["label"] for b in batch], dtype=torch.float32
-    ).unsqueeze(1)                                       # (B, 1) p/ BCEWithLogits
+    labels = torch.tensor([b["label"] for b in batch], dtype=torch.float32).unsqueeze(
+        1
+    )  # (B, 1) p/ BCEWithLogits
 
     return {
         "audio_seq": audio,

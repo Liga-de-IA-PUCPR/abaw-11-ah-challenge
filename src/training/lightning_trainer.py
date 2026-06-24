@@ -178,7 +178,9 @@ class LightningTrainer(BaseTrainer):
 
     def _infer(self, loader) -> tuple[np.ndarray, np.ndarray]:
         """Roda ``predict_step`` e devolve ``(video_ids, proba)`` como numpy."""
-        outputs = self._trainer.predict(self._lit_module, dataloaders=loader, ckpt_path=self._ckpt_path)
+        outputs = self._trainer.predict(
+            self._lit_module, dataloaders=loader, ckpt_path=self._ckpt_path
+        )
         ids: list[str] = []
         proba: list[float] = []
         for out in outputs:
@@ -196,5 +198,5 @@ class LightningTrainer(BaseTrainer):
 
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)
-        scores = {str(v): float(p) for v, p in zip(ids, proba)}
+        scores = {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
         return evaluate_video_predictions(video_labels=labels, video_pred=preds, video_score=scores)

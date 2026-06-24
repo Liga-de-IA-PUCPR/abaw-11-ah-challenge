@@ -148,8 +148,14 @@ class Reporter:
 
         fig, ax = plt.subplots(figsize=(5, 4))
         sns.heatmap(
-            cm, annot=True, fmt=".2f" if normalize else "d", cmap="Blues",
-            xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, cbar=False, ax=ax,
+            cm,
+            annot=True,
+            fmt=".2f" if normalize else "d",
+            cmap="Blues",
+            xticklabels=CLASS_NAMES,
+            yticklabels=CLASS_NAMES,
+            cbar=False,
+            ax=ax,
         )
         ax.set_xlabel("Predito")
         ax.set_ylabel("Verdadeiro")
@@ -242,8 +248,13 @@ class Reporter:
         best_idx = int(np.argmin(np.abs(thresholds - best_threshold)))
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.plot(thresholds, scores, color="#55A868", lw=2)
-        ax.axvline(best_threshold, color="#4C72B0", ls="--", lw=1.5,
-                   label=f"limiar* = {best_threshold:.3f}")
+        ax.axvline(
+            best_threshold,
+            color="#4C72B0",
+            ls="--",
+            lw=1.5,
+            label=f"limiar* = {best_threshold:.3f}",
+        )
         ax.scatter([best_threshold], [scores[best_idx]], color="#4C72B0", zorder=5)
         ax.set_xlabel("Limiar de decisão")
         ax.set_ylabel("Macro-F1 (validação, nível de vídeo)")

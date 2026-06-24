@@ -54,9 +54,9 @@ class BaseTrainer(ABC):
 
         self.threshold_: float | None = None
         self.history: dict[str, Any] = {
-            "window_metrics": {},   # métricas a nível de janela (só caminho sklearn)
-            "video_metrics": {},    # métricas a nível de vídeo (macro_f1, average_precision)
-            "threshold": None,      # limiar calibrado
+            "window_metrics": {},  # métricas a nível de janela (só caminho sklearn)
+            "video_metrics": {},  # métricas a nível de vídeo (macro_f1, average_precision)
+            "threshold": None,  # limiar calibrado
         }
 
     # ==========================================================================

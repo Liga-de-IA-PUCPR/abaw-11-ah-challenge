@@ -53,9 +53,7 @@ _SPLIT_FILES: dict[str, Literal["train", "val", "test"]] = {
 }
 
 # <pid>_Question_<q>_..._Video.mp4
-_VIDEO_NAME_RE = re.compile(
-    r"^(?P<pid>[^_]+)_Question_(?P<q>\d+)_.*?Video", re.IGNORECASE
-)
+_VIDEO_NAME_RE = re.compile(r"^(?P<pid>[^_]+)_Question_(?P<q>\d+)_.*?Video", re.IGNORECASE)
 
 
 # ==============================================================================
@@ -242,7 +240,7 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
     Returns:
         ``list[VideoRecord]`` (todos os splits concatenados).
     """
-    raw_root = Path(cfg.data.paths.data_root)            # default: data/raw/data
+    raw_root = Path(cfg.data.paths.data_root)  # default: data/raw/data
     split_dir = raw_root / "split"
     transcript_dir = raw_root / "transcription"
 
@@ -262,9 +260,7 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
             if global_ah is None and split != "test":
                 global_ah = ann.get("global_ah")
 
-            chunks, full_from_json = load_transcript_chunks(
-                transcript_dir / f"{video_id}.json"
-            )
+            chunks, full_from_json = load_transcript_chunks(transcript_dir / f"{video_id}.json")
             full_transcript = row["full_transcript"] or full_from_json
 
             record = VideoRecord(
