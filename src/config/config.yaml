@@ -7,3 +7,7 @@ defaults:
 
 seed: 42
 experiment_name: "abaw-cross-attention"
+
+hydra:
+  launcher:
+    n_jobs: 1
