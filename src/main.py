@@ -4,7 +4,7 @@ import hydra
 import lightning as L
 import polars as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
-from lightning.pytorch.loggers import MLFlowLogger
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
 from modeling.data import EmbeddingDataset
@@ -61,9 +61,8 @@ def main(cfg: DictConfig):
     )
     module = CrossAttention(model, lr=cfg.model.lr)
 
-    mlf_logger = MLFlowLogger(
-        experiment_name=cfg.experiment_name,
-        tracking_uri="sqlite:///mlflow.db",
+    wandb_logger = WandbLogger(
+        project=cfg.experiment_name,
         log_model=True,
     )
 
@@ -73,7 +72,7 @@ def main(cfg: DictConfig):
 
     trainer = L.Trainer(
         max_epochs=cfg.trainer.max_epochs,
-        logger=mlf_logger,
+        logger=wandb_logger,
         gradient_clip_val=1.0,
         callbacks=[EarlyStopping(monitor="val_loss", patience=20), checkpoint_callback],
     )

@@ -2,6 +2,8 @@
 data/
 
 lightning_logs/
+mlflow.db
+multirun/
 
 
 # Byte-compiled / optimized / DLL files
