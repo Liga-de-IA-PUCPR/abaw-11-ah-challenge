@@ -63,7 +63,9 @@ def main(cfg: DictConfig):
 
     wandb_logger = WandbLogger(
         project=cfg.experiment_name,
+        group="multirun",
         log_model=True,
+        reinit=True,
     )
 
     checkpoint_callback = ModelCheckpoint(
