@@ -4,4 +4,5 @@ defaults:
   - trainer: default
   - _self_
 
+seed: 42
 experiment_name: "abaw-cross-attention"
