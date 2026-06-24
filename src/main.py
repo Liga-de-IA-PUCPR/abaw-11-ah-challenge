@@ -3,6 +3,7 @@ from pathlib import Path
 import hydra
 import lightning as L
 import polars as pl
+import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
