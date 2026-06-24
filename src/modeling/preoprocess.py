@@ -17,6 +17,8 @@ from transformers import (
     AutoTokenizer,
 )
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class TextVectorizer(nn.Module):
     def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
@@ -28,6 +30,9 @@ class TextVectorizer(nn.Module):
         encoded_input = self.tokenizer(
             input, padding=True, truncation=True, return_tensors="pt"
         )  # type: ignore
+        
+        # Move tokenizer outputs to the same device as the model
+        encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
 
         with torch.no_grad():
             out = self.model(**encoded_input)
@@ -44,9 +49,11 @@ class TextVectorizer(nn.Module):
 class AudioVectorizer(nn.Module):
     def __init__(self, model_name="facebook/wav2vec2-base"):
         super().__init__()
-        self.model = AutoModel.from_pretrained("facebook/wav2vec2-base")
+        self.model = AutoModel.from_pretrained(model_name)
 
     def forward(self, input_values: torch.Tensor) -> torch.Tensor:
+        # Move input tensor to device
+        input_values = input_values.to(device)
 
         with torch.no_grad():
             out = self.model(input_values=input_values)
@@ -58,10 +65,10 @@ class AudioVectorizer(nn.Module):
 class ImageVectorizer(nn.Module):
     def __init__(self, model_name="facebook/dinov3-vitl16-pretrain-lvd1689m"):
         super().__init__()
-
+        # If explicitly using device, you can use device or "auto" for large models
         self.model = AutoModel.from_pretrained(
             model_name,
-            device_map="auto",
+            device_map="auto" if device.type == "cuda" else None,
         )
         self.processor = AutoImageProcessor.from_pretrained(model_name)
 
@@ -83,7 +90,6 @@ def load_audio_from_id(id: str, audio_dir: Path, sr: int = 16000) -> torch.Tenso
         audio_dir / id.rpartition("/")[0] / f"{extract_filename_from_id(id)}.flac"
     )
     waveform, _ = librosa.load(audio_path, sr=sr, mono=True)
-    # add any alterations youd like to make to the audio here
     tensor = torch.from_numpy(waveform)
     return tensor.unsqueeze(0)  # [1, length]
 
@@ -115,16 +121,14 @@ def iter_frames_from_id(id: str, frames_dir: str | Path) -> Iterator[Image.Image
 
 
 def main():
-    audio_model = AudioVectorizer()
-    text_model = TextVectorizer()
-    # image_model = ImageVectorizer()
+    audio_model = AudioVectorizer().to(device)
+    text_model = TextVectorizer().to(device)
+    # image_model = ImageVectorizer()  # handled by device_map inside class
 
     audio_dir = Path("data/interim/Audio")
     annotations_dir = Path("data/raw/data/transcription")
-    # frames_dir = Path("data/raw/data/cropped-aligned-faces")
 
     video_df = pl.read_csv("data/raw/data/bah-video.csv")
-    video_df = video_df.filter(pl.col("video-path").str.contains("82553|82554|82555"))
 
     schema = pa.schema(
         [
@@ -142,7 +146,6 @@ def main():
 
         audio_tensor = load_audio_from_id(video_id, audio_dir)
         transcription_dict = load_annotations_from_id(video_id, annotations_dir)
-        # frames = iter_frames_from_id(video_id, frames_dir)
 
         audio_emb = audio_model.forward(audio_tensor)
         transcription_emb = text_model.forward(transcription_dict.get("text"))
