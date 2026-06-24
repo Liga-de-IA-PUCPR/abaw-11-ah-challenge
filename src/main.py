@@ -20,15 +20,8 @@ def load_data(cfg: DictConfig):
     )
 
     def _ids_from_split(name: str) -> list[str]:
-        return (
-            pl.read_csv(
-                Path(cfg.split_dir) / f"{name}.txt",
-                has_header=False,
-                new_columns=["id", "_label", "_text"],
-            )
-            .get_column("id")
-            .to_list()
-        )
+        path = Path(cfg.split_dir) / f"{name}.txt"
+        return [line.split(",", 1)[0] for line in path.read_text().strip().splitlines()]
 
     train_ids = _ids_from_split("train")
     val_ids = _ids_from_split("val")
