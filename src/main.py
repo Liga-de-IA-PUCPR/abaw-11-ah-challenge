@@ -49,7 +49,7 @@ def main(cfg: DictConfig):
 
     mlf_logger = MLFlowLogger(
         experiment_name=cfg.experiment_name,
-        tracking_uri="mlruns",
+        tracking_uri="sqlite:///mlflow.db",
         log_model=True,
     )
 
