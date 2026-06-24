@@ -1,0 +1,17 @@
+model:
+  dim_a: 768
+  dim_b: 384
+  common_dim: 512
+  num_heads: 2
+  num_classes: 1
+  lr: 0.0001
+data:
+  parquet_path: data/processed/text_audio.parquet
+  split_dir: data/raw/data/split
+  dim_a: 768
+  dim_b: 384
+  batch_size: 32
+trainer:
+  max_epochs: 200
+seed: 42
+experiment_name: abaw-cross-attention

@@ -1,7 +1,7 @@
 import lightning as L
-import torch
 from torch import nn, optim
-from torchmetrics.classification import BinaryAccuracy, BinaryAUROC, BinaryF1Score
+
+from evaluation.metrics import ClassificationMetrics
 
 
 class CrossAttentionFusionModel(nn.Module):
@@ -35,40 +35,20 @@ class CrossAttention(L.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=["cross_attention"])
         self.model = cross_attention
-        self.train_acc = BinaryAccuracy()
-        self.val_acc = BinaryAccuracy()
-        self.val_f1 = BinaryF1Score()
-        self.val_auc = BinaryAUROC()
-        self.test_acc = BinaryAccuracy()
-        self.test_f1 = BinaryF1Score()
-        self.test_auc = BinaryAUROC()
+        self.metrics = ClassificationMetrics()
 
     def training_step(self, batch, batch_idx):
         loss, preds, labels = self._shared_step(batch)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.train_acc(preds, labels)
-        self.log("train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
+        self.metrics.log_train(self, loss, preds, labels)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, preds, labels = self._shared_step(batch)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.val_acc(preds, labels)
-        self.val_f1(preds, labels)
-        self.val_auc(preds, labels)
-        self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_auc", self.val_auc, on_step=False, on_epoch=True, prog_bar=True)
+        self.metrics.log_val(self, loss, preds, labels)
 
     def test_step(self, batch, batch_idx):
         loss, preds, labels = self._shared_step(batch)
-        self.log("test_loss", loss, on_step=False, on_epoch=True)
-        self.test_acc(preds, labels)
-        self.test_f1(preds, labels)
-        self.test_auc(preds, labels)
-        self.log("test_acc", self.test_acc, on_step=False, on_epoch=True)
-        self.log("test_f1", self.test_f1, on_step=False, on_epoch=True)
-        self.log("test_auc", self.test_auc, on_step=False, on_epoch=True)
+        self.metrics.log_test(self, loss, preds, labels)
 
     def _shared_step(self, batch):
         feat_a = batch["audio_emb"].unsqueeze(1)  # [B, 768] → [B, 1, 768]
@@ -76,7 +56,7 @@ class CrossAttention(L.LightningModule):
         label = batch["label"].float().unsqueeze(1)  # [B] → [B, 1]
         x_hat = self.model(feat_a, feat_b)
         loss = nn.functional.binary_cross_entropy_with_logits(x_hat, label)
-        preds = torch.sigmoid(x_hat)
+        preds = nn.functional.sigmoid(x_hat)
         return loss, preds, label.int()
 
     def configure_optimizers(self):
