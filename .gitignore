@@ -1,5 +1,5 @@
 # Template
-data/
+/data/
 
 
 # Byte-compiled / optimized / DLL files
@@ -222,3 +222,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# =============================================================================
+# BAH AH-Challenge — artefatos pesados e dataset sob EULA (NÃO versionar)
+# =============================================================================
+.venv/
+__pycache__/
+/data/raw/
+/data/interim/
+/data/processed/
+/outputs/
+/multirun/
+/wandb/
+*.flac
+*.parquet
+*.ckpt
+*.joblib
+.DS_Store
