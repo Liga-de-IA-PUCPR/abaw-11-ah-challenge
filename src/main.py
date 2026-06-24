@@ -5,6 +5,7 @@ import lightning as L
 import polars as pl
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+import wandb
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
 
@@ -84,6 +85,7 @@ def main(cfg: DictConfig):
         model=module, train_dataloaders=train_loader, val_dataloaders=val_loader
     )
     trainer.test(dataloaders=test_loader, ckpt_path="best")
+    wandb.finish()
 
 
 if __name__ == "__main__":

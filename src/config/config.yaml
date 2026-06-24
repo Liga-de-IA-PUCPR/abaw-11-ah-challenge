@@ -2,6 +2,7 @@ defaults:
   - model: cross_attention
   - data: default
   - trainer: default
+  - hydra/launcher: joblib
   - _self_
 
 seed: 42
