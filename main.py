@@ -248,7 +248,7 @@ def main(cfg: DictConfig) -> int:
         return _DISPATCH[mode](cfg, device)
     except Exception as exc:  # noqa: BLE001
         log.exception(f"Falha no modo '{mode}': {exc}")
-        return 1
+        raise SystemExit(1) from exc  # sai != 0 → o make para (sem falso "✓")
 
 
 if __name__ == "__main__":
