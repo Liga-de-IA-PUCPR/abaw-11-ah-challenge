@@ -204,6 +204,62 @@ class Reporter:
         log.info(f"Plot salvo: {path}")
         return path
 
+    def plot_grouped_feature_importances(
+        self,
+        importances: np.ndarray | None,
+        group_of: list[str],
+        top_k: int = 40,
+    ) -> Path | None:
+        """Importâncias **somadas por grupo** de features (barh, mesmo estilo).
+
+        As importâncias (Gini) somam 1 sobre todas as features; somá-las por grupo dá a
+        contribuição total do grupo. Útil p/ o panorama: tratar **texto** e **áudio** como
+        1 feature cada e compará-los contra as features tabulares do dataset. Os grupos de
+        embedding (rótulo contendo ``"emb"``) são destacados em cor diferente.
+
+        Args:
+            importances: vetor por feature (alinhado a ``group_of``).
+            group_of: rótulo do grupo de cada feature (mesmo tamanho de ``importances``).
+            top_k: máximo de grupos exibidos.
+        """
+        if importances is None:
+            log.warning("Sem feature_importances (modelo neural?); plot agrupado pulado.")
+            return None
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError as exc:  # pragma: no cover
+            log.warning(f"Plot pulado (deps ausentes): {exc}")
+            return None
+
+        importances = np.asarray(importances, dtype=float)
+        if len(group_of) != len(importances):
+            log.warning("group_of e importances de tamanhos diferentes; plot agrupado pulado.")
+            return None
+
+        agg: dict[str, float] = {}
+        for imp, g in zip(importances, group_of, strict=False):
+            agg[g] = agg.get(g, 0.0) + float(imp)
+        labels = list(agg.keys())
+        vals = np.array([agg[g] for g in labels], dtype=float)
+        order = np.argsort(vals)[::-1][:top_k]
+        names = [labels[i] for i in order]
+        vals = vals[order]
+        # Destaca os grupos de embedding (rótulo contém "emb") vs features tabulares.
+        colors = ["#DD8452" if "emb" in n else "#4C72B0" for n in names]
+
+        fig, ax = plt.subplots(figsize=(8, max(4, 0.32 * len(order))))
+        ax.barh(range(len(order)), vals[::-1], color=colors[::-1])
+        ax.set_yticks(range(len(order)))
+        ax.set_yticklabels(names[::-1], fontsize=9)
+        ax.set_xlabel("Importância (Gini) somada por grupo")
+        ax.set_title("Importância por grupo — embeddings vs features do dataset")
+        fig.tight_layout()
+        path = self.plots_dir / "feature_importances_grouped.png"
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        log.info(f"Plot salvo: {path}")
+        return path
+
     def plot_precision_recall(self, y_true: np.ndarray, y_proba: np.ndarray) -> Path | None:
         """Curva Precision–Recall + Average Precision (classe positiva A/H)."""
         try:

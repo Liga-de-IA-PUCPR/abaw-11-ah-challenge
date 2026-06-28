@@ -185,7 +185,8 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
         except Exception as exc:  # noqa: BLE001 — plots nunca derrubam o evaluate
             log.warning(f"Plots a nível de vídeo pulados: {exc}")
 
-    # Importâncias de features (RandomForest); nomes vêm do modelo ou do sidecar do Parquet.
+    # Importâncias de features (RandomForest): individual + AGRUPADO (texto/áudio como
+    # 1 feature cada vs tabulares). Nomes/grupos vêm do sidecar do Parquet (FASE 3).
     model = getattr(trainer, "model", None)
     imp = (
         model.feature_importances()
@@ -193,18 +194,25 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
         else None
     )
     if imp is not None:
-        names = getattr(model, "feature_names", None)
-        if not names:
-            sidecar = Path(cfg.data.paths.parquet_path).with_suffix(".json")
-            if sidecar.exists():
-                fn = json.loads(sidecar.read_text(encoding="utf-8")).get("feature_names", {})
-                names = (
-                    list(fn.get("audio", []))
-                    + list(fn.get("text", []))
-                    + list(fn.get("tabular", []))
-                )
+        imp = np.asarray(imp)
+        fn: dict[str, list[str]] = {}
+        sidecar = Path(cfg.data.paths.parquet_path).with_suffix(".json")
+        if sidecar.exists():
+            fn = json.loads(sidecar.read_text(encoding="utf-8")).get("feature_names", {})
+        n_audio, n_text, tab = (
+            len(fn.get("audio", [])),
+            len(fn.get("text", [])),
+            list(fn.get("tabular", [])),
+        )
+        names = getattr(model, "feature_names", None) or (
+            list(fn.get("audio", [])) + list(fn.get("text", [])) + tab
+        )
         if names and len(names) == len(imp):
-            rep.plot_feature_importances(np.asarray(imp), list(names))
+            rep.plot_feature_importances(imp, list(names))
+        # Panorama: texto/áudio agregados (1 barra cada) vs cada feature tabular do dataset.
+        if n_audio and n_text and (n_audio + n_text + len(tab)) == len(imp):
+            group_of = ["áudio (emb)"] * n_audio + ["texto (emb)"] * n_text + tab
+            rep.plot_grouped_feature_importances(imp, group_of)
 
     log.info(f"Relatórios + plots salvos em: {out_dir}")
 
