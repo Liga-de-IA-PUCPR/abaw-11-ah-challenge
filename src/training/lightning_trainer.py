@@ -79,9 +79,15 @@ class LightningTrainer(BaseTrainer):
 
         tcfg = self._cfg_block("trainer")
         wcfg = self._cfg_block("wandb")
+        # save_dir sob output_root (gitignored) — mantém logs/ckpts fora da raiz do repo.
+        try:
+            out_root = str(self.config.data.paths.output_root)
+        except Exception:  # noqa: BLE001
+            out_root = "outputs"
         wandb_logger = WandbLogger(
             project=wcfg.get("project", "abaw-ah"),
             mode=wcfg.get("mode", "online"),  # online|offline|disabled
+            save_dir=out_root,
             log_model=True,
         )
         ckpt = ModelCheckpoint(
@@ -115,6 +121,12 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         L.seed_everything(getattr(self.config, "seed", 42))
+        # Infere as dims dos embeddings do CACHE (librosa 320 / wav2vec2 768) em vez de
+        # confiar no hardcode da config — assim o modelo casa com o Parquet existente.
+        d_a, d_b = self._dims_from_loader(train_data)
+        if d_a and d_b:
+            self.model.dim_a, self.model.dim_b = d_a, d_b
+            log.info(f"Dims inferidas do cache: dim_a={d_a}, dim_b={d_b}")
         self._lit_module = self.model.build_lightning_module()
         self._trainer = self._build_trainer()
 
@@ -174,7 +186,15 @@ class LightningTrainer(BaseTrainer):
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "trainer_state.json").write_text(
-            json.dumps({"threshold": self.threshold_, "ckpt_path": self._ckpt_path}, indent=2)
+            json.dumps(
+                {
+                    "threshold": self.threshold_,
+                    "ckpt_path": self._ckpt_path,
+                    "dim_a": int(self.model.dim_a),  # dims treinadas → load reconstrói igual
+                    "dim_b": int(self.model.dim_b),
+                },
+                indent=2,
+            )
         )
         log.info(f"LightningTrainer salvo em: {out_dir} (ckpt={self._ckpt_path})")
 
@@ -183,10 +203,26 @@ class LightningTrainer(BaseTrainer):
         """Recarrega o estado (limiar + caminho do ckpt) para inferência."""
         import json
 
+        import lightning as L
+
+        from src.conf import resolve_device
+
         state = json.loads((Path(out_dir) / "trainer_state.json").read_text())
         trainer = cls(model=model, config=config)
         trainer.threshold_ = state.get("threshold")
         trainer._ckpt_path = state.get("ckpt_path")
+        # Restaura as dims treinadas p/ o módulo casar com os pesos do ckpt, e monta
+        # um L.Trainer leve (sem logger/callbacks) p/ inferência (evaluate/predict).
+        if state.get("dim_a") and state.get("dim_b"):
+            model.dim_a, model.dim_b = int(state["dim_a"]), int(state["dim_b"])
+        trainer._lit_module = model.build_lightning_module()
+        device = resolve_device(getattr(config, "device", "auto"))
+        accelerator = _ACCELERATOR.get(device.type, "cpu")
+        if accelerator == "mps":
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        trainer._trainer = L.Trainer(
+            accelerator=accelerator, devices=1, logger=False, enable_progress_bar=False
+        )
         return trainer
 
     # ==========================================================================
@@ -212,6 +248,12 @@ class LightningTrainer(BaseTrainer):
         # ds.video_labels é o acessor público {video_id: video_label} do
         # VideoSequenceDataset (FASE_2); alinhado com WindowMatrixView.
         return {str(vid): int(lab) for vid, lab in ds.video_labels.items()}
+
+    @staticmethod
+    def _dims_from_loader(loader) -> tuple[int, int]:
+        """Dims ``(d_audio, d_text)`` do ``VideoSequenceDataset`` do loader (0 se ausente)."""
+        ds = loader.dataset
+        return int(getattr(ds, "dim_audio", 0)), int(getattr(ds, "dim_text", 0))
 
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)

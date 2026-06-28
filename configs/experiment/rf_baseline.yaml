@@ -1,6 +1,5 @@
-# configs/experiment/rf_baseline.yaml
 # @package _global_
-# Baseline barato: RandomForest + prosódia librosa + caminho sklearn (CPU).
+# configs/experiment/rf_baseline.yaml — baseline: RandomForest + prosódia librosa + sklearn (CPU).
 defaults:
   - override /model: random_forest
   - override /audio_embedder: librosa
