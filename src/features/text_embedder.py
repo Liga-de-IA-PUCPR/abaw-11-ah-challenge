@@ -19,12 +19,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
+from transformers.utils import logging as hf_logging
 
 from src.base.embedder import BaseEmbedder
 from src.conf import resolve_device
 from src.logger import get_logger
 
 log = get_logger("features.text_embedder")
+
+# Silencia o "LOAD REPORT" do transformers: carregar um ...ForSequenceClassification via
+# AutoModel descarta a head de classificação (UNEXPECTED) e inicia um pooler novo (MISSING)
+# — esperado e benigno, pois usamos mean-pooling sobre last_hidden_state, não a head/pooler.
+hf_logging.set_verbosity_error()
 
 
 class TextEmbedder(BaseEmbedder):

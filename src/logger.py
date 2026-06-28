@@ -90,6 +90,17 @@ def setup_logging(
     _LOG_FILE_HANDLER.setFormatter(logging.Formatter(fmt))
     root.addHandler(_LOG_FILE_HANDLER)
 
+    # Silencia bibliotecas barulhentas (HTTP/HF): httpx loga cada request e o
+    # huggingface_hub avisa sobre HF_TOKEN — ruído que escondia o log do pipeline.
+    for noisy, level in (
+        ("httpx", logging.WARNING),
+        ("urllib3", logging.WARNING),
+        ("filelock", logging.WARNING),
+        ("huggingface_hub", logging.ERROR),
+        ("transformers", logging.ERROR),
+    ):
+        logging.getLogger(noisy).setLevel(level)
+
     _INITIALIZED = True
     root.info(f"Logging inicializado. Arquivo: {log_file}")
     return root
