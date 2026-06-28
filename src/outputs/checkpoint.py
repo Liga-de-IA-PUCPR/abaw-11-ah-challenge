@@ -264,26 +264,30 @@ def resolve_latest_checkpoint(output_root: str | Path) -> Path:
         output_root: Raiz dos outputs (ex.: "outputs").
 
     Returns:
-        ``Path`` do artefato mais recente (``bundle.joblib`` OU ``.ckpt``).
+        ``Path`` do **diretório do run** mais recente (o que ``load_trainer`` espera como
+        ``out_dir``): contém ``model.joblib`` (RF) ou ``*.ckpt`` (Lightning).
 
     Raises:
         FileNotFoundError: Se nenhum artefato existir sob ``output_root``.
     """
     root = Path(output_root)
-    candidates = [
-        *root.glob("*/*/bundle.joblib"),
-        *root.glob("*/*/checkpoints/*.ckpt"),
-        *root.glob("*/*/*.ckpt"),
-    ]
-    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
+    # (mtime, run_dir) por artefato reconhecido — run_dir é o passado a load_trainer.
+    found: list[tuple[float, Path]] = []
+    for f in root.glob("*/*/model.joblib"):  # RF (SklearnTrainer.save)
+        found.append((f.stat().st_mtime, f.parent))
+    for f in root.glob("*/*/*.ckpt"):  # Lightning (ckpt na raiz do run)
+        found.append((f.stat().st_mtime, f.parent))
+    for f in root.glob("*/*/checkpoints/*.ckpt"):  # Lightning (subpasta checkpoints/)
+        found.append((f.stat().st_mtime, f.parent.parent))
+    if not found:
         raise FileNotFoundError(
-            f"Nenhum checkpoint (bundle.joblib | *.ckpt) encontrado sob {root}. "
+            f"Nenhum checkpoint (model.joblib | *.ckpt) encontrado sob {root}. "
             "Rode 'python main.py' (RF) ou '+experiment=cross_attention' antes, "
             "ou passe checkpoint=<path>."
         )
-    log.info(f"Checkpoint mais recente: {candidates[0]}")
-    return candidates[0]
+    run_dir = max(found, key=lambda x: x[0])[1]
+    log.info(f"Checkpoint mais recente: {run_dir}")
+    return run_dir
 
 
 def _json_default(obj: Any) -> Any:
