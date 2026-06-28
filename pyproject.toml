@@ -56,6 +56,9 @@ dependencies = [
     # --- Serialização / utilidades ---
     "PyYAML>=6.0.2",             # leitura dos YAML do dataset (yaml.safe_load)
     "tqdm>=4.66.0",              # barras de progresso (extração / featurização)
+    # --- Visualização / relatórios (FASE 5 — Reporter, roda sempre) ---
+    "matplotlib>=3.8.0",         # plots: confusão, PR, curva de limiar, importâncias
+    "seaborn>=0.13.0",           # heatmap da matriz de confusão
 ]
 
 # -----------------------------------------------------------------------------
