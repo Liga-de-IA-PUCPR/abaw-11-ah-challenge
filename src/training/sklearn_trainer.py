@@ -56,6 +56,8 @@ class SklearnTrainer(BaseTrainer):
         agg = self._cfg_block("aggregation")
         self.method: str = agg.get("method", "mean_proba")
         self._thr_setting = agg.get("threshold", "auto")
+        self._calibration: str = agg.get("calibration", "smooth")
+        self._smooth_window: float = float(agg.get("smooth_window", 0.10))
         self.threshold_: float | None = None
         self.results: dict[str, Any] = {}
 
@@ -98,6 +100,8 @@ class SklearnTrainer(BaseTrainer):
                 val_video_labels=val_data.video_labels,
                 method=self.method,
                 metric=self._cfg_block("metrics").get("primary", "macro_f1"),
+                selection=self._calibration,
+                smooth_window=self._smooth_window,
             )
         else:
             threshold = float(self._thr_setting)

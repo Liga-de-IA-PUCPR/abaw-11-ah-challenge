@@ -303,6 +303,8 @@ class AggregationConfig:
 
     method: Literal["mean_proba", "max_proba", "frac_positive", "any"] = "mean_proba"
     threshold: float | str = "auto"  # "auto" = calibrado na val; ou float fixo
+    calibration: Literal["smooth", "argmax"] = "smooth"  # robustez na escolha do limiar
+    smooth_window: float = 0.10  # largura da média móvel (unidades de limiar) p/ 'smooth'
     metric: str = "macro_f1"
 
 

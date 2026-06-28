@@ -69,6 +69,39 @@ def aggregate_to_video(
     return {vid: int(score >= threshold) for vid, score in scores.items()}
 
 
+def _moving_average(y: np.ndarray, k: int) -> np.ndarray:
+    """Média móvel centrada; nas bordas encolhe a janela (sem viés de zero-padding)."""
+    y = np.asarray(y, dtype=np.float64)
+    if k <= 1:
+        return y
+    half, n = k // 2, len(y)
+    out = np.empty_like(y)
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        out[i] = y[lo:hi].mean()
+    return out
+
+
+def _select_threshold_index(
+    grid: np.ndarray, f1s: np.ndarray, selection: str, smooth_window: float
+) -> int:
+    """Índice do limiar escolhido na curva F1×limiar, conforme a estratégia.
+
+    - ``"argmax"``: pico cru — sensível a ruído quando a val é pequena (a curva é
+      uma função degrau e um spike de 1-2 vídeos pode vencer mas não generalizar).
+    - ``"smooth"`` (default): suaviza a curva (média móvel de largura ``smooth_window``,
+      em unidades de limiar) e então pega o pico → escolhe o CENTRO do platô estável,
+      que transfere melhor para o test/hidden-test. Ver ``src/training/README.md``.
+    """
+    if selection == "argmax":
+        return int(np.argmax(f1s))
+    if selection == "smooth":
+        spacing = float(grid[1] - grid[0]) if len(grid) > 1 else 1.0
+        k = max(1, int(round(smooth_window / spacing)))
+        return int(np.argmax(_moving_average(f1s, k)))
+    raise ValueError(f"selection inválida: '{selection}'. Use 'smooth' | 'argmax'.")
+
+
 def calibrate_threshold(
     val_proba: np.ndarray,
     val_video_ids: np.ndarray,
@@ -76,15 +109,22 @@ def calibrate_threshold(
     method: str,
     metric: str = "macro_f1",
     grid: np.ndarray | None = None,
+    selection: str = "smooth",
+    smooth_window: float = 0.10,
 ) -> tuple[float, float]:
-    """Varre um grid de limiares em [0, 1] maximizando o Macro-F1 na validação.
+    """Varre um grid de limiares em [0, 1] e escolhe o melhor na validação.
 
     Os scores por vídeo são calculados **uma vez**; só a binarização varia ao
     longo do grid (busca barata). Serve tanto ao RF (probas de janela) quanto à
     cross-attention (``method="identity"``: 1 sigmoid por vídeo).
 
+    A escolha do limiar usa ``selection`` (ver ``_select_threshold_index``):
+    ``"smooth"`` (default) pega o centro do platô da curva (robusto a val pequena);
+    ``"argmax"`` pega o pico cru. O Macro-F1 retornado é o **real** (não suavizado)
+    no limiar escolhido.
+
     Returns:
-        ``(melhor_limiar, melhor_macro_f1)``.
+        ``(melhor_limiar, macro_f1_no_limiar)``.
     """
     if metric != "macro_f1":
         raise ValueError(f"Métrica de calibração não suportada: '{metric}'")
@@ -100,14 +140,16 @@ def calibrate_threshold(
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
 
-    best_thr, best_score = 0.5, -1.0
-    for thr in grid:
-        f1 = video_macro_f1(y_true, (s >= thr).astype(np.int64))
-        if f1 > best_score:
-            best_score, best_thr = f1, float(thr)
+    f1s = np.array(
+        [video_macro_f1(y_true, (s >= thr).astype(np.int64)) for thr in grid],
+        dtype=np.float64,
+    )
+    best_idx = _select_threshold_index(grid, f1s, selection, smooth_window)
+    best_thr, best_score = float(grid[best_idx]), float(f1s[best_idx])
 
     log.info(
-        f"Limiar calibrado (method='{method}'): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+        f"Limiar calibrado (method='{method}', selection='{selection}'): "
+        f"thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
     )
     return best_thr, best_score
 

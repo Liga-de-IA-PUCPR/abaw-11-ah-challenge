@@ -146,7 +146,8 @@ class LightningTrainer(BaseTrainer):
         val_labels = self._labels_from_loader(val_data)
         # Honra aggregation.threshold: "auto" calibra na val (max métrica); um float
         # FIXA o limiar e pula a calibração — mesma semântica do SklearnTrainer.
-        thr_setting = self._cfg_block("aggregation").get("threshold", "auto")
+        agg = self._cfg_block("aggregation")
+        thr_setting = agg.get("threshold", "auto")
         if thr_setting == "auto":
             threshold, _ = calibrate_threshold(
                 val_proba=val_proba,
@@ -154,6 +155,8 @@ class LightningTrainer(BaseTrainer):
                 val_video_labels=val_labels,
                 method="identity",
                 metric=self._cfg_block("metrics").get("primary", "macro_f1"),
+                selection=agg.get("calibration", "smooth"),
+                smooth_window=float(agg.get("smooth_window", 0.10)),
             )
         else:
             threshold = float(thr_setting)
