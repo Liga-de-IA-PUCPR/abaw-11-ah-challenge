@@ -110,3 +110,27 @@ def calibrate_threshold(
         f"Limiar calibrado (method='{method}'): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
     )
     return best_thr, best_score
+
+
+def threshold_curve(
+    y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Curva limiar × Macro-F1 sobre scores **a nível de vídeo** (para o Reporter, FASE 5).
+
+    Args:
+        y_true: rótulos de vídeo (0/1), alinhados a ``y_score``.
+        y_score: score contínuo por vídeo (proba/sigmoid agregada).
+        grid: limiares a varrer (default ``linspace(0, 1, 101)``).
+
+    Returns:
+        ``(grid, macro_f1s)`` — Macro-F1 a cada limiar.
+    """
+    if grid is None:
+        grid = np.linspace(0.0, 1.0, 101)
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_score = np.asarray(y_score, dtype=np.float32)
+    f1s = np.array(
+        [video_macro_f1(y_true, (y_score >= t).astype(np.int64)) for t in grid],
+        dtype=np.float32,
+    )
+    return grid, f1s

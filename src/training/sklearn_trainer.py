@@ -124,6 +124,27 @@ class SklearnTrainer(BaseTrainer):
         proba = self.model.predict_proba(data.X)
         return aggregate_to_video(proba, data.video_ids, self.method, self.threshold_)
 
+    def video_outputs(self, data: FeatureSplit) -> dict[str, np.ndarray]:
+        """Arrays a nível de vídeo p/ plots/relatórios (FASE 5): ids, y_true, y_proba, y_pred.
+
+        Alinha os scores agregados aos rótulos de vídeo conhecidos. Consumido por
+        ``_write_eval_report`` (matriz de confusão, PR, curva de limiar).
+        """
+        if self.threshold_ is None:
+            raise RuntimeError("Limiar não calibrado: chame fit()/load() antes.")
+        window_proba = self.model.predict_proba(data.X)
+        scores = video_scores(window_proba, data.video_ids, self.method)
+        ids = [v for v in scores if v in data.video_labels]
+        y_true = np.array([data.video_labels[v] for v in ids], dtype=np.int64)
+        y_proba = np.array([scores[v] for v in ids], dtype=np.float32)
+        y_pred = (y_proba >= self.threshold_).astype(np.int64)
+        return {
+            "video_ids": np.asarray(ids),
+            "y_true": y_true,
+            "y_proba": y_proba,
+            "y_pred": y_pred,
+        }
+
     # ==========================================================================
     # Persistência (joblib do modelo + limiar/método)
     # ==========================================================================

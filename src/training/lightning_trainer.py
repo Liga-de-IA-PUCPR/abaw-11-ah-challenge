@@ -150,6 +150,23 @@ class LightningTrainer(BaseTrainer):
         ids, proba = self._infer(data)
         return aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)
 
+    def video_outputs(self, data) -> dict[str, np.ndarray]:
+        """Arrays a nível de vídeo p/ plots/relatórios (FASE 5): ids, y_true, y_proba, y_pred."""
+        if self.threshold_ is None:
+            raise RuntimeError("Limiar não calibrado: chame fit()/load() antes.")
+        ids, proba = self._infer(data)
+        labels = self._labels_from_loader(data)
+        sel = [i for i in range(len(ids)) if str(ids[i]) in labels]
+        y_true = np.array([labels[str(ids[i])] for i in sel], dtype=np.int64)
+        y_proba = np.array([float(proba[i]) for i in sel], dtype=np.float32)
+        y_pred = (y_proba >= self.threshold_).astype(np.int64)
+        return {
+            "video_ids": np.asarray([ids[i] for i in sel]),
+            "y_true": y_true,
+            "y_proba": y_proba,
+            "y_pred": y_pred,
+        }
+
     def save(self, out_dir) -> None:
         """Salva o caminho do checkpoint + limiar (o peso fica no ckpt do Lightning)."""
         import json

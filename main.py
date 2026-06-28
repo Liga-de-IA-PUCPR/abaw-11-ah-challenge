@@ -152,6 +152,63 @@ def _run_train(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_dir) -> None:
+    """Gera metrics.json + results.txt + plots automaticamente após CADA evaluate (FASE 5).
+
+    Salva em ``<ckpt_dir>/eval_<split>/``. Tudo degrada graciosamente — um plot sem
+    insumo é pulado com aviso, nunca derruba o evaluate.
+    """
+    import json
+    from pathlib import Path
+
+    import numpy as np
+
+    from src.outputs.reporter import Reporter
+    from src.training.aggregation import threshold_curve
+
+    out_dir = Path(ckpt_dir) / f"eval_{split}"
+    rep = Reporter(out_dir)
+    threshold = float(getattr(trainer, "threshold_", 0.5) or 0.5)
+    method = getattr(trainer, "method", "identity")
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    rep.save_metrics_json(report, cfg_dict, threshold=threshold, aggregation_method=method)
+    rep.save_results_txt({**report, "threshold": threshold, "aggregation_method": method})
+
+    # Plots a nível de vídeo (confusão, PR, curva de limiar) — exige video_outputs.
+    if hasattr(trainer, "video_outputs"):
+        try:
+            o = trainer.video_outputs(data)
+            rep.plot_confusion_matrix(o["y_true"], o["y_pred"])
+            rep.plot_precision_recall(o["y_true"], o["y_proba"])
+            grid, f1s = threshold_curve(o["y_true"], o["y_proba"])
+            rep.plot_threshold_curve(grid, f1s, threshold)
+        except Exception as exc:  # noqa: BLE001 — plots nunca derrubam o evaluate
+            log.warning(f"Plots a nível de vídeo pulados: {exc}")
+
+    # Importâncias de features (RandomForest); nomes vêm do modelo ou do sidecar do Parquet.
+    model = getattr(trainer, "model", None)
+    imp = (
+        model.feature_importances()
+        if model is not None and hasattr(model, "feature_importances")
+        else None
+    )
+    if imp is not None:
+        names = getattr(model, "feature_names", None)
+        if not names:
+            sidecar = Path(cfg.data.paths.parquet_path).with_suffix(".json")
+            if sidecar.exists():
+                fn = json.loads(sidecar.read_text(encoding="utf-8")).get("feature_names", {})
+                names = (
+                    list(fn.get("audio", []))
+                    + list(fn.get("text", []))
+                    + list(fn.get("tabular", []))
+                )
+        if names and len(names) == len(imp):
+            rep.plot_feature_importances(np.asarray(imp), list(names))
+
+    log.info(f"Relatórios + plots salvos em: {out_dir}")
+
+
 def _run_evaluate(cfg: DictConfig, device) -> int:
     """``mode=evaluate`` — métricas a nível de vídeo num split (FASE 4/5)."""
     import json
@@ -174,6 +231,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
         f"[{split}] Macro-F1={report['macro_f1']:.4f} | "
         f"AP={report.get('average_precision', 0.0):.4f} (n={report['n_videos']})."
     )
+    _write_eval_report(cfg, trainer, data, report, split, ckpt_dir)  # plots + relatórios (FASE 5)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
