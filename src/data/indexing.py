@@ -3,7 +3,8 @@
 Fontes (sob cfg.data.paths.data_root, default 'data/raw/data'; ver README §2):
 - split/{train,val,test}.txt        : 'video_id, classe_do_video, transcrição_completa'
                                        (o split vem do NOME do arquivo .txt)
-- transcription/<video_id>.json     : JSON Whisper com chunks {language, text, timestamp:(s,e)}
+- transcription/<video_id>/*.yml    : YAML Whisper com chunks {language, text, timestamp:(s,e)}
+                                       (cada vídeo tem 1 diretório ..._Video.mp4/ com 1 .yml)
 - video_annotation_transcript.yaml  : dict por video_id com global_ah, time_detailed_ah,
                                        certainty_ah, all_cues, frame_annotation, ...
 - meta_data.yml                     : dict por participante (idade, país, gênero, ...)
@@ -15,7 +16,6 @@ de onde derivamos ``participant_id``, ``question_id`` (1..7) e ``question_type``
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +27,29 @@ from src.data.schema import VideoRecord
 from src.logger import get_logger
 
 log = get_logger("data.indexing")
+
+
+# O dataset BAH serializa timestamps como `!!python/tuple` — tag que o loader
+# "safe" do YAML rejeita por padrão. Registramos um construtor para aceitá-la
+# (dados locais/confiáveis) sem usar ``unsafe_load``. Preferimos o CSafeLoader
+# (libyaml) — ~10-20x mais rápido, essencial p/ o video_annotation_transcript.yaml (~91 MB).
+try:
+    from yaml import CSafeLoader as _YamlLoader  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - fallback puro-Python
+    from yaml import SafeLoader as _YamlLoader  # type: ignore[assignment]
+
+
+def _construct_python_tuple(loader: Any, node: Any) -> tuple:
+    return tuple(loader.construct_sequence(node))
+
+
+_YamlLoader.add_constructor("tag:yaml.org,2002:python/tuple", _construct_python_tuple)
+
+
+def _yaml_load(path: Path) -> Any:
+    """Carrega um YAML do BAH com suporte a ``!!python/tuple`` e loader rápido (libyaml)."""
+    with path.open(encoding="utf-8") as f:
+        return yaml.load(f, Loader=_YamlLoader) or {}
 
 
 # ==============================================================================
@@ -48,7 +71,6 @@ QUESTION_TYPE_MAP: dict[int, str] = {
 _SPLIT_FILES: dict[str, Literal["train", "val", "test"]] = {
     "train": "train",
     "val": "val",
-    "validation": "val",
     "test": "test",
 }
 
@@ -145,8 +167,7 @@ def load_annotation_yaml(path: Path) -> dict[str, dict[str, Any]]:
         log.warning(f"Anotações não encontradas: {path}")
         return {}
 
-    with path.open(encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _yaml_load(path)
 
     out: dict[str, dict[str, Any]] = {}
     for video_id, ann in raw.items():
@@ -169,36 +190,45 @@ def load_meta_data(path: Path) -> dict[str, dict[str, Any]]:
         log.warning(f"meta_data.yml não encontrado: {path}")
         return {}
 
-    with path.open(encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _yaml_load(path)
 
     meta = {str(pid): (info or {}) for pid, info in raw.items()}
     log.info(f"{path.name}: metadados de {len(meta)} participantes")
     return meta
 
 
-def load_transcript_chunks(path: Path) -> tuple[list[dict[str, Any]], str]:
-    """Lê o JSON de transcrição Whisper de UM vídeo.
+def load_transcript_chunks(transcript_dir: Path) -> tuple[list[dict[str, Any]], str]:
+    """Lê a transcrição (YAML) Whisper de UM vídeo.
 
-    Estrutura esperada: ``{"text": str, "chunks": [{"language", "text",
-    "timestamp": [start, end]}, ...]}``. Normaliza cada chunk para
-    ``{"start": float, "end": float, "text": str, "language": str}``.
+    No BAH, a transcrição de cada vídeo fica num **diretório**
+    ``transcription/<video_id>`` (nomeado ``..._Video.mp4``) contendo um único
+    arquivo ``..._Video.yml`` com a estrutura ``{"text": str, "chunks":
+    [{"language", "text", "timestamp": (start, end)}, ...]}`` — os timestamps são
+    ``!!python/tuple`` (tratados pelo construtor registrado no topo deste módulo).
+    Normaliza cada chunk para ``{"start": float, "end": float, "text", "language"}``.
+
+    Args:
+        transcript_dir: diretório ``transcription/<video_id>`` do vídeo.
 
     Returns:
-        ``(chunks, full_text)``; ``([], "")`` se o arquivo não existir.
+        ``(chunks, full_text)``; ``([], "")`` se não houver ``.yml``.
     """
-    if not path.exists():
-        log.debug(f"Transcrição ausente: {path}")
+    if not transcript_dir.is_dir():
+        log.debug(f"Transcrição ausente: {transcript_dir}")
         return [], ""
 
-    with path.open(encoding="utf-8") as f:
-        data = json.load(f)
+    yml = next(iter(sorted(transcript_dir.glob("*.yml"))), None)
+    if yml is None:
+        log.debug(f"Nenhum .yml em {transcript_dir}")
+        return [], ""
+
+    data = _yaml_load(yml)
 
     full_text = str(data.get("text", "") or "")
     chunks: list[dict[str, Any]] = []
     for ch in data.get("chunks", []) or []:
-        ts = ch.get("timestamp") or [None, None]
-        start = ts[0]
+        ts = ch.get("timestamp") or (None, None)
+        start = ts[0] if len(ts) > 0 else None
         end = ts[1] if len(ts) > 1 else None
         if start is None:
             continue
@@ -229,7 +259,7 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
     2. Deriva ``participant_id`` / ``question_id`` / ``question_type`` do nome.
     3. Anexa anotações de ``video_annotation_transcript.yaml``; o ``global_ah`` do YAML
        serve de fallback ao do split (exceto no test).
-    4. Anexa chunks de transcrição (``transcription/<video_id>.json``).
+    4. Anexa chunks de transcrição (``transcription/<video_id>/<stem>.yml``).
     5. Anexa metadados do participante (``meta_data.yml``).
     6. Resolve caminhos de mídia (``video_path``; ``audio_path`` fica ``None`` até a
        extração — FASE 6/preprocess).
@@ -260,8 +290,8 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
             if global_ah is None and split != "test":
                 global_ah = ann.get("global_ah")
 
-            chunks, full_from_json = load_transcript_chunks(transcript_dir / f"{video_id}.json")
-            full_transcript = row["full_transcript"] or full_from_json
+            chunks, full_from_yaml = load_transcript_chunks(transcript_dir / video_id)
+            full_transcript = row["full_transcript"] or full_from_yaml
 
             record = VideoRecord(
                 video_id=video_id,
@@ -269,7 +299,7 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
                 question_id=qid,
                 question_type=qtype,
                 split=split,
-                video_path=(raw_root / "Videos" / video_id),
+                video_path=(raw_root / video_id),
                 audio_path=None,  # preenchido após extract_audio (FASE 6/preprocess)
                 duration_s=_infer_duration(chunks, ann),
                 transcript_chunks=chunks,
