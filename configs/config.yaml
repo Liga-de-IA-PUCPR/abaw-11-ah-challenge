@@ -11,9 +11,15 @@ defaults:
   - _self_
 
 seed: 42
-device: "auto"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
+device: "mps"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
 mode: "train"                        # train | preprocess | featurize | evaluate | submit
 experiment_name: "abaw-ah"
+
+# Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler
+# (split: val em evaluate / test em submit; checkpoint: bundle mais recente em outputs/).
+split: null                          # train | val | test
+out: null                            # arquivo de submissão (mode=submit)
+checkpoint: null                     # caminho do checkpoint (.joblib/.ckpt)
 
 # Tracking (FASE 5). W&B primário; Reporter local sempre roda como fallback.
 wandb:

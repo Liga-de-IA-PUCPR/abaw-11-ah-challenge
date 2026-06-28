@@ -167,7 +167,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
-    split = cfg.get("split", "val")
+    split = cfg.get("split") or "val"
     data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
     report = trainer.evaluate(data)
     log.info(
@@ -192,8 +192,8 @@ def _run_submit(cfg: DictConfig, device) -> int:
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(cfg.data.paths.output_root)
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
 
-    split = cfg.get("split", "test")
-    out_path = Path(cfg.get("out", "outputs/submission.txt"))
+    split = cfg.get("split") or "test"
+    out_path = Path(cfg.get("out") or "outputs/submission.txt")
     data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
     video_preds = trainer.predict(data)  # {video_id: 0/1}
     write_submission(video_preds, out_path)

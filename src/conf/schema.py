@@ -342,6 +342,11 @@ class RootConfig:
     mode: Literal["train", "preprocess", "featurize", "evaluate", "submit"] = "train"
     experiment_name: str = "abaw-ah"
 
+    # Overrides opcionais por modo (evaluate/submit). None = default do handler.
+    split: str | None = None
+    out: str | None = None
+    checkpoint: str | None = None
+
 
 # ==============================================================================
 # Registro no ConfigStore
