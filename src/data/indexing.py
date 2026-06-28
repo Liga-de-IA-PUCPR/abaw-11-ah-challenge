@@ -241,7 +241,9 @@ def load_transcript_chunks(transcript_dir: Path) -> tuple[list[dict[str, Any]], 
                 "language": str(ch.get("language", "") or ""),
             }
         )
-    return chunks, full_text
+    # Whisper reinicia os timestamps a cada segmento (~30 s) → reconstrói a timeline
+    # global monotônica antes de devolver (corrige alinhamento texto⟷áudio e duração).
+    return _accumulate_chunk_timeline(chunks), full_text
 
 
 # ==============================================================================
@@ -324,6 +326,47 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
 # ==============================================================================
 # Utilitários internos
 # ==============================================================================
+
+# Queda mínima (s) no ``start`` local entre chunks consecutivos para considerar um
+# reinício de segmento do Whisper (vs. jitter sub-segundo dentro do mesmo segmento).
+_WHISPER_RESET_GAP_S = 1.0
+
+
+def _accumulate_chunk_timeline(
+    chunks: list[dict[str, Any]], reset_gap: float = _WHISPER_RESET_GAP_S
+) -> list[dict[str, Any]]:
+    """Reconstrói uma timeline **global monotônica** a partir dos chunks do Whisper.
+
+    O Whisper transcreve o áudio em segmentos (~30 s) e **reinicia os timestamps em
+    0** a cada segmento, então os ``start``/``end`` dos chunks NÃO são globalmente
+    monotônicos (ex.: vão 0→27,8 e voltam para 0→17,8). Sem corrigir, o alinhamento
+    texto⟷áudio (FASE 2) e a duração inferida ficam errados (a duração ficaria presa
+    no fim do 1º segmento, encurtando as janelas).
+
+    Detecta um reset quando o ``start`` local cai mais que ``reset_gap`` abaixo do
+    ``start`` anterior, e acumula como offset o fim absoluto do segmento anterior.
+
+    Args:
+        chunks: chunks já normalizados (``start``/``end`` locais por segmento).
+        reset_gap: queda mínima (s) p/ caracterizar reset (default 1,0).
+
+    Returns:
+        Novos chunks com ``start``/``end`` em **tempo absoluto** (mesma ordem).
+    """
+    out: list[dict[str, Any]] = []
+    offset = 0.0
+    prev_local_start: float | None = None
+    prev_abs_end = 0.0
+    for ch in chunks:
+        ls, le = float(ch["start"]), float(ch["end"])
+        if prev_local_start is not None and ls + reset_gap < prev_local_start:
+            offset = prev_abs_end  # novo segmento começa onde o anterior terminou
+        abs_s = ls + offset
+        abs_e = max(le + offset, abs_s)  # guarda contra end < start (jitter)
+        out.append({**ch, "start": abs_s, "end": abs_e})
+        prev_local_start = ls
+        prev_abs_end = abs_e
+    return out
 
 
 def _infer_duration(chunks: list[dict[str, Any]], ann: dict[str, Any]) -> float:
