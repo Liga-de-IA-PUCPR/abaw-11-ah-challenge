@@ -37,9 +37,24 @@ from src.logger import get_logger
 
 log = get_logger("features.builder")
 
-# Comprimento mínimo (s) do waveform da janela — evita erro do librosa em segmentos
-# vazios/curtíssimos no fim do áudio. 0,25 s @ 16 kHz = 4000 amostras (> n_fft padrão).
-_MIN_WAVE_S = 0.25
+
+def _jsonable(obj: object) -> object:
+    """Fallback de ``json.dumps``: converte containers OmegaConf em tipos puros.
+
+    ``feature_set``/``agg_stats`` chegam do Hydra como ``ListConfig`` (não ``list``),
+    que o ``json`` não serializa. Converte ListConfig/DictConfig → list/dict.
+    """
+    from omegaconf import OmegaConf
+
+    if OmegaConf.is_config(obj):
+        return OmegaConf.to_container(obj, resolve=True)
+    return str(obj)
+
+
+# Comprimento mínimo (s) do waveform da janela — evita erros do librosa em segmentos
+# vazios/curtos no fim do áudio (ex.: delta dos MFCC exige >= 9 frames). 0,5 s @ 16 kHz
+# = 8000 amostras ≈ 16 frames (folga sobre o n_fft padrão e a janela do delta).
+_MIN_WAVE_S = 0.5
 
 # Colunas EXATAS do Parquet (README §6.2 + ``split`` p/ o filtro participant-wise).
 PARQUET_COLUMNS: list[str] = [
@@ -262,7 +277,7 @@ class FeatureBuilder:
             },
             "tabular": {"silence_rms_threshold": self.tabular.silence_rms_threshold},
         }
-        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=_jsonable)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
 
 

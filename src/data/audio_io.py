@@ -116,9 +116,9 @@ def load_segment(
 ) -> np.ndarray:
     """Carrega o trecho ``[t0, t1)`` (s) de um ``.flac`` como waveform mono float32.
 
-    Usa ``librosa.load`` com ``offset``/``duration`` (lê só o necessário). Janelas
-    além do fim do áudio retornam o que houver (possivelmente vazio); o *padding* da
-    última janela é resolvido por :func:`pad_or_trim` na FASE 3.
+    Lê só o trecho via ``soundfile`` (seek nativo no FLAC) — rápido e sem cair no
+    ``audioread`` (lento, deprecado). Janelas além do fim do áudio retornam o que houver
+    (possivelmente vazio); o *padding* da última janela é resolvido por :func:`pad_or_trim`.
 
     Args:
         path: caminho do ``.flac`` (16 kHz mono).
@@ -129,15 +129,35 @@ def load_segment(
     Returns:
         ``np.ndarray`` 1-D float32 com as amostras do segmento.
     """
-    import librosa
+    import soundfile as sf
 
     t0 = max(0.0, float(t0))
     duration = max(0.0, float(t1) - t0)
     if duration <= 0.0:
         return np.zeros(0, dtype=np.float32)
 
-    waveform, _ = librosa.load(str(path), sr=sr, mono=True, offset=t0, duration=duration)
-    return waveform.astype(np.float32, copy=False)
+    try:
+        with sf.SoundFile(str(path)) as f:
+            file_sr = f.samplerate
+            start = int(t0 * file_sr)
+            if start >= len(f):
+                return np.zeros(0, dtype=np.float32)
+            f.seek(start)
+            y = f.read(int(duration * file_sr), dtype="float32", always_2d=False)
+    except Exception as exc:  # fallback p/ formatos que o soundfile não abrir
+        log.debug(f"soundfile falhou em {path} ({exc}); usando librosa.load")
+        import librosa
+
+        y, file_sr = librosa.load(str(path), sr=sr, mono=True, offset=t0, duration=duration)
+        return np.asarray(y, dtype=np.float32)
+
+    if y.ndim > 1:  # estéreo inesperado → mono
+        y = y.mean(axis=1)
+    if file_sr != sr:  # nossos .flac já são 16 kHz; resample só por segurança
+        import librosa
+
+        y = librosa.resample(np.asarray(y, dtype=np.float32), orig_sr=file_sr, target_sr=sr)
+    return np.asarray(y, dtype=np.float32)
 
 
 def pad_or_trim(waveform: np.ndarray, target_len: int) -> np.ndarray:
