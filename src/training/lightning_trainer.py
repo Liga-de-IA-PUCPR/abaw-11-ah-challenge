@@ -144,12 +144,20 @@ class LightningTrainer(BaseTrainer):
         log.info("=== Calibração do limiar do sigmoid na validação ===")
         val_ids, val_proba = self._infer(val_data)
         val_labels = self._labels_from_loader(val_data)
-        threshold, _ = calibrate_threshold(
-            val_proba=val_proba,
-            val_video_ids=val_ids,
-            val_video_labels=val_labels,
-            method="identity",
-        )
+        # Honra aggregation.threshold: "auto" calibra na val (max métrica); um float
+        # FIXA o limiar e pula a calibração — mesma semântica do SklearnTrainer.
+        thr_setting = self._cfg_block("aggregation").get("threshold", "auto")
+        if thr_setting == "auto":
+            threshold, _ = calibrate_threshold(
+                val_proba=val_proba,
+                val_video_ids=val_ids,
+                val_video_labels=val_labels,
+                method="identity",
+                metric=self._cfg_block("metrics").get("primary", "macro_f1"),
+            )
+        else:
+            threshold = float(thr_setting)
+            log.info(f"Limiar fixo da config: {threshold:.3f}")
         self.threshold_ = threshold
         self.results["val"] = self._evaluate(val_ids, val_proba, val_labels)
         self.results["threshold"] = threshold

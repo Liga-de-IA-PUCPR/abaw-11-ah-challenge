@@ -157,6 +157,20 @@ def _run_train(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _apply_threshold_override(cfg: DictConfig, trainer) -> None:
+    """Sobrepõe o limiar salvo no checkpoint por ``aggregation.threshold`` (se float).
+
+    Permite RE-AVALIAR/submeter com um limiar diferente SEM re-treinar: ``"auto"``
+    (default) mantém o limiar calibrado no ``fit``; um float o sobrepõe na hora.
+    Vale para as duas famílias (RF e cross_attention).
+    """
+    agg = getattr(cfg, "aggregation", None)
+    thr = agg.get("threshold", "auto") if agg is not None else "auto"
+    if thr not in (None, "auto"):
+        trainer.threshold_ = float(thr)
+        log.info(f"Limiar sobreposto pela config (sem re-treinar): {trainer.threshold_:.4f}")
+
+
 def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_dir) -> None:
     """Gera metrics.json + results.txt + plots automaticamente após CADA evaluate (FASE 5).
 
@@ -237,6 +251,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
         cfg.data.paths.output_root, family=family
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
+    _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
     split = cfg.get("split") or "val"
@@ -266,6 +281,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
         cfg.data.paths.output_root, family=family
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
+    _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
 
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")
