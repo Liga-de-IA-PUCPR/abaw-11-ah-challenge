@@ -147,7 +147,9 @@ def parse_split_file(
             rows.append(
                 {
                     "video_id": video_id,
-                    "global_ah": None if split == "test" else global_ah,
+                    # O test do BAH (split/test.txt) é o PUBLIC test e TEM rótulo —
+                    # mantemos (None só se a linha não trouxer classe).
+                    "global_ah": global_ah,
                     "full_transcript": full_transcript,
                     "split": split,
                 }
@@ -287,9 +289,9 @@ def build_video_index(cfg: DictConfig) -> list[VideoRecord]:
             pid, qid, qtype = parse_video_filename(video_id)
 
             ann = annotations.get(video_id, {})
-            # global_ah: split manda; YAML é fallback. No test, sempre None.
+            # global_ah: split manda; YAML é fallback (vale também p/ o public test).
             global_ah = row["global_ah"]
-            if global_ah is None and split != "test":
+            if global_ah is None:
                 global_ah = ann.get("global_ah")
 
             chunks, full_from_yaml = load_transcript_chunks(transcript_dir / video_id)
