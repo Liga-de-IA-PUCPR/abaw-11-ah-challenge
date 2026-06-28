@@ -64,7 +64,9 @@ class WindowSample:
     sob demanda por :func:`~src.data.audio_io.load_segment` na FASE 3 (featurização).
 
     ``label`` é o rótulo da janela (0/1) derivado da sobreposição com ``time_detailed_ah``;
-    é ``None`` no split de teste (sem rótulos).
+    é ``None`` no split de teste (sem rótulos). ``split`` e ``video_label`` viajam junto
+    (herdados do ``VideoRecord``) para que o cache Parquet (FASE 3) carregue o split
+    participant-wise e o alvo a nível de vídeo sem reconstruir o índice.
     """
 
     window_id: str  # f"{video_id}#w{idx}"
@@ -75,4 +77,6 @@ class WindowSample:
     text: str  # chunks de transcrição sobrepostos à janela (alinhado)
     label: int | None  # 0/1 via sobreposição com time_detailed_ah; None no test
     question_type: str
+    split: Literal["train", "val", "test"]  # split do vídeo (participant-wise)
+    video_label: int | None  # global_ah do vídeo (alvo de avaliação); None no test
     meta: dict = field(default_factory=dict)

@@ -44,21 +44,15 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
         ``d_text``/``d_audio``/``d_tab``.
     """
     from src.data.windowing import load_window_index
-    from src.features.audio_embedder import create_audio_embedder
-    from src.features.builder import FeatureBuilder
-    from src.features.tabular import TabularFeaturizer
-    from src.features.text_embedder import TextEmbedder
+    from src.features.builder import build_feature_components
 
     data = cfg.data
     force = bool(data.get("force", False))
 
     interim_dir = Path(data.paths.interim_dir)
-    processed_dir = Path(data.paths.processed_dir)
-    processed_dir.mkdir(parents=True, exist_ok=True)
-
-    parquet_path = processed_dir / "text_audio_windows.parquet"
-    if parquet_path.exists() and not force:
-        log.info(f"Cache encontrado: {parquet_path} (use 'data.force=true' p/ recomputar).")
+    # Mesma chave que o datasets.load_split lê (FASE 4) — fonte única do caminho.
+    parquet_path = Path(data.paths.parquet_path)
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- 1. Índice de janelas (FASE 2) -----------------------------------------
     windows_index = interim_dir / "windows_index.parquet"
@@ -70,52 +64,30 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
     windows = load_window_index(windows_index)
     log.info(f"{len(windows)} janelas carregadas de {windows_index}.")
 
-    # --- 2. Embedders (FASE 3) — deep honram o device --------------------------
-    text_embedder = TextEmbedder(
-        model_name=cfg.text_embedder.model_name,  # roberta-emotion default
-        pooling=cfg.text_embedder.pooling,
-        device=device,
-    )
-    audio_embedder = create_audio_embedder(  # factory: librosa | wav2vec2 | hubert
-        backend=cfg.audio_embedder.backend,
-        model_name=cfg.audio_embedder.get("model_name", None),
-        feature_set=cfg.audio_embedder.get("feature_set", None),
-        n_mfcc=cfg.audio_embedder.get("n_mfcc", 20),
-        agg_stats=cfg.audio_embedder.get("agg_stats", None),
-        sample_rate=cfg.data.audio.sample_rate,
-        batch_size=cfg.audio_embedder.get("batch_size", 8),
-        device=device,
-    )
-    # TabularFeaturizer fitted SÓ no treino (vocabulários sem vazamento).
-    # NB: ``split`` NÃO é campo de ``WindowSample`` (README §6.1) e NÃO está em
-    # ``record.meta`` (demográficos). Por isso o ``WindowGenerator`` (FASE 2) injeta o
-    # split do ``VideoRecord`` no ``meta`` da janela — ``meta={**record.meta,
-    # "split": record.split}`` — de modo que o filtro abaixo de fato selecione o treino
-    # (sem essa injeção, ``w.meta.get("split")`` seria sempre ``None`` → zero janelas).
-    train_windows = [w for w in windows if w.meta.get("split") == "train"]
-    tabular = TabularFeaturizer.from_config(cfg.data.tabular).fit(train_windows)
+    # Cache: pula a featurização cara (carrega RoBERTa/wav2vec2) se o Parquet já existe.
+    if parquet_path.exists() and not force:
+        log.info(f"Cache encontrado: {parquet_path} (use 'data.force=true' p/ recomputar).")
+        return {"n_windows": len(windows), "parquet_path": str(parquet_path), "cached": True}
 
+    # --- 2. Componentes da FASE 3 (embedders deep honram device; tabular fitted no treino) -
+    # ``split`` é campo de WindowSample (herdado do VideoRecord via índice); o tabular é
+    # fitted SÓ nas janelas de treino (vocabulários sem vazamento entre splits).
+    train_windows = [w for w in windows if w.split == "train"]
+    builder = build_feature_components(cfg, train_windows)
     log.info(
-        f"Embedders: text='{text_embedder.name}'(d={text_embedder.dim}) · "
-        f"audio='{audio_embedder.name}'(d={audio_embedder.dim}) · "
-        f"tabular(d={tabular.dim}) · device={device}."
+        f"Embedders: text d={builder.text_embedder.dim} · "
+        f"audio='{builder.audio_embedder.name}' d={builder.audio_embedder.dim} · "
+        f"tabular d={builder.tabular.dim} · device={device}."
     )
 
-    # --- 3. FeatureBuilder → Parquet (README §6.2) -----------------------------
-    builder = FeatureBuilder(
-        text_embedder=text_embedder,
-        audio_embedder=audio_embedder,
-        tabular=tabular,
-        audio_dir=interim_dir / "Audio",
-        batch_size=cfg.data.get("featurize_batch_size", 32),
-    )
+    # --- 3. FeatureBuilder → Parquet único (README §6.2; carrega os waveforms) --
     builder.build(windows, out_path=parquet_path)
     log.info(f"Parquet de features escrito: {parquet_path}.")
 
     return {
         "n_windows": len(windows),
         "parquet_path": str(parquet_path),
-        "d_text": text_embedder.dim,
-        "d_audio": audio_embedder.dim,
-        "d_tab": tabular.dim,
+        "d_text": builder.text_embedder.dim,
+        "d_audio": builder.audio_embedder.dim,
+        "d_tab": builder.tabular.dim,
     }

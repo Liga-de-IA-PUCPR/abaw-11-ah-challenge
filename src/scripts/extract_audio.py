@@ -1,15 +1,15 @@
 """CLI de extração de áudio do BAH (mp4 → flac 16 kHz mono).
 
 Reusa a branch `matheus`: varre ``data/raw/data/Videos`` em busca de ``*.mp4`` e extrai a
-faixa de áudio para ``data/interim/Audio/Videos`` preservando a estrutura de pastas. A
-extração propriamente dita delega para :func:`src.data.audio_io.extract_audio` (ffmpeg
-``-vn -ar 16000 -ac 1``, com fallback torchaudio), de modo que esta CLI e o pipeline
-Hydra (FASE 6) compartilham a mesma lógica.
+faixa de áudio para ``data/interim/Audio/<pid>/<stem>.flac`` — **mesma convenção do
+``preprocess``** (FASE 6), de modo que o cache de áudio seja compartilhado entre a CLI
+avulsa e o pipeline Hydra. A extração delega para :func:`src.data.audio_io.extract_audio`
+(ffmpeg ``-vn -ar 16000 -ac 1``, com fallback torchaudio).
 
 Uso (ver README §10):
     python -m src.scripts.extract_audio
     python -m src.scripts.extract_audio \
-        --source data/raw/data/Videos --out data/interim/Audio/Videos
+        --source data/raw/data/Videos --out data/interim/Audio
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ from src.logger import get_logger
 
 log = get_logger("scripts.extract_audio")
 
-# Defaults idênticos ao matheus (layout real em disco — README §2).
+# Layout real em disco (README §2). OUTPUT_ROOT casa com o preprocess
+# (``data/interim/Audio/<pid>/<stem>.flac``) p/ cache compartilhado.
 SOURCE_ROOT = Path("data/raw/data/Videos")
-OUTPUT_ROOT = Path("data/interim/Audio/Videos")
+OUTPUT_ROOT = Path("data/interim/Audio")
 
 
 def run(
@@ -49,7 +50,9 @@ def run(
     processed = 0
     for mp4_path in mp4_files:
         relative = mp4_path.relative_to(source_root)
-        flac_path = (output_root / relative).with_suffix(".flac")
+        # Mesma convenção do preprocess: data/interim/Audio/<pid>/<stem>.flac
+        pid = relative.parts[0]
+        flac_path = output_root / pid / f"{mp4_path.stem}.flac"
         try:
             extract_audio(
                 mp4_path,

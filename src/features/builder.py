@@ -1,23 +1,22 @@
 """FeatureBuilder: escreve o cache de features em **Parquet, 1 linha por janela**.
 
-Produz o Parquet canônico do README §6.2 (Polars/PyArrow), com as colunas EXATAS:
+Produz o Parquet canônico do README §6.2 (Polars/PyArrow), com as colunas:
 
     id · window_idx · t0 · t1 · participant_id · question_type
     · audio_emb (list<float32>[d_audio]) · text_emb (list<float32>[d_text])
-    · tabular (list<float32>[d_tab]) · label (int8) · video_label (int8)
+    · tabular (list<float32>[d_tab]) · label (int8) · video_label (int8) · split (str)
 
-- **RF** lê o Parquet e achata ``X = [audio_emb ‖ text_emb ‖ tabular]`` por janela.
+- **RF** (sklearn) lê o Parquet e achata ``X = [audio_emb ‖ text_emb ‖ tabular]``.
 - **Cross-attention** agrupa por ``id`` → sequência ``(T, d_audio)``/``(T, d_text)``.
+- O split participant-wise viaja na coluna ``split`` — ``datasets.load_split`` filtra por ela.
 
 Fonte dos dados de janela
 -------------------------
-``build`` consome a lista de ``WindowSample`` do split (FASE 2) + os ``waveforms``
-correspondentes (cortados em ``[t0, t1]`` por ``audio_io.load_segment``) + os
-``VideoRecord`` (fonte de ``global_ah`` → ``video_label``). ``global_ah`` é campo de
-``VideoRecord`` — **não** existe em ``WindowSample.meta``.
-
-Cache versionado por HASH da config dos embedders: trocar o modelo de texto, o
-``backend``/``feature_set`` de áudio gera um Parquet novo (não recomputa o antigo).
+``build`` consome a lista de ``WindowSample`` do índice de janelas (FASE 2) e **carrega
+internamente** o waveform de cada janela, cortado em ``[t0, t1]`` de
+``audio_dir/<pid>/<stem>.flac`` (mesma convenção do ``preprocess``) via
+:func:`~src.data.audio_io.load_segment`. O ``video_label`` (= ``global_ah``) e o ``split``
+já vêm no próprio ``WindowSample`` (herdados do ``VideoRecord`` na indexação).
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from src.data.audio_io import load_segment
 from src.data.schema import VideoRecord, WindowSample
 from src.features.audio_embedder import AudioEmbedder
 from src.features.tabular import TabularFeaturizer
@@ -37,7 +37,11 @@ from src.logger import get_logger
 
 log = get_logger("features.builder")
 
-# Colunas EXATAS do README §6.2 (ordem canônica do Parquet).
+# Comprimento mínimo (s) do waveform da janela — evita erro do librosa em segmentos
+# vazios/curtíssimos no fim do áudio. 0,25 s @ 16 kHz = 4000 amostras (> n_fft padrão).
+_MIN_WAVE_S = 0.25
+
+# Colunas EXATAS do Parquet (README §6.2 + ``split`` p/ o filtro participant-wise).
 PARQUET_COLUMNS: list[str] = [
     "id",
     "window_idx",
@@ -50,16 +54,18 @@ PARQUET_COLUMNS: list[str] = [
     "tabular",
     "label",
     "video_label",
+    "split",
 ]
 
 
 class FeatureBuilder:
-    """Monta e cacheia o Parquet de features (1 linha por janela, README §6.2).
+    """Monta o Parquet de features (1 linha por janela, README §6.2).
 
     Attributes:
-        cache_dir: Diretório de cache (``data/processed/``).
         text_embedder / audio_embedder / tabular: extratores configurados.
-        cfg_hash: hash da config dos embedders (versiona o arquivo).
+        audio_dir: raiz dos ``.flac`` extraídos (``data/interim/Audio``).
+        sample_rate: taxa dos ``.flac`` (= ``data.audio.sample_rate``).
+        cfg_hash: hash determinístico da config dos embedders (vai no sidecar JSON).
     """
 
     def __init__(
@@ -67,7 +73,8 @@ class FeatureBuilder:
         text_embedder: TextEmbedder,
         audio_embedder: AudioEmbedder,
         tabular: TabularFeaturizer,
-        cache_dir: str | Path = "data/processed",
+        audio_dir: str | Path,
+        sample_rate: int = 16000,
     ) -> None:
         """Inicializa o FeatureBuilder.
 
@@ -75,13 +82,15 @@ class FeatureBuilder:
             text_embedder: :class:`TextEmbedder` configurado.
             audio_embedder: :class:`AudioEmbedder` (factory) configurado.
             tabular: :class:`TabularFeaturizer` (deve estar fitted no train).
-            cache_dir: Onde salvar/carregar os Parquets.
+            audio_dir: raiz dos ``.flac``; o waveform de cada janela é cortado de
+                ``audio_dir/<pid>/<stem>.flac`` em ``[t0, t1]``.
+            sample_rate: taxa dos ``.flac`` (= ``data.audio.sample_rate``).
         """
         self.text_embedder = text_embedder
         self.audio_embedder = audio_embedder
         self.tabular = tabular
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir = Path(audio_dir)
+        self.sample_rate = int(sample_rate)
         self.cfg_hash = self._config_hash()
 
     # =========================================================================
@@ -91,47 +100,48 @@ class FeatureBuilder:
     def build(
         self,
         windows: list[WindowSample],
-        split: str,
-        waveforms: list[np.ndarray],
+        out_path: str | Path,
         records: list[VideoRecord] | None = None,
     ) -> pl.DataFrame:
-        """Constrói (ou carrega do cache) o Parquet de features de um split.
+        """Constrói o Parquet único de features (todas as janelas, todos os splits).
 
-        Escreve UMA linha por janela com as colunas do README §6.2: os embeddings
-        ficam como ``list<float32>`` (não achatados) para servir aos dois modelos.
+        Carrega o waveform de cada janela (cortado em ``[t0, t1]``), extrai
+        ``text_emb``/``audio_emb``/``tabular`` e escreve UMA linha por janela com as
+        colunas do README §6.2 + ``split``. O ``video_label`` vem do próprio
+        ``WindowSample`` (``records`` é fallback opcional por ``video_id``).
 
         Args:
-            windows: ``WindowSample`` do split (FASE 2), na ordem das janelas.
-            split: "train" | "val" | "test".
-            waveforms: Waveforms da janela (cortados em ``[t0, t1]``), alinhados 1:1
-                a ``windows`` — fonte do áudio/prosódia (``WindowSample`` não carrega
-                waveform).
-            records: ``VideoRecord`` do split, fonte de ``global_ah`` → ``video_label``.
-                ``None`` no test (sem rótulos).
+            windows: ``WindowSample`` (FASE 2), na ordem das janelas.
+            out_path: destino do Parquet (``cfg.data.paths.parquet_path``).
+            records: opcional — fallback de ``video_label`` (``global_ah``) por vídeo.
 
         Returns:
-            ``polars.DataFrame`` (também persistido em ``data/processed/*.parquet``).
+            ``polars.DataFrame`` escrito em ``out_path``.
         """
-        out_path = self._path(split)
-        if out_path.exists():
-            log.info(f"Cache Parquet encontrado para split={split}: {out_path.name}")
-            return self.load(split)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         n = len(windows)
-        log.info(f"Construindo features para split={split} ({n} janelas)...")
+        log.info(f"Construindo features para {n} janelas → {out_path.name}...")
 
-        # --- embeddings + tabular -------------------------------------------
+        # --- waveforms (cortados em [t0, t1] do .flac do vídeo) ----------------
+        waveforms = self._load_waveforms(windows)
+
+        # --- embeddings + tabular ----------------------------------------------
         text_emb = self.text_embedder.extract([w.text for w in windows])  # (n, d_text)
         audio_emb = self.audio_embedder.extract(waveforms)  # (n, d_audio)
         tab = self.tabular.transform(windows, waveforms)  # (n, d_tab)
 
-        # --- video_label por vídeo (global_ah dos VideoRecord) --------------
-        # global_ah é campo de VideoRecord — NÃO existe em WindowSample.meta.
-        video_labels: dict[str, int] = {
-            rec.video_id: int(rec.global_ah) for rec in (records or []) if rec.global_ah is not None
+        # --- video_label: do WindowSample; fallback nos VideoRecord ------------
+        rec_labels: dict[str, int] = {
+            r.video_id: int(r.global_ah) for r in (records or []) if r.global_ah is not None
         }
 
-        # --- monta 1 linha por janela (README §6.2) -------------------------
+        def _vlabel(w: WindowSample) -> int:
+            if w.video_label is not None:
+                return int(w.video_label)
+            return rec_labels.get(w.video_id, -1)
+
         df = pl.DataFrame(
             {
                 "id": [w.video_id for w in windows],
@@ -144,7 +154,8 @@ class FeatureBuilder:
                 "text_emb": [row.tolist() for row in text_emb],
                 "tabular": [row.tolist() for row in tab],
                 "label": [int(w.label) if w.label is not None else -1 for w in windows],
-                "video_label": [video_labels.get(w.video_id, -1) for w in windows],
+                "video_label": [_vlabel(w) for w in windows],
+                "split": [w.split for w in windows],
             },
             schema_overrides={
                 "window_idx": pl.Int32,
@@ -156,7 +167,7 @@ class FeatureBuilder:
         ).select(PARQUET_COLUMNS)
 
         df.write_parquet(out_path)
-        self._save_meta(split, names=self._all_feature_names())
+        self._save_sidecar(out_path)
         log.info(
             f"Parquet salvo: {out_path.name} | {n} janelas, "
             f"d_text={self.text_embedder.dim}, d_audio={self.audio_embedder.dim}, "
@@ -165,22 +176,45 @@ class FeatureBuilder:
         return df
 
     # =========================================================================
-    # Load
+    # Áudio por janela
     # =========================================================================
 
-    def load(self, split: str) -> pl.DataFrame:
-        """Carrega o Parquet de um split do cache (mesmo ``cfg_hash``)."""
-        path = self._path(split)
-        df = pl.read_parquet(path)
-        log.info(f"Parquet carregado: {path.name} ({df.height} janelas)")
+    def _load_waveforms(self, windows: list[WindowSample]) -> list[np.ndarray]:
+        """Corta o waveform de cada janela de ``audio_dir/<pid>/<stem>.flac`` em ``[t0, t1]``.
+
+        Mesma convenção de caminho do ``preprocess`` (que extraiu os ``.flac``). Janelas
+        com áudio ausente ou curto demais recebem silêncio mínimo (evita erro do librosa).
+        """
+        waveforms: list[np.ndarray] = []
+        min_len = int(self.sample_rate * _MIN_WAVE_S)
+        missing = 0
+        for w in windows:
+            stem = Path(w.video_id).stem  # <file>_Video
+            flac = self.audio_dir / w.participant_id / f"{stem}.flac"
+            if flac.exists():
+                seg = load_segment(flac, w.t0, w.t1, sr=self.sample_rate)
+            else:
+                seg = np.zeros(0, dtype=np.float32)
+                missing += 1
+            if seg.size < min_len:  # pad p/ um piso mínimo (silêncio à direita)
+                padded = np.zeros(min_len, dtype=np.float32)
+                padded[: seg.size] = seg
+                seg = padded
+            waveforms.append(seg)
+        if missing:
+            log.warning(f"{missing}/{len(windows)} janelas sem .flac sob {self.audio_dir}")
+        return waveforms
+
+    # =========================================================================
+    # Load / sidecar / cache key
+    # =========================================================================
+
+    @staticmethod
+    def load(out_path: str | Path) -> pl.DataFrame:
+        """Lê o Parquet de features escrito por :meth:`build`."""
+        df = pl.read_parquet(out_path)
+        log.info(f"Parquet carregado: {Path(out_path).name} ({df.height} janelas)")
         return df
-
-    # =========================================================================
-    # Cache key / paths
-    # =========================================================================
-
-    def _path(self, split: str) -> Path:
-        return self.cache_dir / f"text_audio_windows_{split}_{self.cfg_hash}.parquet"
 
     def _all_feature_names(self) -> dict[str, list[str]]:
         return {
@@ -189,12 +223,14 @@ class FeatureBuilder:
             "tabular": self.tabular.feature_names(),
         }
 
-    def _save_meta(self, split: str, names: dict[str, list[str]]) -> None:
-        meta_path = self.cache_dir / f"text_audio_windows_{split}_{self.cfg_hash}.json"
+    def _save_sidecar(self, out_path: str | Path) -> None:
+        """Grava um JSON ao lado do Parquet com ``feature_names``, ``dims`` e ``cfg_hash``."""
+        meta_path = Path(out_path).with_suffix(".json")
         with meta_path.open("w", encoding="utf-8") as f:
             json.dump(
                 {
-                    "feature_names": names,
+                    "cfg_hash": self.cfg_hash,
+                    "feature_names": self._all_feature_names(),
                     "dims": {
                         "d_text": self.text_embedder.dim,
                         "d_audio": self.audio_embedder.dim,
@@ -207,7 +243,7 @@ class FeatureBuilder:
             )
 
     def _config_hash(self) -> str:
-        """Hash determinístico da config dos embedders (versiona o Parquet)."""
+        """Hash determinístico da config dos embedders (informativo, vai no sidecar)."""
         payload = {
             "text": {
                 "model_name": self.text_embedder.model_name,
@@ -241,18 +277,16 @@ def build_feature_components(
 ) -> FeatureBuilder:
     """Constrói o ``FeatureBuilder`` (+ os três extratores) a partir da Config Hydra.
 
-    Centraliza o mapeamento ``cfg`` (README §7) → componentes da FASE 3, para que a
-    orquestração (FASE 6: ``mode=featurize``) tenha uma única forma de instanciar
-    tudo de modo consistente (mesmo ``cfg_hash``). O ``TabularFeaturizer`` é **fitted
-    nas janelas de treino** (vocabulários sem vazamento) antes de qualquer ``build``.
+    Centraliza o mapeamento ``cfg`` (README §7) → componentes da FASE 3. O
+    ``TabularFeaturizer`` é **fitted nas janelas de treino** (vocabulários sem vazamento)
+    antes de qualquer ``build``. Os embedders deep honram ``cfg.device`` (CPU/MPS/CUDA).
 
     Args:
-        cfg: Config do experimento (grupos ``text_embedder``, ``audio_embedder``,
-            ``data``). Ver ``src/conf/schema.py`` (dataclasses + ConfigStore).
+        cfg: Config do experimento (grupos ``text_embedder``, ``audio_embedder``, ``data``).
         train_windows: ``WindowSample`` do split de treino p/ o fit do tabular.
 
     Returns:
-        ``FeatureBuilder`` pronto para ``build(windows, split, waveforms, records)``.
+        ``FeatureBuilder`` pronto para ``build(windows, out_path)``.
     """
     from src.features.audio_embedder import create_audio_embedder
 
@@ -261,7 +295,7 @@ def build_feature_components(
         pooling=cfg.text_embedder.pooling,
         max_length=cfg.text_embedder.max_length,
         batch_size=cfg.text_embedder.batch_size,
-        normalize=cfg.text_embedder.normalize,
+        normalize=cfg.text_embedder.get("normalize", True),
         device=cfg.device,
     )
     audio_embedder = create_audio_embedder(
@@ -281,5 +315,6 @@ def build_feature_components(
         text_embedder=text_embedder,
         audio_embedder=audio_embedder,
         tabular=tabular,
-        cache_dir=cfg.data.paths.processed_dir,
+        audio_dir=Path(cfg.data.paths.interim_dir) / "Audio",
+        sample_rate=cfg.data.audio.sample_rate,
     )

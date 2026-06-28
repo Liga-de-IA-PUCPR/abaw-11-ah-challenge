@@ -136,8 +136,9 @@ class WindowGenerator:
                     text=text,
                     label=label,
                     question_type=record.question_type,
-                    # meta = demográficos do participante. NÃO contém waveform
-                    # (cortado lazy na FASE 3) nem global_ah (campo de VideoRecord).
+                    split=record.split,
+                    video_label=record.global_ah,  # alvo a nível de vídeo (None no test)
+                    # meta = só demográficos do participante (sem waveform/global_ah).
                     meta=record.meta,
                 )
             )
@@ -232,10 +233,19 @@ def save_window_index(windows: list[WindowSample], path: str | Path) -> Path:
             "text": [w.text for w in windows],
             # -1 quando label é None (test) → mapeado de volta para None na leitura.
             "label": [int(w.label) if w.label is not None else -1 for w in windows],
+            "video_label": [
+                int(w.video_label) if w.video_label is not None else -1 for w in windows
+            ],
             "question_type": [w.question_type for w in windows],
+            "split": [w.split for w in windows],
             "meta": [json.dumps(w.meta or {}, ensure_ascii=False) for w in windows],
         },
-        schema_overrides={"t0": pl.Float32, "t1": pl.Float32, "label": pl.Int8},
+        schema_overrides={
+            "t0": pl.Float32,
+            "t1": pl.Float32,
+            "label": pl.Int8,
+            "video_label": pl.Int8,
+        },
     )
     df.write_parquet(path)
     log.info(f"Índice de janelas salvo: {path} ({df.height} janelas)")
@@ -258,6 +268,7 @@ def load_window_index(path: str | Path) -> list[WindowSample]:
     windows: list[WindowSample] = []
     for row in df.iter_rows(named=True):
         label = row["label"]
+        vlabel = row["video_label"]
         windows.append(
             WindowSample(
                 window_id=row["window_id"],
@@ -268,6 +279,8 @@ def load_window_index(path: str | Path) -> list[WindowSample]:
                 text=row["text"] or "",
                 label=None if label is None or int(label) < 0 else int(label),
                 question_type=row["question_type"],
+                split=row["split"],
+                video_label=None if vlabel is None or int(vlabel) < 0 else int(vlabel),
                 meta=json.loads(row["meta"]) if row["meta"] else {},
             )
         )

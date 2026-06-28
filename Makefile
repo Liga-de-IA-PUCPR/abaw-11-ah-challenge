@@ -75,7 +75,7 @@ help:
 	@echo "    extract-audio    mp4 -> flac 16 kHz mono (src/scripts/extract_audio.py)"
 	@echo "    preprocess       índice de vídeos + janela deslizante (mode=preprocess)"
 	@echo "    featurize        janelas -> embeddings -> Parquet (mode=featurize, DEVICE=$(DEVICE))"
-	@echo "    data             extract-audio + preprocess + featurize (prep completo)"
+	@echo "    data             preprocess (extrai áudio + janelas) + featurize (prep completo)"
 	@echo ""
 	@echo "  Treino / avaliação (FASE 4/5):"
 	@echo "    train            baseline RandomForest (CPU) [== train-rf]"
@@ -128,7 +128,7 @@ preprocess:
 featurize:
 	$(PY) $(MAIN) mode=featurize device=$(DEVICE) $(ARGS)
 
-data: extract-audio preprocess featurize
+data: preprocess featurize
 	@echo "✓ Dados prontos: áudio extraído, janelas indexadas e features em data/processed/"
 
 # ----------------------------------------------------------------------------
