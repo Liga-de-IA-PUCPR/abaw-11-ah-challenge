@@ -80,7 +80,12 @@ class RandomForestModel(BaseModel):
         """
         X = np.asarray(X, dtype=np.float32)
         proba = self.clf.predict_proba(X)
-        return proba[:, self._positive_column()].astype(np.float32)
+        classes = list(self.clf.classes_)
+        if 1 in classes:
+            return proba[:, classes.index(1)].astype(np.float32)
+        # Fold de treino com classe única (sem positivos): P(A/H)=0 (ou 1 se a única
+        # classe presente for a positiva). Evita IndexError e preserva o shape (n,).
+        return np.full(X.shape[0], 1.0 if classes == [1] else 0.0, dtype=np.float32)
 
     def feature_importances(self) -> np.ndarray | None:
         """Importâncias de Gini por feature (alinhadas a ``feature_names``)."""
@@ -137,10 +142,3 @@ class RandomForestModel(BaseModel):
             random_state=config.get("random_state", 42),
         )
         return cls(clf=clf, feature_names=config.get("feature_names"))
-
-    def _positive_column(self) -> int:
-        """Índice da coluna correspondente à classe 1 em ``predict_proba``."""
-        if self.classes_ is None:
-            return 1
-        idx = np.where(self.classes_ == 1)[0]
-        return int(idx[0]) if len(idx) else 1
