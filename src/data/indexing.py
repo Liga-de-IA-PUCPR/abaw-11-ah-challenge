@@ -385,15 +385,43 @@ def _infer_duration(chunks: list[dict[str, Any]], ann: dict[str, Any]) -> float:
     return 0.0
 
 
+def _ts_to_seconds(x: Any) -> float | None:
+    """Converte um timestamp para segundos.
+
+    Aceita número (já em segundos) ou string ``HH:MM:SS.mmm`` / ``MM:SS.mmm`` /
+    ``SS.mmm`` — formato real do ``time_detailed_ah`` no BAH (ex.: ``'00:00:02.200'``).
+    Retorna ``None`` se não parsear.
+    """
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        parts = [float(p) for p in str(x).strip().split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    if len(parts) == 1:
+        return parts[0]
+    return None
+
+
 def _normalize_intervals(value: Any) -> list[tuple[float, float]]:
-    """Normaliza ``time_detailed_ah`` para ``list[tuple[float, float]]``."""
+    """Normaliza ``time_detailed_ah`` para ``list[tuple[float, float]]`` em segundos.
+
+    No BAH os limites vêm como strings ``HH:MM:SS.mmm`` (ex.: ``'00:00:02.200'``) —
+    convertidas para segundos por :func:`_ts_to_seconds`.
+    """
     if not value:
         return []
     out: list[tuple[float, float]] = []
     for item in value:
         try:
-            start, end = float(item[0]), float(item[1])
-        except (TypeError, ValueError, IndexError):
+            start, end = _ts_to_seconds(item[0]), _ts_to_seconds(item[1])
+        except (TypeError, IndexError):
+            continue
+        if start is None or end is None:
             continue
         if end >= start:
             out.append((start, end))
