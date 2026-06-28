@@ -138,6 +138,12 @@ def _run_train(cfg: DictConfig, device) -> int:
     train_data = _as_loader(cfg, train_data, family, "train")
     val_data = _as_loader(cfg, val_data, family, "val")
 
+    # Resolve o run dir ANTES do fit: o ModelCheckpoint do Lightning grava o .ckpt
+    # DENTRO deste dir (junto do trainer_state.json), então evaluate/submit resolvem
+    # UM só diretório. O SklearnTrainer ignora self.output_dir.
+    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
+    trainer.output_dir = str(out_dir)
+
     result = trainer.fit(train_data, val_data)
     log.info(
         f"Treino concluído (family={family}). "
@@ -146,7 +152,6 @@ def _run_train(cfg: DictConfig, device) -> int:
         f"limiar={result.get('threshold', 0.5):.4f}."
     )
 
-    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
     trainer.save(out_dir)
     log.info(f"Checkpoint salvo em: {out_dir}")
     return 0
@@ -226,9 +231,11 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     from src.training.factory import load_trainer
 
     _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint(output_root) — UM argumento (FASE 5); varre as duas
-    # famílias (bundle.joblib | *.ckpt) sob a raiz e devolve o mais recente.
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(cfg.data.paths.output_root)
+    # resolve_latest_checkpoint filtra pela família (FASE 5): só os artefatos do
+    # modelo atual (model.joblib p/ RF | *.ckpt p/ neural) → devolve o mais recente.
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
+        cfg.data.paths.output_root, family=family
+    )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
@@ -254,8 +261,10 @@ def _run_submit(cfg: DictConfig, device) -> int:
     from src.training.factory import load_trainer
 
     _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint(output_root) — UM argumento (FASE 5).
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(cfg.data.paths.output_root)
+    # resolve_latest_checkpoint filtra pela família do modelo atual (FASE 5).
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
+        cfg.data.paths.output_root, family=family
+    )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
 
     split = cfg.get("split") or "test"

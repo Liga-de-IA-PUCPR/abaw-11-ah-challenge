@@ -50,6 +50,9 @@ class LightningTrainer(BaseTrainer):
         self._trainer = None
         self._ckpt_path: str | None = None
         self._ckpt_cb = None
+        # Definido por main._run_train ANTES do fit → o ModelCheckpoint grava o .ckpt
+        # aqui (junto do trainer_state.json), unificando o run dir p/ evaluate/submit.
+        self.output_dir: str | None = None
 
     def _cfg_block(self, name: str) -> dict[str, Any]:
         block = getattr(self.config, name, None)
@@ -90,7 +93,11 @@ class LightningTrainer(BaseTrainer):
             save_dir=out_root,
             log_model=True,
         )
+        # dirpath = <run_dir>/checkpoints → o .ckpt fica no MESMO run dir do
+        # trainer_state.json (resolve_latest_checkpoint acha os dois juntos).
+        ckpt_dir = str(Path(self.output_dir) / "checkpoints") if self.output_dir else None
         ckpt = ModelCheckpoint(
+            dirpath=ckpt_dir,
             monitor="val_loss",
             mode="min",
             save_top_k=1,
@@ -210,7 +217,16 @@ class LightningTrainer(BaseTrainer):
         state = json.loads((Path(out_dir) / "trainer_state.json").read_text())
         trainer = cls(model=model, config=config)
         trainer.threshold_ = state.get("threshold")
-        trainer._ckpt_path = state.get("ckpt_path")
+        trainer.output_dir = str(out_dir)
+        # ckpt_path do estado; se sumiu (run dir movido), procura o .ckpt DENTRO do
+        # próprio run dir → checkpoint auto-contido e portátil.
+        ckpt_path = state.get("ckpt_path")
+        if not ckpt_path or not Path(ckpt_path).exists():
+            cands = sorted(Path(out_dir).glob("checkpoints/*.ckpt")) + sorted(
+                Path(out_dir).glob("*.ckpt")
+            )
+            ckpt_path = str(cands[-1]) if cands else ckpt_path
+        trainer._ckpt_path = ckpt_path
         # Restaura as dims treinadas p/ o módulo casar com os pesos do ckpt, e monta
         # um L.Trainer leve (sem logger/callbacks) p/ inferência (evaluate/predict).
         if state.get("dim_a") and state.get("dim_b"):

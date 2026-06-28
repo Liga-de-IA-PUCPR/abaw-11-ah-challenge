@@ -253,40 +253,47 @@ def resolve_output_dir(
     return Path(output_root) / model_name / ts
 
 
-def resolve_latest_checkpoint(output_root: str | Path) -> Path:
+def resolve_latest_checkpoint(output_root: str | Path, family: str | None = None) -> Path:
     """Localiza o artefato treinado mais recente sob ``output_root``.
 
-    Considera AS DUAS famílias: ``*/*/bundle.joblib`` (RF) e ``*/*/**/*.ckpt``
-    (Lightning). Devolve o de modificação mais recente. Usado pela CLI (FASE 6)
+    Reconhece as duas famílias: ``*/*/model.joblib`` (RF) e
+    ``*/*/[checkpoints/]*.ckpt`` (Lightning). Quando ``family`` é dado, considera
+    SÓ os artefatos daquela família — assim ``evaluate +experiment=cross_attention``
+    nunca cai num run RF mais recente (e vice-versa). Usado pela CLI (FASE 6)
     quando o checkpoint é omitido em ``evaluate`` / ``submit``.
 
     Args:
         output_root: Raiz dos outputs (ex.: "outputs").
+        family: ``"sklearn"`` | ``"lightning"`` p/ filtrar; ``None`` = qualquer uma.
 
     Returns:
         ``Path`` do **diretório do run** mais recente (o que ``load_trainer`` espera como
         ``out_dir``): contém ``model.joblib`` (RF) ou ``*.ckpt`` (Lightning).
 
     Raises:
-        FileNotFoundError: Se nenhum artefato existir sob ``output_root``.
+        FileNotFoundError: Se nenhum artefato (da família pedida) existir sob ``output_root``.
     """
     root = Path(output_root)
+    want_rf = family in (None, "sklearn")
+    want_neural = family in (None, "lightning")
     # (mtime, run_dir) por artefato reconhecido — run_dir é o passado a load_trainer.
     found: list[tuple[float, Path]] = []
-    for f in root.glob("*/*/model.joblib"):  # RF (SklearnTrainer.save)
-        found.append((f.stat().st_mtime, f.parent))
-    for f in root.glob("*/*/*.ckpt"):  # Lightning (ckpt na raiz do run)
-        found.append((f.stat().st_mtime, f.parent))
-    for f in root.glob("*/*/checkpoints/*.ckpt"):  # Lightning (subpasta checkpoints/)
-        found.append((f.stat().st_mtime, f.parent.parent))
+    if want_rf:
+        for f in root.glob("*/*/model.joblib"):  # RF (SklearnTrainer.save)
+            found.append((f.stat().st_mtime, f.parent))
+    if want_neural:
+        for f in root.glob("*/*/*.ckpt"):  # Lightning (ckpt na raiz do run)
+            found.append((f.stat().st_mtime, f.parent))
+        for f in root.glob("*/*/checkpoints/*.ckpt"):  # Lightning (subpasta checkpoints/)
+            found.append((f.stat().st_mtime, f.parent.parent))
     if not found:
         raise FileNotFoundError(
-            f"Nenhum checkpoint (model.joblib | *.ckpt) encontrado sob {root}. "
-            "Rode 'python main.py' (RF) ou '+experiment=cross_attention' antes, "
-            "ou passe checkpoint=<path>."
+            f"Nenhum checkpoint (family={family or 'qualquer'}: model.joblib | *.ckpt) "
+            f"encontrado sob {root}. Rode 'python main.py' (RF) ou "
+            "'+experiment=cross_attention' (neural) antes, ou passe checkpoint=<path>."
         )
     run_dir = max(found, key=lambda x: x[0])[1]
-    log.info(f"Checkpoint mais recente: {run_dir}")
+    log.info(f"Checkpoint mais recente (family={family or 'qualquer'}): {run_dir}")
     return run_dir
 
 
