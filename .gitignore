@@ -239,3 +239,6 @@ __pycache__/
 *.ckpt
 *.joblib
 .DS_Store
+
+# Pasta docs/ mantida só localmente, fora do repo (ex.: plano FASE_0..6 restaurado).
+docs/
