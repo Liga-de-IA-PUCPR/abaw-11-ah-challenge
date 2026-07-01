@@ -4,12 +4,15 @@ from torch import nn, optim
 from evaluation.metrics import ClassificationMetrics
 
 
-class CrossAttentionFusionModel(nn.Module):
+class BidirectionalCrossAttentionFusionModel(nn.Module):
     def __init__(self, dim_a, dim_b, common_dim=512, num_heads=4, num_classes=1):
         super().__init__()
         self.proj_a = nn.Linear(dim_a, common_dim)
         self.proj_b = nn.Linear(dim_b, common_dim)
-        self.cross_attn = nn.MultiheadAttention(
+        self.cross_attn_a = nn.MultiheadAttention(
+            embed_dim=common_dim, num_heads=num_heads, batch_first=True
+        )
+        self.cross_attn_b = nn.MultiheadAttention(
             embed_dim=common_dim, num_heads=num_heads, batch_first=True
         )
         self.norm = nn.LayerNorm(common_dim)
@@ -24,13 +27,19 @@ class CrossAttentionFusionModel(nn.Module):
         # feat_a: (B, T1, D1), feat_b: (B, T2, D2)
         feat_a_proj = self.proj_a(feat_a)
         feat_b_proj = self.proj_b(feat_b)
-        attn_out, _ = self.cross_attn(feat_a_proj, feat_b_proj, feat_b_proj)
-        fused = self.norm(feat_a + attn_out)
+        attn_out_a, _ = self.cross_attn_a(feat_a_proj, feat_b_proj, feat_b_proj)
+        attn_out_b, _ = self.cross_attn_b(feat_b_proj, feat_a_proj, feat_a_proj)
+
+        fused_a = self.norm(feat_a_proj + attn_out_a)
+        fused_b = self.norm(feat_b_proj + attn_out_b)
+
+        fused = self.norm(fused_a + fused_b)
+
         pooled = self.pool(fused.transpose(1, 2)).squeeze(-1)
         return self.classifier(pooled)
 
 
-class CrossAttention(L.LightningModule):
+class BidirectionalCrossAttention(L.LightningModule):
     def __init__(self, cross_attention, lr: float = 1e-3):
         super().__init__()
         self.save_hyperparameters(ignore=["cross_attention"])
