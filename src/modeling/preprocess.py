@@ -25,41 +25,46 @@ class TextVectorizer(nn.Module):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name)
+        pool = True
 
     def forward(self, input):
         encoded_input = self.tokenizer(
             input, padding=True, truncation=True, return_tensors="pt"
-        )  # type: ignore
-        
-        # Move tokenizer outputs to the same device as the model
+        )
         encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
 
         with torch.no_grad():
             out = self.model(**encoded_input)
 
-        # Mean pool over non-padding tokens → (batch, hidden_dim)
         mask = (
             encoded_input["attention_mask"].unsqueeze(-1).expand(out[0].size()).float()
         )
+
+        if not self.pool:
+            return out[0] * mask  # (B, seq_len, hidden_dim), padding zeroed out
+
         mean_pooled = torch.sum(out[0] * mask, 1) / torch.clamp(mask.sum(1), min=1e-9)
-        # normalize
         return F.normalize(mean_pooled, p=2, dim=1)
 
 
 class AudioVectorizer(nn.Module):
-    def __init__(self, model_name="facebook/wav2vec2-base"):
+    def __init__(self, model_name="facebook/wav2vec2-base", pool=True):
         super().__init__()
+        self.pool = pool
         self.model = AutoModel.from_pretrained(model_name)
 
     def forward(self, input_values: torch.Tensor) -> torch.Tensor:
-        # Move input tensor to device
         input_values = input_values.to(device)
 
         with torch.no_grad():
             out = self.model(input_values=input_values)
 
-        hidden = out.last_hidden_state
-        return hidden.mean(dim=1)
+        hidden = out.last_hidden_state  # (B, T, hidden_dim)
+
+        if not self.pool:
+            return hidden  # (B, T, hidden_dim)
+
+        return hidden.mean(dim=1)  # (B, hidden_dim)
 
 
 class ImageVectorizer(nn.Module):
