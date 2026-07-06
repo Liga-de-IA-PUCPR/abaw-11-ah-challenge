@@ -1,0 +1,10 @@
+# configs/model/random_forest.yaml  (family=sklearn — registry FASE 4; 100% CPU, sem Lightning)
+name: random_forest
+family: sklearn
+n_estimators: 400
+max_depth: null
+min_samples_leaf: 2
+max_features: sqrt
+class_weight: balanced                 # combate desbalanceamento + ruído de rótulo (κ baixo)
+n_jobs: -1
+random_state: 42

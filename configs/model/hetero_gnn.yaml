@@ -1,0 +1,12 @@
+# configs/model/hetero_gnn.yaml  (family=lightning — GNN heterogêneo via gnn-modalblocks)
+name: hetero_gnn
+family: lightning
+dim_a: 768                             # d_audio (wav2vec2/hubert/librosa)
+dim_b: 768                             # d_text  (roberta_emotion/minilm)
+dim_tab: 32                            # d_tabular (inferido do cache; fallback)
+hidden_channels: 128                   # projeção + camada oculta do HeteroGAT
+heads: 4                               # cabeças de atenção do GAT
+out_channels: 64                       # embedding final por tipo de nó
+dropout: 0.1
+lr: 1e-3
+weight_decay: 1e-2

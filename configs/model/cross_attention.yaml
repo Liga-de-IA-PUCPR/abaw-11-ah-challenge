@@ -1,0 +1,10 @@
+# configs/model/cross_attention.yaml  (family=lightning — UPGRADE do matheus p/ sequência T>1)
+name: cross_attention
+family: lightning
+dim_a: 768                             # d_audio (wav2vec2/hubert)
+dim_b: 768                             # d_text  (roberta_emotion)
+common_dim: 512
+num_heads: 4
+num_classes: 1                         # 1 logit/vídeo (BCEWithLogits)
+dropout: 0.1
+lr: 1e-3
