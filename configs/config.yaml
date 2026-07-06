@@ -12,7 +12,7 @@ defaults:
 
 seed: 42
 device: "auto"                      # auto (cuda▸cpu no Linux; mps▸cuda▸cpu no macOS) | cpu | cuda
-mode: "train"                        # train | preprocess | featurize | evaluate | submit
+mode: "train"                        # train | preprocess | featurize | evaluate | submit | pretrain_gae | ensemble_evaluate
 experiment_name: "abaw-ah"
 
 # Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler

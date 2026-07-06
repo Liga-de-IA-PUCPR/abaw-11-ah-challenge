@@ -133,3 +133,25 @@ def _load_hetero_gnn() -> type:
 
 
 register_lazy("hetero_gnn", family="lightning", loader=_load_hetero_gnn)
+
+
+def _load_gnn_baseline() -> type:
+    from src.models.gnn_baseline import GnnBaselineFusion
+
+    return GnnBaselineFusion
+
+
+register_lazy("gnn_baseline", family="lightning", loader=_load_gnn_baseline)
+
+
+def _load_hetero_gnn_contrastive() -> type:
+    from src.models.hetero_gnn_contrastive import HeteroGnnContrastiveFusion
+
+    return HeteroGnnContrastiveFusion
+
+
+register_lazy(
+    "hetero_gnn_contrastive",
+    family="lightning",
+    loader=_load_hetero_gnn_contrastive,
+)

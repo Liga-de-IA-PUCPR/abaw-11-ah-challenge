@@ -117,37 +117,37 @@ class FeatureBuilder:
         windows: list[WindowSample],
         out_path: str | Path,
         records: list[VideoRecord] | None = None,
+        chunk_size: int = 256,
     ) -> pl.DataFrame:
         """Constrói o Parquet único de features (todas as janelas, todos os splits).
 
-        Carrega o waveform de cada janela (cortado em ``[t0, t1]``), extrai
-        ``text_emb``/``audio_emb``/``tabular`` e escreve UMA linha por janela com as
-        colunas do README §6.2 + ``split``. O ``video_label`` vem do próprio
-        ``WindowSample`` (``records`` é fallback opcional por ``video_id``).
+        Processa em lotes de ``chunk_size`` janelas para limitar RAM/VRAM — essencial
+        com backends deep (wav2vec2 + RoBERTa) em ~15k janelas.
 
         Args:
             windows: ``WindowSample`` (FASE 2), na ordem das janelas.
             out_path: destino do Parquet (``cfg.data.paths.parquet_path``).
             records: opcional — fallback de ``video_label`` (``global_ah``) por vídeo.
+            chunk_size: janelas por lote (``cfg.data.featurize_chunk_size``).
 
         Returns:
             ``polars.DataFrame`` escrito em ``out_path``.
         """
+        import gc
+
+        import pyarrow.parquet as pq
+        from tqdm import tqdm
+
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         n = len(windows)
-        log.info(f"Construindo features para {n} janelas → {out_path.name}...")
+        chunk_size = max(1, int(chunk_size))
+        log.info(
+            f"Construindo features para {n} janelas → {out_path.name} "
+            f"(chunk_size={chunk_size})..."
+        )
 
-        # --- waveforms (cortados em [t0, t1] do .flac do vídeo) ----------------
-        waveforms = self._load_waveforms(windows)
-
-        # --- embeddings + tabular ----------------------------------------------
-        text_emb = self.text_embedder.extract([w.text for w in windows])  # (n, d_text)
-        audio_emb = self.audio_embedder.extract(waveforms)  # (n, d_audio)
-        tab = self.tabular.transform(windows, waveforms)  # (n, d_tab)
-
-        # --- video_label: do WindowSample; fallback nos VideoRecord ------------
         rec_labels: dict[str, int] = {
             r.video_id: int(r.global_ah) for r in (records or []) if r.global_ah is not None
         }
@@ -157,32 +157,60 @@ class FeatureBuilder:
                 return int(w.video_label)
             return rec_labels.get(w.video_id, -1)
 
-        df = pl.DataFrame(
-            {
-                "id": [w.video_id for w in windows],
-                "window_idx": np.arange(n, dtype=np.int32) if n else [],
-                "t0": [float(w.t0) for w in windows],
-                "t1": [float(w.t1) for w in windows],
-                "participant_id": [w.participant_id for w in windows],
-                "question_type": [w.question_type for w in windows],
-                "audio_emb": [row.tolist() for row in audio_emb],
-                "text_emb": [row.tolist() for row in text_emb],
-                "tabular": [row.tolist() for row in tab],
-                "label": [int(w.label) if w.label is not None else -1 for w in windows],
-                "video_label": [_vlabel(w) for w in windows],
-                "split": [w.split for w in windows],
-            },
-            schema_overrides={
-                "window_idx": pl.Int32,
-                "t0": pl.Float32,
-                "t1": pl.Float32,
-                "label": pl.Int8,
-                "video_label": pl.Int8,
-            },
-        ).select(PARQUET_COLUMNS)
+        writer: pq.ParquetWriter | None = None
+        chunk_starts = range(0, n, chunk_size)
 
-        df.write_parquet(out_path)
+        for start in tqdm(chunk_starts, desc="featurize", unit="chunk"):
+            batch = windows[start : start + chunk_size]
+            waveforms = self._load_waveforms(batch)
+            text_emb = self.text_embedder.extract([w.text for w in batch])
+            audio_emb = self.audio_embedder.extract(waveforms)
+            tab = self.tabular.transform(batch, waveforms)
+
+            chunk_df = pl.DataFrame(
+                {
+                    "id": [w.video_id for w in batch],
+                    "window_idx": list(range(start, start + len(batch))),
+                    "t0": [float(w.t0) for w in batch],
+                    "t1": [float(w.t1) for w in batch],
+                    "participant_id": [w.participant_id for w in batch],
+                    "question_type": [w.question_type for w in batch],
+                    "audio_emb": [row.tolist() for row in audio_emb],
+                    "text_emb": [row.tolist() for row in text_emb],
+                    "tabular": [row.tolist() for row in tab],
+                    "label": [int(w.label) if w.label is not None else -1 for w in batch],
+                    "video_label": [_vlabel(w) for w in batch],
+                    "split": [w.split for w in batch],
+                },
+                schema_overrides={
+                    "window_idx": pl.Int32,
+                    "t0": pl.Float32,
+                    "t1": pl.Float32,
+                    "label": pl.Int8,
+                    "video_label": pl.Int8,
+                },
+            ).select(PARQUET_COLUMNS)
+
+            table = chunk_df.to_arrow()
+            if writer is None:
+                writer = pq.ParquetWriter(out_path, table.schema)
+            writer.write_table(table)
+
+            del batch, waveforms, text_emb, audio_emb, tab, chunk_df, table
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+
+        if writer is not None:
+            writer.close()
+
         self._save_sidecar(out_path)
+        df = pl.read_parquet(out_path)
         log.info(
             f"Parquet salvo: {out_path.name} | {n} janelas, "
             f"d_text={self.text_embedder.dim}, d_audio={self.audio_embedder.dim}, "

@@ -137,6 +137,8 @@ class LightningTrainer(BaseTrainer):
         if d_tab and hasattr(self.model, "dim_tab"):
             self.model.dim_tab = d_tab
             log.info(f"Dim tabular inferida do cache: dim_tab={d_tab}")
+        self._apply_pos_weight(train_data)
+        self._apply_gae_init()
         self._lit_module = self.model.build_lightning_module()
         self._trainer = self._build_trainer()
 
@@ -291,6 +293,40 @@ class LightningTrainer(BaseTrainer):
             int(getattr(ds, "dim_text", 0)),
             int(getattr(ds, "dim_tab", 0)),
         )
+
+    def _apply_pos_weight(self, train_loader) -> None:
+        if not hasattr(self.model, "pos_weight"):
+            return
+        from src.models.lightning_utils import resolve_pos_weight
+
+        pw = resolve_pos_weight(getattr(self.model, "pos_weight", None), train_loader)
+        if hasattr(self.model, "_resolved_pos_weight"):
+            self.model._resolved_pos_weight = pw
+
+    def _apply_gae_init(self) -> None:
+        if not hasattr(self.model, "_gae_init_path"):
+            return
+        from pathlib import Path
+
+        ckpt = getattr(self.config, "checkpoint", None)
+        if ckpt:
+            p = Path(str(ckpt))
+            if p.name == "gae_encoder.pt" and p.exists():
+                self.model._gae_init_path = str(p)
+            elif (p / "gae_encoder.pt").exists():
+                self.model._gae_init_path = str(p / "gae_encoder.pt")
+            else:
+                state = p / "trainer_state.json"
+                if state.exists():
+                    import json
+
+                    data = json.loads(state.read_text())
+                    enc = data.get("gae_encoder")
+                    if enc and Path(enc).exists():
+                        self.model._gae_init_path = enc
+        gae = getattr(self.model, "gae_init", None)
+        if gae and not self.model._gae_init_path:
+            self.model._gae_init_path = str(gae)
 
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)

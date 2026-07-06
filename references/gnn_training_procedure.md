@@ -24,7 +24,21 @@ Métrica oficial do challenge: **Macro F1** no test set privado (+ AP da classe 
 O **HeteroGAT** (`gnn_modalblocks.architectures.hetero_gat`) substitui camadas fixas
 de atenção por **message passing aprendido** sobre essa topologia.
 
-## 3. Topologia do grafo (por vídeo)
+## Modelos GNN
+
+| Modelo | Comando Hydra | Descrição |
+|--------|---------------|-----------|
+| **`gnn_baseline`** (default do preset) | `model=gnn_baseline` | MultimodalBlock + LatentCorrelationGCN — espelha cross-attention |
+| **`hetero_gnn`** (avançado) | `model=hetero_gnn` | HeteroGAT com grafo áudio/texto/vídeo |
+
+## Logging de experimentos
+
+O treino neural usa **Weights & Biases** (`wandb`, config `wandb.mode`) — **não** MLflow local.
+Checkpoints e métricas ficam em `outputs/<experiment_name>/...` (`.ckpt` + `trainer_state.json`).
+
+Para desligar W&B: `wandb.mode=disabled`.
+
+A lib `gnn-modalblocks` tem callback MLflow; integração futura se necessário.
 
 ```mermaid
 flowchart TB
@@ -96,6 +110,21 @@ uv sync --group neural
 
 O grupo `neural` inclui `torch-geometric` e `gnn-modalblocks` (path editável em
 `../project_lib/gnn-modalblocks`).
+
+### Memória (RTX 3060 12 GB ou RAM limitada)
+
+O featurize processa **256 janelas por vez** (`data.featurize_chunk_size`) para não
+carregar ~15k waveforms na RAM de uma vez. Se ainda travar:
+
+```bash
+uv run python main.py +experiment=hetero_gnn mode=featurize device=cuda \
+  data.featurize_chunk_size=128 \
+  audio_embedder.batch_size=2 \
+  text_embedder.batch_size=4
+```
+
+Evite rodar `mode=featurize` **sem** `+experiment=hetero_gnn` — o default usa
+**librosa na CPU** (lento e pesado em todas as threads).
 
 ### Sequência completa
 

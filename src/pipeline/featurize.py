@@ -81,7 +81,8 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
     )
 
     # --- 3. FeatureBuilder → Parquet único (README §6.2; carrega os waveforms) --
-    builder.build(windows, out_path=parquet_path)
+    chunk_size = int(data.get("featurize_chunk_size", 256))
+    builder.build(windows, out_path=parquet_path, chunk_size=chunk_size)
     log.info(f"Parquet de features escrito: {parquet_path}.")
 
     return {

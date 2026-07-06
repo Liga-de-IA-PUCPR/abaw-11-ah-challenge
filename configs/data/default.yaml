@@ -37,3 +37,4 @@ tabular:
 
 batch_size: 32                           # usado pelo caminho Lightning
 num_workers: 0
+featurize_chunk_size: 256                 # janelas por lote no mode=featurize (evita OOM)

@@ -5,4 +5,4 @@ model_name: facebook/wav2vec2-base
 sample_rate: 16000
 pooling: mean
 dim: 768
-# device herdado do global ${device}
+batch_size: 4                            # inferência por lote (VRAM); reduza se OOM

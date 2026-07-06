@@ -92,22 +92,14 @@ def _as_loader(cfg: DictConfig, data, family: str, split: str):
 
     from torch.utils.data import DataLoader
 
-    model_name = str(getattr(cfg.model, "name", ""))
-    if model_name == "hetero_gnn":
-        from src.data.graph_builder import collate_graph_batch
-
-        collate_fn = collate_graph_batch
-    else:
-        from src.data.datasets import collate_sequences
-
-        collate_fn = collate_sequences
+    from src.data.datasets import collate_sequences
 
     return DataLoader(
         data,
         batch_size=cfg.data.batch_size,
         shuffle=(split == "train"),
         num_workers=cfg.data.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=collate_sequences,
     )
 
 
@@ -303,11 +295,149 @@ def _run_submit(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _run_pretrain_gae(cfg: DictConfig, device) -> int:
+    """``mode=pretrain_gae`` — pré-treino HeteroGAE (recon_loss, sem labels)."""
+    from src.data.datasets import load_train_val
+    from src.models.hetero_gae_pretrain import HeteroGaePretrain
+    from src.outputs.checkpoint import resolve_output_dir
+    from src.training.gae_pretrain_trainer import GaePretrainTrainer
+
+    model = HeteroGaePretrain.from_config(cfg.model)
+    trainer = GaePretrainTrainer(model=model, config=cfg)
+    train_data, val_data = load_train_val(cfg, family="lightning")
+    train_data = _as_loader(cfg, train_data, "lightning", "train")
+    val_data = _as_loader(cfg, val_data, "lightning", "val")
+
+    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
+    trainer.output_dir = str(out_dir)
+    trainer.fit(train_data, val_data)
+    trainer.save(out_dir)
+    log.info(f"Pré-treino GAE concluído. Encoder: {out_dir / 'gae_encoder.pt'}")
+    return 0
+
+
+def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
+    """``mode=ensemble_evaluate`` — combina probas de N checkpoints e calibra limiar."""
+    import json
+    from pathlib import Path
+
+    import numpy as np
+    from omegaconf import OmegaConf
+
+    from src.data.datasets import load_split
+    from src.outputs.checkpoint import resolve_latest_checkpoint
+    from src.training.aggregation import calibrate_threshold
+    from src.training.factory import load_trainer
+    from src.training.metrics import evaluate_video_predictions
+
+    ensemble = cfg.get("ensemble")
+    if ensemble is None:
+        raise ValueError("mode=ensemble_evaluate requer +ensemble=default ou bloco ensemble na config.")
+
+    split = cfg.get("split") or "val"
+    data_raw = load_split(cfg, split, family="lightning")
+    data = _as_loader(cfg, data_raw, "lightning", split)
+    labels = {str(vid): int(lab) for vid, lab in data_raw.video_labels.items()}
+
+    member_scores: list[dict[str, float]] = []
+    weights: list[float] = []
+
+    for member in ensemble.members:
+        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        model_name = str(member.model)
+        model_yaml = Path("configs/model") / f"{model_name}.yaml"
+        if not model_yaml.exists():
+            log.warning(f"Ensemble: modelo '{model_name}' ignorado (yaml ausente).")
+            continue
+        member_cfg.model = OmegaConf.load(str(model_yaml))
+        ckpt = member.get("checkpoint")
+        try:
+            if ckpt in (None, "null"):
+                ckpt_dir = resolve_latest_checkpoint(
+                    cfg.data.paths.output_root,
+                    family="lightning",
+                    model_name=model_name,
+                )
+            else:
+                ckpt_dir = ckpt
+        except FileNotFoundError:
+            log.warning(
+                f"Ensemble: checkpoint ausente para '{model_name}' — membro ignorado."
+            )
+            continue
+        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
+        ids, proba = trainer._infer(data)
+        scores = {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
+        member_scores.append(scores)
+        w = float(member.get("weight", 1.0))
+        weights.append(w)
+        log.info(f"Ensemble member '{model_name}' carregado de {ckpt_dir}")
+
+    if not member_scores:
+        raise FileNotFoundError(
+            "Ensemble: nenhum membro com checkpoint válido. Treine ao menos um modelo."
+        )
+
+    combine = str(ensemble.get("combine", "mean"))
+    total_w = sum(weights) or 1.0
+    video_ids = sorted(set().union(*member_scores))
+    combined: dict[str, float] = {}
+    for vid in video_ids:
+        vals = []
+        ws = []
+        for scores, w in zip(member_scores, weights, strict=True):
+            if vid in scores:
+                vals.append(scores[vid])
+                ws.append(w)
+        if not vals:
+            continue
+        if combine == "weighted":
+            combined[vid] = float(np.average(vals, weights=ws))
+        else:
+            combined[vid] = float(np.mean(vals))
+
+    proba_arr = np.array([combined[vid] for vid in video_ids if vid in labels], dtype=np.float32)
+    ids_arr = np.array([vid for vid in video_ids if vid in labels])
+    agg = getattr(cfg, "aggregation", {}) or {}
+    thr_setting = agg.get("threshold", "auto")
+    if thr_setting == "auto":
+        threshold, _ = calibrate_threshold(
+            val_proba=proba_arr,
+            val_video_ids=ids_arr,
+            val_video_labels=labels,
+            method="identity",
+            metric="macro_f1",
+            selection=agg.get("calibration", "smooth"),
+            smooth_window=float(agg.get("smooth_window", 0.10)),
+        )
+    else:
+        threshold = float(thr_setting)
+
+    preds = {vid: int(combined[vid] >= threshold) for vid in combined if vid in labels}
+    report = evaluate_video_predictions(
+        video_labels=labels, video_pred=preds, video_score=combined
+    )
+    log.info(
+        f"Ensemble [{split}] Macro-F1={report['macro_f1']:.4f} | "
+        f"AP={report.get('average_precision', 0.0):.4f} | limiar={threshold:.4f}"
+    )
+    out_dir = Path(cfg.data.paths.output_root) / "ensemble_eval"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"report_{split}.json").write_text(
+        json.dumps({**report, "threshold": threshold, "combine": combine}, indent=2),
+        encoding="utf-8",
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 _DISPATCH = {
     "preprocess": lambda cfg, dev: _run_preprocess(cfg),
     "featurize": _run_featurize,
     "train": _run_train,
+    "pretrain_gae": _run_pretrain_gae,
     "evaluate": _run_evaluate,
+    "ensemble_evaluate": _run_ensemble_evaluate,
     "submit": _run_submit,
 }
 
