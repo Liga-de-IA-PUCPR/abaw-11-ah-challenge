@@ -1,0 +1,30 @@
+# @package _global_
+# configs/sweep/catboost_stage2.yaml — busca fina de CatBoost após stage-1
+#
+# Melhor do stage-1: n_estimators=100, depth=8, lr=0.1, l2=5.0 → F1=0.6903
+# Todos os melhores valores estavam nas BORDAS do grid do stage-1, portanto
+# o stage-2 explora além delas:
+#   - n_estimators: abaixo de 100 (50, 75) e acima (150)
+#   - depth: acima de 8 (9, 10)
+#   - learning_rate: acima de 0.1 (0.15, 0.2)
+#   - l2_leaf_reg: acima de 5.0 (7.0, 10.0)
+#
+# Produto cartesiano: 3 × 3 × 3 × 3 = 81 combinações.
+#
+# Uso:
+#   make sweep-catboost-stage2 ARGS="audio_embedder=<EMBEDDER> hydra.launcher.n_jobs=4"
+
+defaults:
+  - override /model: catboost
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 50,100,150
+      model.depth: 8,9,10
+      model.learning_rate: 0.1,0.15,0.2
+      model.l2_leaf_reg: 5.0,7.0,10.0

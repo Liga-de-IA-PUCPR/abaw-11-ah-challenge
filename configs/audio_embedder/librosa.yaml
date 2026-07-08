@@ -1,0 +1,8 @@
+# configs/audio_embedder/librosa.yaml  (DEFAULT baseline — prosódia, 100% CPU/numpy)
+name: librosa
+backend: librosa                       # factory: librosa | wav2vec2 | hubert (README §6.3)
+sample_rate: 16000
+feature_set: [mfcc, delta, spectral, chroma, zcr, rms, f0, tempo]
+n_mfcc: 20
+agg_stats: [mean, std, min, max]
+dim: null                              # derivado de feature_set (FASE 3)

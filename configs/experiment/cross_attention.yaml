@@ -1,0 +1,6 @@
+# @package _global_
+# configs/experiment/cross_attention.yaml — competição: cross-attention temporal (Lightning) + áudio deep.
+defaults:
+  - override /model: cross_attention
+  - override /audio_embedder: wav2vec2
+  - override /trainer: lightning

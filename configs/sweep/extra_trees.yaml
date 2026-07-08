@@ -1,0 +1,23 @@
+# @package _global_
+# configs/sweep/extra_trees.yaml — espaço de busca do ExtraTrees via Hydra multirun
+#
+# Uso:
+#   python main.py -m +sweep=extra_trees
+#
+# Produto cartesiano: 4 × 4 × 3 × 2 = 96 combinações.
+# Para paralelizar: python main.py -m +sweep=extra_trees hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: extra_trees
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 100,200,400,600
+      model.max_depth: null,5,10,20      # null = sem limite de profundidade
+      model.min_samples_leaf: 1,2,4
+      model.max_features: sqrt,log2

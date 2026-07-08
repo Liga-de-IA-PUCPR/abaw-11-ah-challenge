@@ -1,0 +1,20 @@
+# @package _global_
+# configs/sweep/logistic_regression.yaml — espaço de busca do LogReg via Hydra multirun
+#
+# Uso:
+#   python main.py -m +sweep=logistic_regression
+#
+# O hiperparâmetro dominante é C (regularização). 6 combinações.
+# Para paralelizar: python main.py -m +sweep=logistic_regression hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: logistic_regression
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.C: 0.001,0.01,0.1,1.0,10.0,100.0

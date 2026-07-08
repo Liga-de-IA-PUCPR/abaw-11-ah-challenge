@@ -1,0 +1,23 @@
+# @package _global_
+# configs/sweep/mlp.yaml — espaço de busca do MLP via Hydra multirun
+#
+# Uso:
+#   python main.py -m +sweep=mlp
+#
+# hidden_dim_2=0 → rede de 1 camada; >0 → 2 camadas.
+# Produto cartesiano: 3 × 4 × 3 = 36 combinações.
+# Para paralelizar: python main.py -m +sweep=mlp hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: mlp
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.hidden_dim_1: 128,256,512
+      model.hidden_dim_2: 0,64,128,256   # 0 = apenas 1 camada oculta
+      model.alpha: 1.0e-4,1.0e-3,1.0e-2

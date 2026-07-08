@@ -1,0 +1,17 @@
+# configs/model/lightgbm.yaml  (family=sklearn — registry FASE 4; CPU, mais rápido que XGBoost)
+name: lightgbm
+family: sklearn
+n_estimators: 300
+num_leaves: 63                   # 2^max_depth - 1 para max_depth=6; aumentar para mais complexidade
+max_depth: -1                    # sem limite de profundidade (controlado por num_leaves)
+learning_rate: 0.05
+subsample: 0.8
+subsample_freq: 1                # aplicar subsample a cada iteração
+colsample_bytree: 0.8
+min_child_samples: 20            # análogo a min_samples_leaf do RF
+reg_alpha: 0.0
+reg_lambda: 0.0
+class_weight: balanced           # combate desbalanceamento (~17% positivo)
+n_jobs: -1
+random_state: 42
+verbose: -1                      # silencia output do LightGBM

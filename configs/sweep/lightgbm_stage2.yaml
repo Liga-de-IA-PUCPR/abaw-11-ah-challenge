@@ -1,0 +1,29 @@
+# @package _global_
+# configs/sweep/lightgbm_stage2.yaml — busca fina de LightGBM após stage-1
+#
+# Use quando o LightGBM for o melhor modelo do stage-1 (sweep/lightgbm.yaml).
+# Fixa num_leaves e learning_rate do stage-1 e refina regularização e subsampling.
+#
+# Produto cartesiano: 3 × 3 × 3 × 2 = 54 combinações.
+#
+# Uso (substitua os valores fixados pelos melhores do stage-1):
+#   python main.py -m +sweep=lightgbm_stage2 \
+#     model.num_leaves=63 model.learning_rate=0.05
+#
+# Para paralelizar:
+#   python main.py -m +sweep=lightgbm_stage2 hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: lightgbm
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 300,500,800
+      model.min_child_samples: 10,20,40
+      model.reg_alpha: 0.0,0.1,1.0
+      model.subsample: 0.7,0.9

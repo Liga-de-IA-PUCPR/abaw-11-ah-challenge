@@ -1,0 +1,17 @@
+# @package data.window
+# configs/window/large.yaml — janela longa (7s, hop 3.5s)
+# Uso: python main.py window=large mode=preprocess  (re-indexa + re-featuriza)
+#
+# Quando usar: A/H de longa duração ou quando se quer mais contexto por janela
+# (prosódia e texto mais ricos). Gera menos janelas por vídeo → menos exemplos
+# de treino, mas cada janela é mais informativa.
+#
+# ⚠️ Mudar o janelamento invalida o cache Parquet — rode preprocess + featurize
+#    antes de train: python main.py window=large mode=preprocess && \
+#                    python main.py window=large mode=featurize && \
+#                    python main.py window=large mode=train
+size_s: 7.0
+hop_s: 3.5                         # 50% de sobreposição
+min_overlap_for_positive: 0.5
+pad_last: true
+label_source: time_detailed_ah

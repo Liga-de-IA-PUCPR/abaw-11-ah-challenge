@@ -1,0 +1,17 @@
+# @package data.window
+# configs/window/small.yaml — janela curta (3s, hop 1.5s)
+# Uso: python main.py window=small mode=preprocess  (re-indexa + re-featuriza)
+#
+# Quando usar: A/H de curta duração (hesitações rápidas, < 3s).
+# Trade-off: mais janelas por vídeo → mais contexto temporal para o modelo;
+#            mas cada janela cobre menos contexto acústico/textual.
+#
+# ⚠️ Mudar o janelamento invalida o cache Parquet — rode preprocess + featurize
+#    antes de train: python main.py window=small mode=preprocess && \
+#                    python main.py window=small mode=featurize && \
+#                    python main.py window=small mode=train
+size_s: 3.0
+hop_s: 1.5                         # 50% de sobreposição
+min_overlap_for_positive: 0.5
+pad_last: true
+label_source: time_detailed_ah

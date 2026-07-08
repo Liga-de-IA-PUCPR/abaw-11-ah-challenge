@@ -1,0 +1,18 @@
+# configs/model/xgboost.yaml  (family=sklearn — registry FASE 4; CPU ou GPU)
+# scale_pos_weight="auto" → calculado no fit como n_neg/n_pos (~4.9 p/ 17% positivo)
+name: xgboost
+family: sklearn
+n_estimators: 300
+max_depth: 6
+learning_rate: 0.05
+subsample: 0.8
+colsample_bytree: 0.8
+min_child_weight: 3
+gamma: 0.0
+reg_alpha: 0.0
+reg_lambda: 1.0
+scale_pos_weight: auto           # "auto" = n_neg/n_pos calculado no fit
+n_jobs: -1
+random_state: 42
+tree_method: hist                # rápido em CPU; trocar por "gpu_hist" com GPU
+eval_metric: logloss

@@ -1,0 +1,13 @@
+# configs/model/extra_trees.yaml  (family=sklearn — CPU)
+# ExtraTrees: splits aleatórios (mais rápido que RF), sem bootstrap por default.
+# bootstrap=false mantém o comportamento canônico do ExtraTrees.
+name: extra_trees
+family: sklearn
+n_estimators: 400
+max_depth: null              # null = sem limite (árvores completas)
+min_samples_leaf: 2
+max_features: sqrt
+class_weight: balanced
+bootstrap: false             # ExtraTrees canônico: sem bootstrap
+n_jobs: -1
+random_state: 42

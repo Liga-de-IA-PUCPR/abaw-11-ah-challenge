@@ -1,0 +1,12 @@
+# configs/model/logistic_regression.yaml  (family=sklearn — CPU)
+# Pipeline: StandardScaler → LogisticRegression
+# C: inverso da regularização L2 (menor = mais regularização)
+# solver=saga: suporta L1+L2, eficiente em alta dimensão (~1000-d)
+name: logistic_regression
+family: sklearn
+C: 1.0
+solver: saga
+max_iter: 5000               # embeddings 768-d precisam de mais iterações para convergir
+class_weight: balanced
+tol: 1.0e-4
+random_state: 42

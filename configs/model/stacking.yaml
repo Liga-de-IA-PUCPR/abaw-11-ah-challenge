@@ -1,0 +1,46 @@
+# configs/model/stacking.yaml  (family=sklearn — CPU)
+# Meta-ensemble: RF + XGBoost + LightGBM → LogisticRegression (meta)
+# Previsões OOF (out-of-fold) com cv=5 folds para treinar o meta-modelo.
+#
+# Hiperparâmetros fixados nos melhores valores dos sweeps individuais:
+#   RF:      F1=0.6941 (run 20260702_195838)
+#   XGBoost: F1=0.6916 (run 20260702_200959)
+#   LightGBM:F1=0.6836 (run 20260702_211445)
+#
+# Requer: xgboost e lightgbm instalados (uv add xgboost lightgbm)
+name: stacking
+family: sklearn
+
+cv: 5           # folds para previsões OOF (treino ~5× mais lento)
+meta_C: 1.0     # regularização do meta LogisticRegression
+n_jobs: -1
+random_state: 42
+
+# --- RF base (melhor sweep: F1=0.6941) ---
+base_rf_n_estimators: 200
+base_rf_max_depth: null       # irrestrito
+base_rf_min_samples_leaf: 4
+base_rf_max_features: sqrt
+
+# --- XGBoost base (melhor sweep: F1=0.6916) ---
+base_xgb_n_estimators: 100
+base_xgb_max_depth: 8
+base_xgb_learning_rate: 0.05
+base_xgb_subsample: 0.7
+base_xgb_colsample_bytree: 0.8
+base_xgb_min_child_weight: 3
+base_xgb_gamma: 0.0
+base_xgb_reg_alpha: 0.0
+base_xgb_reg_lambda: 1.0
+
+# --- LightGBM base (melhor sweep: F1=0.6836) ---
+base_lgbm_n_estimators: 100
+base_lgbm_num_leaves: 127
+base_lgbm_max_depth: -1       # irrestrito
+base_lgbm_learning_rate: 0.01
+base_lgbm_subsample: 0.8
+base_lgbm_subsample_freq: 1
+base_lgbm_colsample_bytree: 0.8
+base_lgbm_min_child_samples: 10
+base_lgbm_reg_alpha: 0.0
+base_lgbm_reg_lambda: 0.0

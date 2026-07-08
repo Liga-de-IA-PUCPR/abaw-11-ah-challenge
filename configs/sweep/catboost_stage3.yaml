@@ -1,0 +1,46 @@
+# @package _global_
+# configs/sweep/catboost_stage3.yaml — refino além das bordas do stage-2
+#
+# Vencedor do stage-2 (ver outputs/catboost/20260702_143125/train_result.json):
+#   n_estimators=50, depth=10, learning_rate=0.1, l2_leaf_reg=7.0 -> Macro-F1=0.7108
+#
+# Diagnóstico (combinando os valores já testados no stage-1 + stage-2):
+#   - n_estimators: {100,300,500} -> {50,100,150} -> vencedor sempre na BORDA inferior
+#     (100, depois 50). Ainda não foi encontrado um mínimo interior -> segue aberto.
+#   - depth:        {4,6,8} -> {8,9,10} -> vencedor sempre na BORDA superior
+#     (8, depois 10). Ainda não foi encontrado um máximo interior -> segue aberto.
+#   - learning_rate: {0.01,0.05,0.1} -> {0.1,0.15,0.2} -> 0.1 venceu com valores
+#     testados tanto abaixo (0.01, 0.05) quanto acima (0.15, 0.2) -> ótimo interior,
+#     tratado como convergido e FIXADO abaixo.
+#   - l2_leaf_reg:   {1,3,5} -> {5,7,10} -> 7.0 venceu com valores testados tanto
+#     abaixo (1,3,5) quanto acima (10) -> ótimo interior, tratado como convergido
+#     e FIXADO abaixo.
+#
+# Produto cartesiano: 4 x 4 = 16 combinações (menor que stage-1/2 de propósito —
+# com val de 124 vídeos, restringir a busca às 2 dimensões ainda não convergidas
+# reduz o risco de "fishing" em ruído de validação).
+#
+# ⚠️ depth >= 11 aumenta bastante o risco de overfitting num dataset pequeno —
+#    acompanhe f1_class_0/f1_class_1 e a curva de calibração de limiar, não só o
+#    Macro-F1 agregado.
+#
+# Uso:
+#   make sweep-catboost-stage3
+#   python main.py -m +sweep=catboost_stage3 hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: catboost
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+model:
+  learning_rate: 0.1
+  l2_leaf_reg: 7.0
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 10,20,30,40
+      model.depth: 11,12,13,14

@@ -1,0 +1,7 @@
+# configs/text_embedder/bertimbau.yaml  (PT — só com texto traduzido)
+name: bertimbau
+model_name: neuralmind/bert-base-portuguese-cased
+pooling: mean
+max_length: 128
+batch_size: 32
+dim: 768

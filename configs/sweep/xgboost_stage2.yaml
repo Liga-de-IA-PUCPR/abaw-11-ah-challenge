@@ -1,0 +1,30 @@
+# @package _global_
+# configs/sweep/xgboost_stage2.yaml — busca fina de XGBoost após stage-1
+#
+# Use quando o XGBoost for o melhor modelo do stage-1 (sweep/xgboost.yaml).
+# Fixa os hiperparâmetros mais impactantes encontrados no stage-1 e refina
+# regularização, colsample e número de estimadores.
+#
+# Produto cartesiano: 3 × 3 × 3 × 2 = 54 combinações.
+#
+# Uso (substitua os valores fixados pelos melhores do stage-1):
+#   python main.py -m +sweep=xgboost_stage2 \
+#     model.max_depth=6 model.learning_rate=0.05
+#
+# Para paralelizar:
+#   python main.py -m +sweep=xgboost_stage2 hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: xgboost
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 300,500,800
+      model.min_child_weight: 1,3,5
+      model.reg_alpha: 0.0,0.1,1.0
+      model.colsample_bytree: 0.6,0.8
