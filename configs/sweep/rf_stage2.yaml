@@ -1,0 +1,28 @@
+# @package _global_
+# configs/sweep/rf_stage2.yaml — busca fina de RandomForest após stage-1
+#
+# Use quando o RF for o melhor modelo do stage-1 (sweep/rf.yaml).
+# Fixa n_estimators e max_depth do stage-1 e refina min_samples_leaf e max_features.
+#
+# Produto cartesiano: 3 × 3 × 3 = 27 combinações.
+#
+# Uso (substitua os valores fixados pelos melhores do stage-1):
+#   python main.py -m +sweep=rf_stage2 \
+#     model.n_estimators=400 model.max_depth=10
+#
+# Para paralelizar:
+#   python main.py -m +sweep=rf_stage2 hydra.launcher.n_jobs=4
+
+defaults:
+  - override /model: random_forest
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.min_samples_leaf: 1,2,4
+      model.max_features: sqrt,log2,0.3
+      model.n_estimators: 400,600,800

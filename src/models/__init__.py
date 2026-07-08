@@ -1,25 +1,39 @@
-"""Modelos do desafio BAH — dois na registry com tag de família.
+"""Modelos do desafio BAH — registry com tag de família.
 
-- ``random_forest``  (family="sklearn")   : classificador de janela em CPU.
-- ``cross_attention`` (family="lightning") : LightningModule sobre sequência de janelas.
+Família ``sklearn`` (CPU, sem Lightning):
+- ``random_forest``       : RandomForestClassifier — baseline robusto.
+- ``xgboost``             : XGBClassifier — gradient boosting, forte em competições.
+- ``lightgbm``            : LGBMClassifier — gradient boosting rápido.
+- ``extra_trees``         : ExtraTreesClassifier — splits aleatórios, menos overfitting.
+- ``logistic_regression`` : LogReg com StandardScaler — baseline linear forte.
+- ``catboost``            : CatBoostClassifier — boosting com árvores oblivious (lazy import).
+- ``mlp``                 : MLPClassifier com StandardScaler — rede densa simples.
+- ``stacking``            : StackingClassifier RF+XGB+LGBM → LogReg meta.
+- ``stacking_catboost``   : RF+XGB+LGBM+CatBoost → LogReg meta.
+- ``stacking_cat_rf``     : CatBoost+RF → LogReg meta (sem XGB/LGBM — versão reduzida).
 
-O import do ``random_forest`` é eager (CPU, sem deps pesadas). O ``cross_attention``
-é registrado por uma **factory lazy** (ver ``registry.py``): o módulo só é importado
-quando ``create_model("cross_attention", ...)`` é chamado, evitando puxar
-torch/lightning no caminho sklearn.
+Família ``lightning`` (GPU/MPS):
+- ``cross_attention`` : LightningModule com cross-attention temporal (sequência de janelas).
 
-``LitCrossAttention`` é exposto como símbolo a nível de módulo de forma **lazy**
-(via ``__getattr__``): só ao acessá-lo é que ``src.models.cross_attention`` é
-importado e o ``LightningModule`` (definido como closure em ``_build_lit_module``)
-fica acessível como tipo nominal.
+Modelos sklearn são importados **eager** (sem deps pesadas, exceto catboost que é lazy).
+O ``cross_attention`` é registrado via factory **lazy** para evitar importar torch/lightning.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.models.catboost_model import (
+    CatBoostModel,  # eager: import class; catboost lazy no from_config
+)
+from src.models.extra_trees import ExtraTreesModel  # eager: só sklearn
+from src.models.lightgbm_model import LightGBMModel  # eager: só lightgbm
+from src.models.logistic_regression import LogisticRegressionModel  # eager: só sklearn
+from src.models.mlp_model import MLPModel  # eager: só sklearn
 from src.models.random_forest import RandomForestModel  # eager: só sklearn
 from src.models.registry import create_model, list_models, register_model
+from src.models.stacking_model import StackingModel  # eager: deps lazy no from_config
+from src.models.xgboost_model import XGBoostModel  # eager: só xgboost
 
 if TYPE_CHECKING:  # só p/ type-checkers; não importa torch/lightning em runtime
     from src.models.cross_attention import CrossAttentionFusion
@@ -29,6 +43,13 @@ __all__ = [
     "create_model",
     "list_models",
     "RandomForestModel",
+    "XGBoostModel",
+    "LightGBMModel",
+    "ExtraTreesModel",
+    "LogisticRegressionModel",
+    "CatBoostModel",
+    "MLPModel",
+    "StackingModel",
     "CrossAttentionFusion",
     "LitCrossAttention",
 ]
@@ -37,9 +58,9 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     """Resolve símbolos *lazy* da cross-attention (mantém torch/lightning fora do RF).
 
-    ``LitCrossAttention`` é uma classe closure construída em
-    ``cross_attention._build_lit_module``; ao acessá-la aqui construímos uma
-    instância dummy só para expor seu ``type`` como símbolo de módulo.
+    LitCrossAttention é uma classe closure construída em
+    cross_attention._build_lit_module; ao acessá-la aqui construímos uma
+    instância dummy só para expor seu type como símbolo de módulo.
     """
     if name == "CrossAttentionFusion":
         from src.models.cross_attention import CrossAttentionFusion

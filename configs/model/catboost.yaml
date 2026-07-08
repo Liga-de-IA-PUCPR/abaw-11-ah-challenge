@@ -1,0 +1,14 @@
+# configs/model/catboost.yaml  (family=sklearn — CPU)
+# CatBoost: gradient boosting com árvores oblivious (regularização simétrica).
+# auto_class_weights=Balanced: compensa desbalanceamento ~17% positivo.
+# Requer: uv add catboost
+name: catboost
+family: sklearn
+n_estimators: 300            # iterations do CatBoost
+depth: 6                     # profundidade máxima das árvores oblivious
+learning_rate: 0.05
+l2_leaf_reg: 3.0             # regularização L2 nas folhas
+auto_class_weights: Balanced
+thread_count: -1
+verbose: 0
+random_state: 42

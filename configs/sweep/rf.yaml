@@ -1,0 +1,28 @@
+# @package _global_
+# configs/sweep/rf.yaml — espaço de busca do Random Forest via Hydra multirun
+#
+# Uso:
+#   python main.py -m +sweep=rf
+#
+# Isso gera o produto cartesiano de todos os valores abaixo e roda um experimento
+# por combinação. Com os valores atuais: 4 × 4 × 3 × 2 = 96 combinações.
+#
+# Para paralelizar (ex: 4 runs ao mesmo tempo):
+#   python main.py -m +sweep=rf hydra.launcher.n_jobs=4
+#
+# Para busca mais rápida, reduza os valores ou comente linhas do params.
+
+defaults:
+  - override /model: random_forest
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4                         # altere para paralelizar (ex: n_jobs=4)
+  sweeper:
+    params:
+      model.n_estimators: 100,200,400,600
+      model.max_depth: null,5,10,20     # null = sem limite de profundidade
+      model.min_samples_leaf: 1,2,4
+      model.max_features: sqrt,log2

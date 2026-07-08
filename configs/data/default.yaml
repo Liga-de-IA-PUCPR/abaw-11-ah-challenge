@@ -10,9 +10,14 @@ paths:
   # Artefatos derivados
   audio_dir: data/interim/Audio          # .flac 16 kHz mono (extract_audio.py)
   interim_dir: data/interim
-  window_index: data/interim/windows.parquet
+  # ⚠️ Cache DEVE incluir o tamanho de janela (${data.window.size_s}): sem isso,
+  # `make preprocess-windows`/`featurize-windows` (loop window=small,medium,large)
+  # sobrescreve o MESMO arquivo 3x, e `sweep-windows` treina os 3 "janelamentos"
+  # sobre o cache do ÚLTIMO window processado (bug real, encontrado ao comparar
+  # resultados idênticos de small/medium/large no `make compare`).
+  window_index: data/interim/windows_index_${data.window.size_s}s.parquet
   processed_dir: data/processed
-  parquet_path: data/processed/text_audio_windows.parquet   # cache de features (README §6.2)
+  parquet_path: data/processed/text_audio_windows_${audio_embedder.name}_${data.window.size_s}s.parquet   # cache por embedder + janela (README §6.2)
   output_root: outputs                   # resolve_output_dir (FASE 5)
 
 # Áudio do pipeline (extração + janelamento). audio_embedder.* usa o MESMO sample_rate.

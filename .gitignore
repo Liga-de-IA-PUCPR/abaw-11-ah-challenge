@@ -242,3 +242,6 @@ __pycache__/
 
 # Pasta docs/ mantida só localmente, fora do repo (ex.: plano FASE_0..6 restaurado).
 docs/
+
+# CatBoost — artefatos de treino gravados na raiz (catboost_info/)
+catboost_info/

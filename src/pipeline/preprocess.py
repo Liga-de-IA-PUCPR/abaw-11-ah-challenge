@@ -83,7 +83,10 @@ def run_preprocess(cfg: DictConfig) -> dict[str, Any]:
     )
 
     # --- 4. Cache do índice de janelas (Parquet, 1 linha/janela; sem embeddings) -
-    windows_index = interim_dir / "windows_index.parquet"
+    # Usa data.paths.window_index (parametrizado por window.size_s) — NÃO hardcoded,
+    # senão window=small/medium/large sobrescrevem o mesmo arquivo (bug corrigido).
+    windows_index = Path(data.paths.window_index)
+    windows_index.parent.mkdir(parents=True, exist_ok=True)
     save_window_index(windows, windows_index)
     log.info(f"Índice de janelas salvo em {windows_index}.")
 

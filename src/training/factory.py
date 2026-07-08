@@ -36,7 +36,7 @@ def create_trainer(family: str, model: Any, cfg: Any) -> BaseTrainer:
             o device é lido de ``cfg.device`` dentro do trainer.
 
     Returns:
-        Instância de ``BaseTrainer`` (``SklearnTrainer`` ou ``LightningTrainer``).
+        Instância de ``BaseTrainer``.
 
     Raises:
         ValueError: família desconhecida.
@@ -60,15 +60,10 @@ def create_trainer(family: str, model: Any, cfg: Any) -> BaseTrainer:
 def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
     """Recarrega um trainer treinado a partir de ``out_dir`` (checkpoint).
 
-    Reconstrói o modelo da família (RF via ``RandomForestModel.load``;
-    cross-attention via ``create_model``) e delega ao ``BaseTrainer.load`` da
-    família, cuja assinatura é ``load(out_dir, model, config)``.
-
     Args:
         family: "sklearn" | "lightning".
         out_dir: diretório do checkpoint (escrito por ``trainer.save``).
-        cfg: configuração do experimento; o device é lido de ``cfg.device``
-            dentro do trainer (sem parâmetro ``device`` explícito).
+        cfg: configuração do experimento.
 
     Returns:
         Instância de ``BaseTrainer`` pronta para ``evaluate``/``predict``.
@@ -81,11 +76,49 @@ def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
     out_dir = Path(out_dir)
 
     if family == "sklearn":
-        from src.models.random_forest import RandomForestModel
+        import joblib as _jl
+
         from src.training.sklearn_trainer import SklearnTrainer
 
-        model = RandomForestModel.load(out_dir / "model.joblib")
-        log.info("Trainer: SklearnTrainer recarregado (CPU, sem lightning).")
+        model_path = out_dir / "model.joblib"
+        # Peek no model_type salvo para despachar à classe correta.
+        payload = _jl.load(model_path)
+        model_type = payload.get("model_type", "random_forest")
+
+        if model_type == "xgboost":
+            from src.models.xgboost_model import XGBoostModel
+
+            model = XGBoostModel.load(model_path)
+        elif model_type == "lightgbm":
+            from src.models.lightgbm_model import LightGBMModel
+
+            model = LightGBMModel.load(model_path)
+        elif model_type == "extra_trees":
+            from src.models.extra_trees import ExtraTreesModel
+
+            model = ExtraTreesModel.load(model_path)
+        elif model_type == "logistic_regression":
+            from src.models.logistic_regression import LogisticRegressionModel
+
+            model = LogisticRegressionModel.load(model_path)
+        elif model_type == "catboost":
+            from src.models.catboost_model import CatBoostModel
+
+            model = CatBoostModel.load(model_path)
+        elif model_type == "mlp":
+            from src.models.mlp_model import MLPModel
+
+            model = MLPModel.load(model_path)
+        elif model_type in ("stacking", "stacking_catboost", "stacking_cat_rf"):
+            from src.models.stacking_model import StackingModel
+
+            model = StackingModel.load(model_path)
+        else:
+            from src.models.random_forest import RandomForestModel
+
+            model = RandomForestModel.load(model_path)
+
+        log.info(f"Trainer: SklearnTrainer recarregado (model_type={model_type}).")
         return SklearnTrainer.load(out_dir, model=model, config=cfg)
 
     if family == "lightning":

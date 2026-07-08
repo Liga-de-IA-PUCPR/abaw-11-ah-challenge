@@ -14,10 +14,6 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from src.logger import get_logger
-
-log = get_logger("base.embedder")
-
 
 class BaseEmbedder(ABC):
     """Classe base abstrata para todos os extratores de features.
@@ -68,33 +64,6 @@ class BaseEmbedder(ABC):
     # ==========================================================================
     # Métodos concretos (utilidades comuns às subclasses)
     # ==========================================================================
-
-    def _validate_output(self, feats: np.ndarray, n_inputs: int) -> np.ndarray:
-        """Valida e normaliza a saída de ``extract`` para o contrato ``(n, dim)``.
-
-        Garante dtype ``float32``, shape correto e ausência de NaN/Inf (substituídos
-        por 0.0). Útil para chamar ao final de cada ``extract`` concreto.
-
-        Args:
-            feats: Matriz produzida pela subclasse.
-            n_inputs: Número de entradas processadas.
-
-        Returns:
-            Matriz validada ``(n_inputs, dim)`` float32.
-
-        Raises:
-            ValueError: Se o shape não corresponder a ``(n_inputs, dim)``.
-        """
-        feats = np.asarray(feats, dtype=np.float32)
-        if feats.ndim != 2 or feats.shape != (n_inputs, self.dim):
-            raise ValueError(
-                f"{self.name}: shape de saída {feats.shape} != esperado ({n_inputs}, {self.dim})"
-            )
-        if not np.all(np.isfinite(feats)):
-            n_bad = int((~np.isfinite(feats)).sum())
-            log.warning(f"{self.name}: {n_bad} valores não-finitos zerados.")
-            feats = np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
-        return feats
 
     def __len__(self) -> int:
         """Conveniência: ``len(embedder) == embedder.dim``."""

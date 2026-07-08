@@ -24,9 +24,8 @@ log = get_logger("base.trainer")
 class BaseTrainer(ABC):
     """Classe base abstrata para os trainers do BAH.
 
-    Define a interface (``fit``/``evaluate``/``predict``/``save``/``load``) e helpers
-    concretos de histórico/logging. Os ``*_data`` chegam no formato esperado por cada
-    família:
+    Define a interface (``fit``/``evaluate``/``predict``/``save``/``load``). Os
+    ``*_data`` chegam no formato esperado por cada família:
 
     - **sklearn:** ``WindowMatrixView`` (matriz achatada por janela + ``video_ids`` /
       ``participant_ids`` / ``video_labels``) — README §6.2.
@@ -37,7 +36,6 @@ class BaseTrainer(ABC):
         model: Modelo a treinar (``BaseModel`` sklearn ou ``LightningModule``).
         cfg: Configuração resolvida do experimento (``DictConfig`` ou dict).
         threshold_: Limiar de decisão calibrado na validação (README §6.5).
-        history: Métricas e artefatos acumulados ao longo do run.
     """
 
     family: str = "base"
@@ -53,11 +51,6 @@ class BaseTrainer(ABC):
         self.cfg = cfg
 
         self.threshold_: float | None = None
-        self.history: dict[str, Any] = {
-            "window_metrics": {},  # métricas a nível de janela (só caminho sklearn)
-            "video_metrics": {},  # métricas a nível de vídeo (macro_f1, average_precision)
-            "threshold": None,  # limiar calibrado
-        }
 
     # ==========================================================================
     # Métodos abstratos (README §6.4)
@@ -72,7 +65,7 @@ class BaseTrainer(ABC):
             val_data: Dados de validação (mesmo tipo).
 
         Returns:
-            Histórico/resumo do treino (também acumulado em ``self.history``).
+            Histórico/resumo do treino.
         """
         ...
 
@@ -121,36 +114,3 @@ class BaseTrainer(ABC):
             Instância de trainer pronta p/ ``evaluate`` / ``predict``.
         """
         ...
-
-    # ==========================================================================
-    # Métodos concretos (helpers)
-    # ==========================================================================
-
-    def update_history(self, scope: str, metrics: dict[str, float]) -> None:
-        """Registra métricas no histórico sob um escopo.
-
-        Args:
-            scope: ``"window_metrics"`` ou ``"video_metrics"``.
-            metrics: Dicionário de métricas a armazenar.
-        """
-        self.history.setdefault(scope, {}).update(metrics)
-
-    def set_threshold(self, threshold: float) -> None:
-        """Fixa o limiar de decisão calibrado (também registrado no histórico)."""
-        self.threshold_ = float(threshold)
-        self.history["threshold"] = self.threshold_
-        log.info(f"Limiar de decisão calibrado: {self.threshold_:.4f}")
-
-    def log_metrics(self, title: str, metrics: dict[str, float]) -> None:
-        """Loga um bloco de métricas de forma legível.
-
-        Args:
-            title: Título do bloco (ex.: ``"Validação (vídeo)"``).
-            metrics: Métricas a logar.
-        """
-        log.info(f"=== {title} ===")
-        for key, value in metrics.items():
-            if isinstance(value, float):
-                log.info(f"  {key}: {value:.4f}")
-            else:
-                log.info(f"  {key}: {value}")

@@ -23,7 +23,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import torch
 from omegaconf import DictConfig
 
 from src.logger import get_logger
@@ -31,7 +30,7 @@ from src.logger import get_logger
 log = get_logger("pipeline.featurize")
 
 
-def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
+def run_featurize(cfg: DictConfig, *, device: Any) -> dict[str, Any]:
     """Janelas → embedders → tabular → Parquet (1 linha/janela) — FASE 3.
 
     Args:
@@ -55,11 +54,15 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- 1. Índice de janelas (FASE 2) -----------------------------------------
-    windows_index = interim_dir / "windows_index.parquet"
+    # Usa data.paths.window_index (parametrizado por window.size_s) — antes hardcoded
+    # como "windows_index.parquet" fixo, o que fazia small/medium/large lerem/
+    # sobrescreverem o MESMO arquivo (bug corrigido junto com preprocess.py).
+    windows_index = Path(data.paths.window_index)
     if not windows_index.exists():
         raise FileNotFoundError(
-            f"Índice de janelas ausente: {windows_index}. "
-            "Rode 'python main.py mode=preprocess' antes."
+            f"Índice de janelas ausente: {windows_index}. Rode "
+            f"'python main.py mode=preprocess data.window.size_s={data.window.size_s}' antes "
+            "(ou o override de window= equivalente)."
         )
     windows = load_window_index(windows_index)
     log.info(f"{len(windows)} janelas carregadas de {windows_index}.")

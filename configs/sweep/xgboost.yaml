@@ -1,0 +1,27 @@
+# @package _global_
+# configs/sweep/xgboost.yaml — espaço de busca do XGBoost via Hydra multirun
+#
+# Uso:
+#   python main.py -m +sweep=xgboost
+#
+# Produto cartesiano atual: 4 × 3 × 3 × 3 = 108 combinações.
+#
+# Para paralelizar:
+#   python main.py -m +sweep=xgboost hydra.launcher.n_jobs=4
+#
+# Para busca mais rápida, comente linhas do params ou reduza os valores.
+
+defaults:
+  - override /model: xgboost
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+hydra:
+  launcher:
+    n_jobs: 4
+  sweeper:
+    params:
+      model.n_estimators: 100,200,300,500
+      model.max_depth: 4,6,8
+      model.learning_rate: 0.01,0.05,0.1
+      model.subsample: 0.7,0.8,1.0

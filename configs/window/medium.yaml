@@ -1,0 +1,11 @@
+# @package data.window
+# configs/window/medium.yaml — janela padrão (5s, hop 2.5s) [DEFAULT]
+# Uso: python main.py window=medium  (ou omitir, pois é o default em config.yaml)
+#
+# Motivação: duração média de A/H no dataset BAH ≈ 4.3s → janela de 5s cobre
+# a maioria dos eventos de ambivalência/hesitação com sobreposição mínima de 50%.
+size_s: 5.0
+hop_s: 2.5                         # 50% de sobreposição
+min_overlap_for_positive: 0.5
+pad_last: true
+label_source: time_detailed_ah

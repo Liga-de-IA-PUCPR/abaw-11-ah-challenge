@@ -2,16 +2,17 @@
 # definidos aqui (seed/device/mode/wandb) sobreporem os defaults dos grupos.
 defaults:
   - data: default
+  - window: medium                   # janelamento: small (3s) | medium (5s) | large (7s)
   - text_embedder: roberta_emotion   # EN + emoção (README §7/§8)
   - audio_embedder: librosa          # baseline prosódico (CPU); deep = wav2vec2/hubert
-  - model: random_forest             # baseline barato; competição = cross_attention
+  - model: random_forest             # baseline barato; competição = cross_attention | xgboost | lightgbm
   - trainer: sklearn                 # caminho CPU; neural = lightning
   - aggregation: default
   - override hydra/launcher: joblib  # multirun paralelo (-m)
   - _self_
 
 seed: 42
-device: "mps"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
+device: "auto"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
 mode: "train"                        # train | preprocess | featurize | evaluate | submit
 experiment_name: "abaw-ah"
 

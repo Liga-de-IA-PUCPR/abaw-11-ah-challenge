@@ -167,7 +167,7 @@ class PathsConfig:
     video_index_csv: str = "data/raw/data/bah-video.csv"
     audio_dir: str = "data/interim/Audio"
     interim_dir: str = "data/interim"
-    window_index: str = "data/interim/windows.parquet"
+    window_index: str = "data/interim/windows_index.parquet"
     processed_dir: str = "data/processed"
     parquet_path: str = "data/processed/text_audio_windows.parquet"
     output_root: str = "outputs"
@@ -301,7 +301,7 @@ class TrainerConfig:
 class AggregationConfig:
     """Grupo ``aggregation`` — janela → vídeo + calibração de limiar (README §6.5)."""
 
-    method: Literal["mean_proba", "max_proba", "frac_positive", "any"] = "mean_proba"
+    method: Literal["mean_proba", "max_proba", "frac_positive", "any", "identity"] = "mean_proba"
     threshold: float | str = "auto"  # "auto" = calibrado na val; ou float fixo
     calibration: Literal["smooth", "argmax"] = "smooth"  # robustez na escolha do limiar
     smooth_window: float = 0.10  # largura da média móvel (unidades de limiar) p/ 'smooth'

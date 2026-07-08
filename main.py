@@ -32,7 +32,11 @@ Exemplos::
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import hydra
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 from src.logger import get_logger
@@ -64,10 +68,16 @@ def _run_featurize(cfg: DictConfig, device) -> int:
 
     log.info(f"Device dos embedders: {device}")
     summary = run_featurize(cfg, device=device)
-    log.info(
-        f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
-        f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
-    )
+    if summary.get("cached"):
+        log.info(
+            f"Featurize: cache reutilizado → {summary['parquet_path']} "
+            f"({summary['n_windows']} janelas). Use 'data.force=true' p/ recomputar."
+        )
+    else:
+        log.info(
+            f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
+            f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
+        )
     return 0
 
 
@@ -153,6 +163,36 @@ def _run_train(cfg: DictConfig, device) -> int:
     )
 
     trainer.save(out_dir)
+
+    # Persiste as métricas de validação do treino em train_result.json.
+    # Permite comparar runs do sweep sem precisar rodar evaluate em cada um.
+    val_metrics = result.get("val", {})
+    train_result = {
+        "metrics": {
+            "macro_f1": val_metrics.get("macro_f1", 0.0),
+            "average_precision": val_metrics.get("average_precision", 0.0),
+            "threshold": result.get("threshold", 0.5),
+            "aggregation_method": result.get("method", "mean_proba"),
+            "n_videos": val_metrics.get("n_videos", 0),
+            "split": "val",
+        },
+        "model": cfg.model.name,
+        "config": OmegaConf.to_container(cfg.model, resolve=True),
+        # Metadata de contexto (janela + embedders) — sem isso, 'make compare' não
+        # consegue distinguir runs do mesmo modelo feitos com janelamentos/embedders
+        # diferentes (ex.: sweep-windows). eval_val/metrics.json já grava o cfg
+        # completo; aqui replicamos só o essencial para runs que nunca passam por
+        # 'evaluate' (a maioria dos sweeps só roda 'train').
+        "window": {
+            "size_s": float(cfg.data.window.size_s),
+            "hop_s": float(cfg.data.window.hop_s),
+        },
+        "text_embedder": cfg.text_embedder.name,
+        "audio_embedder": cfg.audio_embedder.name,
+    }
+    (out_dir / "train_result.json").write_text(
+        json.dumps(train_result, indent=2, ensure_ascii=False)
+    )
     log.info(f"Checkpoint salvo em: {out_dir}")
     return 0
 
@@ -177,11 +217,6 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
     Salva em ``<ckpt_dir>/eval_<split>/``. Tudo degrada graciosamente — um plot sem
     insumo é pulado com aviso, nunca derruba o evaluate.
     """
-    import json
-    from pathlib import Path
-
-    import numpy as np
-
     from src.outputs.reporter import Reporter
     from src.training.aggregation import threshold_curve
 
@@ -238,17 +273,18 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
 
 def _run_evaluate(cfg: DictConfig, device) -> int:
     """``mode=evaluate`` — métricas a nível de vídeo num split (FASE 4/5)."""
-    import json
-
+    import src.models  # noqa: F401 — registra RF/XGB/LGBM no registry antes de get_family
     from src.data.datasets import load_split
+    from src.models.registry import get_family
     from src.outputs.checkpoint import resolve_latest_checkpoint
     from src.training.factory import load_trainer
 
-    _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint filtra pela família (FASE 5): só os artefatos do
-    # modelo atual (model.joblib p/ RF | *.ckpt p/ neural) → devolve o mais recente.
+    # get_family lê a família do registry sem instanciar nem importar o modelo.
+    family = get_family(cfg.model.name)
+    # resolve_latest_checkpoint filtra pela família E pelo model_name (FASE 5):
+    # evita que evaluate model=xgboost resolva um checkpoint de random_forest mais recente.
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
+        cfg.data.paths.output_root, family=family, model_name=cfg.model.name
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
@@ -268,17 +304,19 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
 
 def _run_submit(cfg: DictConfig, device) -> int:
     """``mode=submit`` — escreve o arquivo de submissão (video_id, pred) (FASE 5)."""
-    from pathlib import Path
-
+    import src.models  # noqa: F401 — registra RF/XGB/LGBM no registry antes de get_family
     from src.data.datasets import load_split
+    from src.models.registry import get_family
     from src.outputs.checkpoint import resolve_latest_checkpoint
     from src.outputs.submission import write_submission
     from src.training.factory import load_trainer
 
-    _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint filtra pela família do modelo atual (FASE 5).
+    # get_family lê a família do registry sem instanciar nem importar o modelo.
+    family = get_family(cfg.model.name)
+    # resolve_latest_checkpoint filtra pela família E pelo model_name (FASE 5):
+    # evita que submit model=xgboost resolva um checkpoint de random_forest mais recente.
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
+        cfg.data.paths.output_root, family=family, model_name=cfg.model.name
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo

@@ -51,6 +51,12 @@ dependencies = [
     "numba>=0.60.0",             # acelera o librosa (JIT)
     # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
     "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
+    # Boosters em CORE (não no grupo neural) pois rodam 100% em CPU e são importados
+    # LAZY dentro de cada modelo (xgboost_model.py, lightgbm_model.py, catboost_model.py)
+    # — o caminho random_forest nunca os carrega, mas estão disponíveis sem setup extra.
+    "xgboost>=2.1.0",            # XGBClassifier — gradient boosting (baseline competição)
+    "lightgbm>=4.5.0",           # LGBMClassifier — gradient boosting rápido (iteração)
+    "catboost>=1.2.10",          # CatBoostClassifier — boosting com ordered boosting (~300 MB)
     "numpy>=1.26.0",             # matrizes de features
     "scipy>=1.13.0",             # utilidades numéricas (estatísticas, sinais)
     # --- Serialização / utilidades ---

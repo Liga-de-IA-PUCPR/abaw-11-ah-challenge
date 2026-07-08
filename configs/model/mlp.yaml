@@ -1,0 +1,16 @@
+# configs/model/mlp.yaml  (family=sklearn — CPU)
+# Pipeline: StandardScaler → MLPClassifier
+# Arquitetura: hidden_dim_1 + hidden_dim_2 (0 = apenas 1 camada)
+# early_stopping=true: evita overfitting sem precisar de max_iter alto
+name: mlp
+family: sklearn
+hidden_dim_1: 256
+hidden_dim_2: 128            # 0 = rede de 1 camada; >0 = 2 camadas
+activation: relu
+alpha: 1.0e-4                # regularização L2
+learning_rate_init: 1.0e-3
+max_iter: 500
+early_stopping: true
+validation_fraction: 0.1     # fração do treino p/ early stopping interno
+n_iter_no_change: 20
+random_state: 42

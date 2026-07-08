@@ -148,14 +148,6 @@ class WindowGenerator:
         log.debug(f"{record.video_id}: {len(windows)} janelas")
         return windows
 
-    def generate_all(self, records: list[VideoRecord]) -> list[WindowSample]:
-        """Concatena as janelas de todos os vídeos de uma lista."""
-        out: list[WindowSample] = []
-        for rec in records:
-            out.extend(self.generate(rec))
-        log.info(f"Geradas {len(out)} janelas de {len(records)} vídeos")
-        return out
-
     # =========================================================================
     # Alinhamento texto ⟷ janela
     # =========================================================================
