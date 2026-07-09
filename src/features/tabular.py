@@ -12,6 +12,11 @@ Features produzidas por janela:
   ``ethnicity_simplified``, ``is_student``, ``province``, ``country``.
 - Prosódia engenheirada da janela: ``duration``, ``speech_rate`` (n_palavras/dur),
   ``silence_ratio`` (via limiar de RMS).
+- (opcional) Bloco de HESITAÇÃO (``use_hesitation``): vetor acústico de pausa +
+  prosódia + estabilidade (F0/formantes/jitter/shimmer) via
+  :class:`~src.features.hesitation.HesitationExtractor`. Roda ao lado de QUALQUER
+  ``audio_embedder`` (inclusive deep wav2vec2/hubert) — é a feature de SUPORTE ao
+  embedding, confirmando "hesitação ou não".
 """
 
 from __future__ import annotations
@@ -64,31 +69,46 @@ class TabularFeaturizer:
     Attributes:
         sample_rate: SR usado nos cálculos de prosódia (silence_ratio).
         silence_rms_threshold: Limiar relativo de RMS p/ marcar frame como silêncio.
+        use_question_type: Emite o one-hot de ``question_type`` (7 tipos do BAH).
+        use_metadata: Emite os demográficos do participante (numéricos + one-hot).
+        use_prosody: Emite a prosódia engenheirada (duração / speech_rate / silence_ratio).
+        use_hesitation: Habilita o bloco de features de hesitação (acompanha o embedding).
+        hesitation: Config (dict) do :class:`HesitationExtractor` (limiares/formantes).
         vocab_: Vocabulários aprendidos por campo categórico (preenchido no fit).
         feature_names_: Nomes das colunas (preenchido no fit).
     """
 
     sample_rate: int = 16000
     silence_rms_threshold: float = 0.1  # fração do RMS máximo da janela
+    use_question_type: bool = True
+    use_metadata: bool = True
+    use_prosody: bool = True
+    use_hesitation: bool = False
+    hesitation: dict = field(default_factory=dict)
     vocab_: dict[str, list[str]] = field(default_factory=dict)
     feature_names_: list[str] = field(default_factory=list)
     _fitted: bool = False
+    _hes_ext: object = field(default=None, init=False, repr=False, compare=False)
 
     # =========================================================================
     # Construção a partir da Config Hydra
     # =========================================================================
 
     @classmethod
-    def from_config(cls, cfg=None) -> TabularFeaturizer:
+    def from_config(cls, cfg=None, *, sample_rate: int = 16000) -> TabularFeaturizer:
         """Instancia o featurizer a partir de um nó de config (``cfg.data.tabular``).
 
         Tolera ``cfg=None`` (usa os defaults) e leitura via ``.get``/atributo, então
         funciona tanto com ``DictConfig`` quanto com dict. A FASE 6
-        (``mode=featurize``) usa ``TabularFeaturizer.from_config(cfg.data.tabular)``
-        seguido de ``.fit(train_windows)`` (vocabulários sem vazamento).
+        (``mode=featurize``) usa ``TabularFeaturizer.from_config(cfg.data.tabular,
+        sample_rate=cfg.data.audio.sample_rate)`` seguido de ``.fit(train_windows)``.
 
         Args:
-            cfg: nó de config opcional com ``sample_rate`` / ``silence_rms_threshold``.
+            cfg: nó de config opcional com ``use_question_type`` / ``use_metadata`` /
+                ``use_prosody`` / ``silence_rms_threshold`` / ``use_hesitation`` /
+                ``hesitation``. Pode conter ``sample_rate`` (senão usa o argumento).
+            sample_rate: SR canônico do pipeline (``cfg.data.audio.sample_rate``), usado
+                se o nó não trouxer ``sample_rate`` próprio.
 
         Returns:
             ``TabularFeaturizer`` (ainda **não** fitted).
@@ -101,10 +121,37 @@ class TabularFeaturizer:
                 return cfg.get(key, default)
             return getattr(cfg, key, default)
 
+        hes_node = _get("hesitation", {})
+        # Normaliza DictConfig → dict puro (picklable + json.dumps no hash da config).
+        if hes_node is not None and hasattr(hes_node, "keys") and not isinstance(hes_node, dict):
+            from omegaconf import OmegaConf
+
+            hes_node = OmegaConf.to_container(hes_node, resolve=True)
+
         return cls(
-            sample_rate=int(_get("sample_rate", 16000)),
+            sample_rate=int(_get("sample_rate", sample_rate)),
             silence_rms_threshold=float(_get("silence_rms_threshold", 0.1)),
+            use_question_type=bool(_get("use_question_type", True)),
+            use_metadata=bool(_get("use_metadata", True)),
+            use_prosody=bool(_get("use_prosody", True)),
+            use_hesitation=bool(_get("use_hesitation", False)),
+            hesitation=dict(hes_node or {}),
         )
+
+    # =========================================================================
+    # Extrator de hesitação (lazy — só quando use_hesitation)
+    # =========================================================================
+
+    @property
+    def _hes(self):
+        """:class:`HesitationExtractor` construído sob demanda a partir de ``hesitation``."""
+        if self._hes_ext is None:
+            from src.features.hesitation import HesitationExtractor
+
+            self._hes_ext = HesitationExtractor.from_config(
+                self.hesitation, sample_rate=self.sample_rate
+            )
+        return self._hes_ext
 
     # =========================================================================
     # Dimensão (contrato comum com os embedders — README §6.3)
@@ -124,23 +171,34 @@ class TabularFeaturizer:
     def fit(self, windows: list) -> TabularFeaturizer:
         """Aprende vocabulários categóricos a partir das janelas de TREINO.
 
+        O vocabulário só é aprendido quando ``use_metadata`` — sem ele, o bloco
+        demográfico não é emitido e o vocab seria inútil.
+
         Args:
             windows: Lista de ``WindowSample`` (ou dicts) do split de treino.
 
         Returns:
             self (fitted).
         """
-        for col in _CATEGORICAL_META:
-            values = sorted({str(self._meta_get(w, col)) for w in windows})
-            self.vocab_[col] = values
+        self.vocab_ = {}
+        if self.use_metadata:
+            for col in _CATEGORICAL_META:
+                values = sorted({str(self._meta_get(w, col)) for w in windows})
+                self.vocab_[col] = values
 
         self.feature_names_ = self._build_feature_names()
         self._fitted = True
-        log.info(
-            f"TabularFeaturizer fit: d_tab={len(self.feature_names_)} "
-            f"(qtype=7, demográficos="
-            f"{sum(len(v) for v in self.vocab_.values()) + len(_NUMERIC_META)}, prosódia=3)"
-        )
+        parts = []
+        if self.use_question_type:
+            parts.append(f"qtype={len(QUESTION_TYPES)}")
+        if self.use_metadata:
+            demo = sum(len(v) for v in self.vocab_.values()) + len(_NUMERIC_META)
+            parts.append(f"demográficos={demo}")
+        if self.use_prosody:
+            parts.append("prosódia=3")
+        if self.use_hesitation:
+            parts.append(f"hesitação={self._hes.dim}")
+        log.info(f"TabularFeaturizer fit: d_tab={len(self.feature_names_)} ({', '.join(parts)})")
         return self
 
     def transform(self, windows: list, waveforms: list | None = None) -> np.ndarray:
@@ -177,28 +235,36 @@ class TabularFeaturizer:
     # =========================================================================
 
     def _transform_one(self, window, wav) -> np.ndarray:
-        """Vetor tabular de uma janela."""
+        """Vetor tabular de uma janela (blocos condicionais aos flags ``use_*``)."""
         feats: list[float] = []
 
         # --- question_type one-hot ------------------------------------------
-        qt = self._field(window, "question_type", "") or ""
-        feats += [1.0 if qt == t else 0.0 for t in QUESTION_TYPES]
+        if self.use_question_type:
+            qt = self._field(window, "question_type", "") or ""
+            feats += [1.0 if qt == t else 0.0 for t in QUESTION_TYPES]
 
-        # --- demográficos numéricos -----------------------------------------
-        age = self._meta_get(window, "age")
-        feats.append(float(age) if self._is_number(age) else 0.0)
-        is_student = self._meta_get(window, "is_student")
-        feats.append(1.0 if str(is_student).lower() in ("true", "1", "yes") else 0.0)
-
-        # --- demográficos categóricos (one-hot via vocab do train) ----------
-        for col in _CATEGORICAL_META:
-            value = str(self._meta_get(window, col))
-            for known in self.vocab_[col]:
-                feats.append(1.0 if value == known else 0.0)
+        # --- demográficos (numéricos + categóricos one-hot via vocab do train) ---
+        if self.use_metadata:
+            age = self._meta_get(window, "age")
+            feats.append(float(age) if self._is_number(age) else 0.0)
+            is_student = self._meta_get(window, "is_student")
+            feats.append(1.0 if str(is_student).lower() in ("true", "1", "yes") else 0.0)
+            for col in _CATEGORICAL_META:
+                value = str(self._meta_get(window, col))
+                for known in self.vocab_[col]:
+                    feats.append(1.0 if value == known else 0.0)
 
         # --- prosódia engenheirada da janela --------------------------------
-        duration, speech_rate, silence_ratio = self._window_prosody(window, wav)
-        feats += [duration, speech_rate, silence_ratio]
+        if self.use_prosody:
+            duration, speech_rate, silence_ratio = self._window_prosody(window, wav)
+            feats += [duration, speech_rate, silence_ratio]
+
+        # --- bloco de hesitação (opcional; acompanha o embedding) -----------
+        if self.use_hesitation:
+            if wav is not None and len(wav):
+                feats += self._hes.extract_one(wav).tolist()
+            else:  # sem waveform → zeros (mantém a dimensão fixa)
+                feats += [0.0] * self._hes.dim
 
         return np.asarray(feats, dtype=np.float32)
 
@@ -231,12 +297,18 @@ class TabularFeaturizer:
         return duration, speech_rate, silence_ratio
 
     def _build_feature_names(self) -> list[str]:
-        """Nomes determinísticos (alinhados a :meth:`_transform_one`)."""
-        names: list[str] = [f"qtype_{t}" for t in QUESTION_TYPES]
-        names += ["meta_age", "meta_is_student"]
-        for col in _CATEGORICAL_META:
-            names += [f"meta_{col}={v}" for v in self.vocab_[col]]
-        names += ["prosody_duration", "prosody_speech_rate", "prosody_silence_ratio"]
+        """Nomes determinísticos (alinhados a :meth:`_transform_one`, mesmos flags)."""
+        names: list[str] = []
+        if self.use_question_type:
+            names += [f"qtype_{t}" for t in QUESTION_TYPES]
+        if self.use_metadata:
+            names += ["meta_age", "meta_is_student"]
+            for col in _CATEGORICAL_META:
+                names += [f"meta_{col}={v}" for v in self.vocab_[col]]
+        if self.use_prosody:
+            names += ["prosody_duration", "prosody_speech_rate", "prosody_silence_ratio"]
+        if self.use_hesitation:
+            names += self._hes.feature_names()
         return names
 
     @staticmethod

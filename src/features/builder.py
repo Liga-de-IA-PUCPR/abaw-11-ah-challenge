@@ -273,9 +273,17 @@ class FeatureBuilder:
                 "feature_set": getattr(self.audio_embedder, "feature_set", None),
                 "n_mfcc": getattr(self.audio_embedder, "n_mfcc", None),
                 "agg_stats": getattr(self.audio_embedder, "agg_stats", None),
+                "hesitation": getattr(self.audio_embedder, "hesitation_cfg", None),
                 "dim": self.audio_embedder.dim,
             },
-            "tabular": {"silence_rms_threshold": self.tabular.silence_rms_threshold},
+            "tabular": {
+                "silence_rms_threshold": self.tabular.silence_rms_threshold,
+                "use_question_type": getattr(self.tabular, "use_question_type", True),
+                "use_metadata": getattr(self.tabular, "use_metadata", True),
+                "use_prosody": getattr(self.tabular, "use_prosody", True),
+                "use_hesitation": getattr(self.tabular, "use_hesitation", False),
+                "hesitation": getattr(self.tabular, "hesitation", None),
+            },
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=_jsonable)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
@@ -319,11 +327,14 @@ def build_feature_components(
         feature_set=getattr(cfg.audio_embedder, "feature_set", None),
         n_mfcc=getattr(cfg.audio_embedder, "n_mfcc", 20),
         agg_stats=getattr(cfg.audio_embedder, "agg_stats", None),
+        hesitation=getattr(cfg.audio_embedder, "hesitation", None),
         sample_rate=cfg.data.audio.sample_rate,
         batch_size=getattr(cfg.audio_embedder, "batch_size", 8),
         device=cfg.device,
     )
-    tabular = TabularFeaturizer(sample_rate=cfg.data.audio.sample_rate)
+    tabular = TabularFeaturizer.from_config(
+        getattr(cfg.data, "tabular", None), sample_rate=cfg.data.audio.sample_rate
+    )
     tabular.fit(train_windows)
 
     return FeatureBuilder(

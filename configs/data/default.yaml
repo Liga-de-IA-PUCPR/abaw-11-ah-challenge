@@ -31,9 +31,27 @@ window:
 
 # Features tabulares (FASE 3) — quais grupos habilitar
 tabular:
-  use_metadata: true
+  use_metadata: false
   use_question_type: true
   use_prosody: true
+  # Bloco de INCERTEZA/HESITÂNCIA (suporte ao embedding): latência de resposta + pausas
+  # + entonação (F0 variável, subida terminal) + volume + jitter/shimmer (via Praat).
+  # Alinhado ao construto do BAH (NÃO disfluência). Roda ao lado de QUALQUER
+  # audio_embedder (inclusive hubert/wav2vec2). Desligue com use_hesitation=false.
+  use_hesitation: true
+  hesitation:
+    frame_length: 2048
+    hop_length: 512
+    silence_rms_threshold: 0.1     # fração do RMS máx. p/ frame de silêncio
+    top_db: 30.0                   # VAD de pausas (dB abaixo do pico)
+    min_pause_s: 0.15              # duração mínima p/ contar uma pausa
+    long_pause_s: 0.3              # limiar de pausa "longa" (recalibrado: 0.3 > 0.5 na val)
+    f0_min: 65.0                   # faixa de F0 do Praat (Hz)
+    f0_max: 500.0
+    final_frac: 0.30               # fração final dos frames vozeados p/ a subida terminal de F0
+    nuclei_silence_db: 25.0        # piso de silêncio (dB abaixo do pico) p/ núcleos silábicos
+    nuclei_min_dip_db: 2.0         # vale mínimo (dB) entre núcleos (de Jong & Wempe)
+    use_praat: true                # F0/jitter/shimmer via parselmouth
 
 batch_size: 32                           # usado pelo caminho Lightning
 num_workers: 0

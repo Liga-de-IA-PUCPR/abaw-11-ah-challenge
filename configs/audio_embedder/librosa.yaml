@@ -2,7 +2,24 @@
 name: librosa
 backend: librosa                       # factory: librosa | wav2vec2 | hubert (README §6.3)
 sample_rate: 16000
+# Adicione "hesitation" ao feature_set p/ embutir o bloco de hesitação NO embedding
+# de áudio. ⚠️ Se data.tabular.use_hesitation=true (default), NÃO adicione aqui —
+# duplicaria as features. Prefira o tabular (acompanha qualquer backend).
 feature_set: [mfcc, delta, spectral, chroma, zcr, rms, f0, tempo]
 n_mfcc: 20
 agg_stats: [mean, std, min, max]
+# Config do bloco de incerteza/hesitância (usado só quando "hesitation" ∈ feature_set).
+hesitation:
+  frame_length: 2048
+  hop_length: 512
+  silence_rms_threshold: 0.01
+  top_db: 10.0
+  min_pause_s: 0.04
+  long_pause_s: 0.1
+  f0_min: 65.0
+  f0_max: 500.0
+  final_frac: 0.30
+  nuclei_silence_db: 25.0
+  nuclei_min_dip_db: 2.0
+  use_praat: true
 dim: null                              # derivado de feature_set (FASE 3)

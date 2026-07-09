@@ -183,12 +183,39 @@ class AudioConfig:
 
 
 @dataclass
+class HesitationConfig:
+    """Config do :class:`~src.features.hesitation.HesitationExtractor` (marcadores de incerteza).
+
+    Bloco acústico hand-crafted de INCERTEZA/HESITÂNCIA (latência + pausas + entonação
+    + volume + jitter/shimmer), alinhado ao construto do BAH — NÃO disfluência clínica.
+    Serve de SUPORTE ao embedding. Usado tanto em ``data.tabular.hesitation`` (acompanha
+    qualquer backend) quanto em ``audio_embedder.hesitation`` (token ``"hesitation"`` no
+    ``feature_set``).
+    """
+
+    frame_length: int = 2048
+    hop_length: int = 512
+    silence_rms_threshold: float = 0.1  # fração do RMS máx. p/ frame de silêncio
+    top_db: float = 30.0  # VAD de pausas (dB abaixo do pico) — librosa.effects.split
+    min_pause_s: float = 0.15  # duração mínima p/ contar uma pausa
+    long_pause_s: float = 0.5  # limiar de pausa "longa" (marcador de incerteza)
+    f0_min: float = 65.0  # faixa de F0 do Praat (Hz)
+    f0_max: float = 500.0
+    final_frac: float = 0.30  # fração final dos frames vozeados p/ a subida terminal de F0
+    nuclei_silence_db: float = 25.0  # piso de silêncio (dB abaixo do pico) p/ núcleos silábicos
+    nuclei_min_dip_db: float = 2.0  # vale mínimo (dB) entre núcleos — de Jong & Wempe
+    use_praat: bool = True  # F0/jitter/shimmer via parselmouth (Praat)
+
+
+@dataclass
 class TabularConfig:
     """Sub-bloco ``data.tabular`` — grupos de features tabulares habilitados (FASE 3)."""
 
     use_metadata: bool = True
     use_question_type: bool = True
     use_prosody: bool = True
+    use_hesitation: bool = False  # anexa o bloco de hesitação ao lado do embedding
+    hesitation: HesitationConfig = field(default_factory=HesitationConfig)
 
 
 @dataclass
@@ -240,6 +267,8 @@ class AudioEmbedderConfig:
     )
     n_mfcc: int = 20
     agg_stats: list[str] = field(default_factory=lambda: ["mean", "std", "min", "max"])
+    # bloco de hesitação (ativo se "hesitation" ∈ feature_set) — ver HesitationConfig
+    hesitation: HesitationConfig = field(default_factory=HesitationConfig)
     # deep (wav2vec2/hubert)
     model_name: str | None = None
     pooling: Literal["mean", "cls"] = "mean"
@@ -268,6 +297,8 @@ class ModelConfig:
     # --- cross_attention (lightning) ---
     dim_a: int = 768
     dim_b: int = 768
+    dim_tab: int | None = None  # inferido do cache no fit (ramo tabular opcional)
+    use_tabular: bool = False  # funde tab_seq (hesitação + tabulares) na cross-attention
     common_dim: int = 512
     num_heads: int = 4
     num_classes: int = 1

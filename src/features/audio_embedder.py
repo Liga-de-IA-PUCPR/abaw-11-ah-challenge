@@ -47,6 +47,7 @@ def create_audio_embedder(
     feature_set: list[str] | None = None,
     n_mfcc: int = 20,
     agg_stats: list[str] | None = None,
+    hesitation: dict | None = None,
     sample_rate: int = _SR_DEFAULT,
     batch_size: int = 8,
     device: str = "auto",
@@ -57,7 +58,9 @@ def create_audio_embedder(
     Args:
         backend: "librosa" (prosódia, CPU) | "wav2vec2" | "hubert" (deep, device-aware).
         model_name: Checkpoint HF p/ backends deep (default por backend).
-        feature_set / n_mfcc / agg_stats: parâmetros do backend librosa.
+        feature_set / n_mfcc / agg_stats: parâmetros do backend librosa. Inclua o token
+            ``"hesitation"`` em ``feature_set`` para anexar o bloco de hesitação.
+        hesitation: config (dict) do :class:`HesitationExtractor` (limiares/formantes).
         sample_rate: SR dos waveforms (deve casar com data.audio.sample_rate).
         batch_size: batch dos backends deep.
         device: "auto" | "cpu" | "mps" | "cuda" (só relevante p/ backends deep).
@@ -70,6 +73,7 @@ def create_audio_embedder(
             feature_set=feature_set,
             n_mfcc=n_mfcc,
             agg_stats=agg_stats,
+            hesitation=hesitation,
             sample_rate=sample_rate,
             n_jobs=n_jobs,
         )
@@ -113,7 +117,13 @@ class LibrosaAudioEmbedder(AudioEmbedder):
     | zcr + rms              | 2         | 4 stats   | 8   |
     | f0 (pyin)              | —         | escalares | 3   |
     | tempo                  | —         | escalar   | 1   |
+    | hesitation (opcional)  | —         | escalares | 24  |
     | **Total (default)**    |           |           | **~328** |
+
+    O grupo ``hesitation`` (token no ``feature_set``) anexa o vetor de
+    :class:`~src.features.hesitation.HesitationExtractor` (pausa + prosódia +
+    estabilidade). ⚠️ Se ``data.tabular.use_hesitation`` já estiver ligado, ligar
+    aqui também DUPLICA as features — escolha um dos dois pontos.
     """
 
     name: str = "audio"
@@ -123,6 +133,7 @@ class LibrosaAudioEmbedder(AudioEmbedder):
         feature_set: list[str] | None = None,
         n_mfcc: int = 20,
         agg_stats: list[str] | None = None,
+        hesitation: dict | None = None,
         sample_rate: int = _SR_DEFAULT,
         n_jobs: int = -1,
     ) -> None:
@@ -136,8 +147,18 @@ class LibrosaAudioEmbedder(AudioEmbedder):
         )
         self.n_mfcc = n_mfcc
         self.agg_stats = list(agg_stats) if agg_stats else ["mean", "std", "min", "max"]
+        self.hesitation_cfg = dict(hesitation) if hesitation else {}
         self.sample_rate = sample_rate
         self.n_jobs = n_jobs
+
+        # Extrator de hesitação só quando o token está no feature_set (lazy p/ import).
+        self._hes = None
+        if "hesitation" in self.feature_set:
+            from src.features.hesitation import HesitationExtractor
+
+            self._hes = HesitationExtractor.from_config(
+                self.hesitation_cfg, sample_rate=sample_rate
+            )
 
         self._feature_names = self._build_feature_names()
         self._dim = len(self._feature_names)
@@ -268,6 +289,9 @@ class LibrosaAudioEmbedder(AudioEmbedder):
             except Exception:
                 feats.append(0.0)
 
+        if self._hes is not None:  # bloco de hesitação (pausa + prosódia + estabilidade)
+            feats += self._hes.extract_one(wav).tolist()
+
         vec = np.asarray(feats, dtype=np.float32)
         return np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -283,7 +307,7 @@ class LibrosaAudioEmbedder(AudioEmbedder):
                 out.append(float(_AGG_FUNCS[stat](row)))
         return out
 
-    def _build_feature_names(self) -> list[str]:
+    def _build_feature_names(self) -> list[str]:  # noqa: PLR0912
         """Nomes determinísticos coerentes com :meth:`_extract_one`."""
         names: list[str] = []
 
@@ -319,6 +343,8 @@ class LibrosaAudioEmbedder(AudioEmbedder):
             names += ["audio_f0_mean", "audio_f0_std", "audio_voiced_fraction"]
         if "tempo" in self.feature_set:
             names.append("audio_tempo")
+        if self._hes is not None:
+            names += self._hes.feature_names()
         return names
 
 
