@@ -26,8 +26,9 @@ a predição final por vídeo vem da **agregação das janelas** com limiar cali
     <li><a href="#5-comandos-make">Comandos (make)</a></li>
     <li><a href="#6-rodando-experimentos-hydra">Rodando experimentos (Hydra)</a></li>
     <li><a href="#7-configuração-dos-yaml">Configuração dos YAML</a></li>
-    <li><a href="#8-estrutura-do-projeto">Estrutura do projeto</a></li>
-    <li><a href="#9-saídas--submissão">Saídas &amp; submissão</a></li>
+    <li><a href="#8-como-os-modelos-funcionam">Como os modelos funcionam</a></li>
+    <li><a href="#9-estrutura-do-projeto">Estrutura do projeto</a></li>
+    <li><a href="#10-saídas--submissão">Saídas &amp; submissão</a></li>
     <li><a href="#autores--licença">Autores &amp; licença</a></li>
   </ol>
 </details>
@@ -234,7 +235,146 @@ uv run python main.py model.n_estimators=800 text_embedder=minilm
 
 ---
 
-## 8. Estrutura do projeto
+## 8. Como os modelos funcionam
+
+Do vídeo bruto até a predição binária por vídeo. A **etapa de dados é compartilhada**
+pelos dois modelos; eles divergem em *como consomem as janelas* e em *onde* acontece a
+redução janelas → vídeo.
+
+### 8.1 Etapa compartilhada — janelamento + embeddings por janela
+
+O vídeo nunca vira "um embedding só": ele é fatiado em **janelas de 5 s** (hop 2,5 s,
+50% de sobreposição) e **cada janela recebe seu próprio vetor de features**, alinhado à
+transcrição por timestamp.
+
+```mermaid
+flowchart LR
+    V["vídeo .mp4"] -->|ffmpeg| A["áudio .flac<br/>16 kHz mono"]
+    A --> J["janela deslizante<br/>5 s · hop 2,5 s<br/>(vídeo 60 s → T=23 janelas)"]
+    TR["transcrição Whisper<br/>(chunks + timestamps)"] --> AL
+    J --> AL["alinhamento por timestamp:<br/>texto da janela = chunks sobrepostos<br/>rótulo da janela = overlap com<br/>time_detailed_ah ≥ 50%"]
+    AL --> E1["audio_emb (320)<br/>librosa: 80 features × 4 stats<br/><i>(ou wav2vec2 → 768)</i>"]
+    AL --> E2["text_emb (768)<br/>RoBERTa-emotion<br/>mean pool dos tokens"]
+    AL --> E3["tabular (17)<br/>metadados + prosódia"]
+    E1 --> P[("Parquet<br/>1 linha por janela")]
+    E2 --> P
+    E3 --> P
+```
+
+**Regra central de dimensões:** a *duração* do vídeo só muda **T** (nº de janelas);
+a *dimensão* de cada embedding é fixa, definida pelo embedder:
+
+| eixo | o que é | de onde vem |
+|------|---------|-------------|
+| `T` | nº de janelas do vídeo (varia: 2 a 45 no BAH) | duração ÷ hop |
+| `320` | dim do áudio por janela (librosa) | 80 features × 4 estatísticas (mean/std/min/max) |
+| `768` | dim do texto por janela (RoBERTa) | hidden size fixo do RoBERTa-base |
+
+> Um vídeo de 8 min tem T=191 janelas — os vetores continuam com 320/768 dims.
+> Analogia com NLP: a janela é o **token**; o vídeo é a **frase**. Frases longas têm
+> *mais* tokens, não tokens "maiores".
+
+### 8.2 Caminho A — RandomForest (family=sklearn, CPU)
+
+Para o RF, **cada janela é uma amostra independente** de treino, com rótulo próprio de
+janela (`time_detailed_ah`). A noção de vídeo só entra **depois**, na agregação
+estatística das probabilidades.
+
+```mermaid
+flowchart TD
+    P[("Parquet")] --> X["matriz achatada X<br/>(n_janelas, 1105)<br/>[audio 320 + text 768 + tabular 17]<br/>1 linha = 1 janela = 1 amostra"]
+    X --> RF["RandomForest<br/>treinado com rótulo DE JANELA"]
+    RF --> PW["P(A/H) POR JANELA<br/>ex.: vídeo com 23 janelas →<br/>[0.12, 0.08, 0.71, 0.83, ...]"]
+    PW --> AG["agregação mean_proba:<br/>média das probas do vídeo"]
+    AG --> S["score do vídeo = 0.38<br/>(1 score por vídeo)"]
+    S --> TH{"score ≥ limiar<br/>calibrado (ex. 0.63)?"}
+    TH -->|sim| Y1["pred = 1"]
+    TH -->|não| Y0["pred = 0"]
+```
+
+Características: T predições intermediárias (uma por janela), redução janelas→vídeo
+**fora do modelo** (pós-processamento, `src/training/aggregation.py`), 100% CPU.
+
+### 8.3 Caminho B — Cross-Attention (family=lightning)
+
+Para o neural, **a amostra é o vídeo inteiro**: as T janelas entram *juntas*, empilhadas
+como sequência `(T, D)` — e o modelo emite **1 logit por vídeo direto**, sem predições
+intermediárias nem média. O rótulo de treino é o `global_ah` do vídeo (BCE).
+
+```mermaid
+flowchart TD
+    P[("Parquet")] --> DS["VideoSequenceDataset<br/>agrupa janelas por vídeo:<br/>audio_seq (T, 320) · text_seq (T, 768)<br/>label = global_ah do VÍDEO"]
+    DS --> CL["collate: padding até T_max do batch<br/>+ key_padding_mask (True = janela falsa)"]
+    CL --> B["batch:<br/>audio_seq (B, T, 320)<br/>text_seq (B, T, 768)<br/>mask (B, T)"]
+    B --> PA["proj_a: Linear 320→512<br/>q (B, T, 512)"]
+    B --> PB["proj_b: Linear 768→512<br/>kv (B, T, 512)"]
+    PA --> CA["CROSS-ATTENTION<br/>query = áudio · key/value = texto<br/>cada janela de áudio consulta<br/>TODAS as janelas de texto<br/>(padding ignorado pela máscara)"]
+    PB --> CA
+    CA --> RES["residual + LayerNorm<br/>fused (B, T, 512)"]
+    RES --> PO["POOLING TEMPORAL MASCARADO<br/>média sobre as T janelas reais<br/>(B, T, 512) → (B, 512)<br/>← a redução janelas→vídeo é AQUI,<br/>dentro da rede (diferenciável)"]
+    PO --> H["cabeça MLP<br/>Linear 512→512 → ReLU → Dropout<br/>→ Linear 512→1"]
+    H --> L["logit (B, 1)<br/>score bruto ∈ (−∞, +∞)<br/>ex.: −0.32"]
+    L --> SG["sigmoid<br/>P = 1/(1+e^−logit) ∈ [0,1]<br/>ex.: P = 0.42"]
+    SG --> TH{"P ≥ limiar<br/>calibrado (ex. 0.63)?"}
+    TH -->|sim| Y1["pred = 1"]
+    TH -->|não| Y0["pred = 0"]
+```
+
+Anatomia (o padrão universal *backbone → pooling → head*):
+
+| componente | papel | shape de saída |
+|------------|-------|----------------|
+| projeções | leva áudio/texto ao espaço comum (512) | `(B, T, 512)` |
+| cross-attention | **contexto**: mistura informação entre janelas áudio↔texto | `(B, T, 512)` |
+| pooling mascarado | **resumo**: colapsa as T janelas em 1 vetor por vídeo | `(B, 512)` |
+| cabeça MLP | **decisão**: comprime as evidências no logit | `(B, 1)` |
+| sigmoid | normaliza o logit em probabilidade P | `(B, 1)` |
+| limiar | converte P em 0/1 (fora da rede, calibrado na val) | — |
+
+> **Treino:** `BCEWithLogits(logit, global_ah)` — o gradiente atravessa o pooling, então
+> a rede *aprende* a combinar as janelas (diferente da média fixa do RF). A loss usa o
+> logit cru (não o P) por estabilidade numérica.
+
+### 8.4 Limiar: onde entra e como é calibrado (comum aos dois)
+
+O limiar **não é um parâmetro da rede** — é uma regra de decisão pós-processamento,
+calibrada uma única vez na **validação** e congelada no checkpoint:
+
+```mermaid
+flowchart LR
+    F["fit concluído"] --> IV["inferência na VAL<br/>(124 vídeos → 124 scores P)"]
+    IV --> GR["varre 101 limiares<br/>t = 0.00, 0.01, ..., 1.00"]
+    GR --> F1["Macro-F1(val) para cada t<br/>(só a binarização muda — busca barata)"]
+    F1 --> SM["suaviza a curva<br/>(média móvel, janela 0.10)"]
+    SM --> PK["argmax da curva suave<br/>= centro do platô estável"]
+    PK --> CK[("checkpoint<br/>trainer_state.json<br/>threshold = 0.63")]
+    CK --> EV["evaluate / submit:<br/>pred = (P ≥ 0.63)"]
+```
+
+Por que suavizar em vez do pico cru? Com val pequena a curva F1×limiar é serrilhada e o
+`argmax` pode fisgar um pico de sorte que não transfere (caso real deste repo:
+`argmax`→0.30 deu F1 0.719 na val mas **0.614 no test**; `smooth`→0.63 deu 0.707 na val
+e **0.701 no test**). Detalhes: [src/training/README.md](src/training/README.md).
+
+> ⚠️ O limiar aprende-se na **val**, nunca no test — calibrar no test infla a métrica e
+> não generaliza para o *hidden test* oficial.
+
+### 8.5 Comparação lado a lado
+
+| | RandomForest | Cross-Attention |
+|---|---|---|
+| amostra de treino | **janela** (rótulo `time_detailed_ah`) | **vídeo** (rótulo `global_ah`) |
+| entrada do modelo | 1 janela por vez `(1105,)` | T janelas juntas `(B, T, D)` |
+| predições intermediárias | T (uma por janela) | nenhuma |
+| redução janelas→vídeo | média das probas (**fora** do modelo) | pooling temporal (**dentro**, aprendido) |
+| contexto entre janelas | nenhum | total (atenção áudio↔texto) |
+| saída por vídeo | score agregado → limiar → 0/1 | logit → sigmoid → P → limiar → 0/1 |
+| hardware | CPU | MPS/CUDA (Lightning, opcional) |
+| métrica final | Macro-F1 sobre **todos** os vídeos do split (não existe "F1 por vídeo") | idem |
+
+---
+
+## 9. Estrutura do projeto
 
 ```
 .
@@ -259,7 +399,7 @@ uv run python main.py model.n_estimators=800 text_embedder=minilm
 
 ---
 
-## 9. Saídas & submissão
+## 10. Saídas & submissão
 
 - Cada run grava em `outputs/<experiment_name>/<timestamp>/` (checkpoint, métricas, plots) e,
   se habilitado, no **W&B**. O Reporter local sempre roda como fallback offline.

@@ -3,7 +3,7 @@
 defaults:
   - data: default
   - text_embedder: roberta_emotion   # EN + emoção (README §7/§8)
-  - audio_embedder: librosa          # baseline prosódico (CPU); deep = wav2vec2/hubert
+  - audio_embedder: librosa         # baseline prosódico (CPU); deep = wav2vec2/hubert
   - model: random_forest             # baseline barato; competição = cross_attention
   - trainer: sklearn                 # caminho CPU; neural = lightning
   - aggregation: default
