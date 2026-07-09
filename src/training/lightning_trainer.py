@@ -130,10 +130,14 @@ class LightningTrainer(BaseTrainer):
         L.seed_everything(getattr(self.config, "seed", 42))
         # Infere as dims dos embeddings do CACHE (librosa 320 / wav2vec2 768) em vez de
         # confiar no hardcode da config — assim o modelo casa com o Parquet existente.
-        d_a, d_b = self._dims_from_loader(train_data)
+        d_a, d_b, d_tab = self._dims_from_loader(train_data)
         if d_a and d_b:
             self.model.dim_a, self.model.dim_b = d_a, d_b
             log.info(f"Dims inferidas do cache: dim_a={d_a}, dim_b={d_b}")
+        # dim_tab só importa quando o ramo tabular está ligado (model.use_tabular).
+        if getattr(self.model, "use_tabular", False) and d_tab:
+            self.model.dim_tab = d_tab
+            log.info(f"Ramo tabular ligado: dim_tab={d_tab} (funde tab_seq na cross-attention)")
         self._lit_module = self.model.build_lightning_module()
         self._trainer = self._build_trainer()
 
@@ -210,6 +214,8 @@ class LightningTrainer(BaseTrainer):
                     "ckpt_path": self._ckpt_path,
                     "dim_a": int(self.model.dim_a),  # dims treinadas → load reconstrói igual
                     "dim_b": int(self.model.dim_b),
+                    "dim_tab": int(getattr(self.model, "dim_tab", 0)),
+                    "use_tabular": bool(getattr(self.model, "use_tabular", False)),
                 },
                 indent=2,
             )
@@ -242,6 +248,11 @@ class LightningTrainer(BaseTrainer):
         # um L.Trainer leve (sem logger/callbacks) p/ inferência (evaluate/predict).
         if state.get("dim_a") and state.get("dim_b"):
             model.dim_a, model.dim_b = int(state["dim_a"]), int(state["dim_b"])
+        # Restaura o ramo tabular exatamente como no treino (senão o state_dict não casa).
+        if "use_tabular" in state:
+            model.use_tabular = bool(state["use_tabular"])
+        if state.get("dim_tab"):
+            model.dim_tab = int(state["dim_tab"])
         trainer._lit_module = model.build_lightning_module()
         device = resolve_device(getattr(config, "device", "auto"))
         accelerator = _ACCELERATOR.get(device.type, "cpu")
@@ -277,10 +288,14 @@ class LightningTrainer(BaseTrainer):
         return {str(vid): int(lab) for vid, lab in ds.video_labels.items()}
 
     @staticmethod
-    def _dims_from_loader(loader) -> tuple[int, int]:
-        """Dims ``(d_audio, d_text)`` do ``VideoSequenceDataset`` do loader (0 se ausente)."""
+    def _dims_from_loader(loader) -> tuple[int, int, int]:
+        """Dims ``(d_audio, d_text, d_tab)`` do ``VideoSequenceDataset`` (0 se ausente)."""
         ds = loader.dataset
-        return int(getattr(ds, "dim_audio", 0)), int(getattr(ds, "dim_text", 0))
+        return (
+            int(getattr(ds, "dim_audio", 0)),
+            int(getattr(ds, "dim_text", 0)),
+            int(getattr(ds, "dim_tab", 0)),
+        )
 
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)

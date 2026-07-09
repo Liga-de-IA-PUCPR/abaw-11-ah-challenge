@@ -37,19 +37,34 @@ def _build_fusion_module(
     common_dim: int,
     num_heads: int,
     dropout: float,
+    dim_tab: int = 0,
+    use_tabular: bool = False,
 ):
     """Constrói o ``nn.Module`` de cross-attention (importa torch *lazy*).
 
     Definido como factory para que ``import torch`` só ocorra quando a
     cross-attention é efetivamente instanciada (não no import do módulo).
+
+    Args:
+        dim_a / dim_b: dims dos embeddings de áudio / texto por janela.
+        common_dim / num_heads / dropout: hiperparâmetros da fusão.
+        dim_tab: dim do vetor tabular por janela (features de hesitação + tabulares).
+        use_tabular: se ``True`` (e ``dim_tab > 0``), funde o ``tab_seq`` — pooling
+            temporal mascarado → projeção → concat na representação do vídeo antes da
+            cabeça. Opcional por design: a hesitação também pode entrar via o próprio
+            embedding de áudio (token ``hesitation`` no ``audio_embedder=librosa``).
     """
+    import torch
     from torch import nn
+
+    fuse_tab = bool(use_tabular) and int(dim_tab) > 0
 
     class _CrossAttentionFusionModule(nn.Module):
         """Fusão cross-attention sobre sequência de janelas ``(B, T, D)`` com masking."""
 
         def __init__(self) -> None:
             super().__init__()
+            self.fuse_tab = fuse_tab
             self.proj_a = nn.Linear(dim_a, common_dim)  # áudio -> common
             self.proj_b = nn.Linear(dim_b, common_dim)  # texto -> common
             self.cross_attn = nn.MultiheadAttention(
@@ -59,8 +74,15 @@ def _build_fusion_module(
                 batch_first=True,
             )
             self.norm = nn.LayerNorm(common_dim)
+            head_in = common_dim
+            if self.fuse_tab:
+                # Ramo tabular opcional: projeta o vetor por-janela p/ common_dim e
+                # concatena ao vídeo poolado (dobra a entrada da cabeça).
+                self.proj_tab = nn.Linear(dim_tab, common_dim)
+                self.tab_norm = nn.LayerNorm(common_dim)
+                head_in = common_dim * 2
             self.classifier = nn.Sequential(
-                nn.Linear(common_dim, common_dim),
+                nn.Linear(head_in, common_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(common_dim, 1),  # 1 logit por vídeo
@@ -71,10 +93,12 @@ def _build_fusion_module(
             feat_a: torch.Tensor,  # (B, T, dim_a) — áudio por janela
             feat_b: torch.Tensor,  # (B, T, dim_b) — texto por janela
             key_padding_mask: torch.Tensor | None = None,  # (B, T) True = padding
+            feat_tab: torch.Tensor | None = None,  # (B, T, dim_tab) — tabular por janela
         ) -> torch.Tensor:
             """Devolve ``(B, 1)`` logits a nível de vídeo.
 
             ``key_padding_mask[b, t] = True`` indica janela de padding (variável T).
+            ``feat_tab`` só é usado quando ``use_tabular`` (senão é ignorado).
             """
             q = self.proj_a(feat_a)  # (B, T, C)  query = áudio
             kv = self.proj_b(feat_b)  # (B, T, C)  key/value = texto
@@ -83,6 +107,15 @@ def _build_fusion_module(
             )
             fused = self.norm(q + attn_out)  # residual + LN -> (B, T, C)
             pooled = self._masked_mean(fused, key_padding_mask)  # (B, C)
+            if self.fuse_tab:
+                if feat_tab is None:
+                    raise ValueError(
+                        "use_tabular=True mas 'tab_seq' não veio no batch — a cabeça "
+                        "espera [vídeo ‖ tabular]."
+                    )
+                tab_pooled = self._masked_mean(feat_tab, key_padding_mask)  # (B, dim_tab)
+                tab_repr = self.tab_norm(torch.relu(self.proj_tab(tab_pooled)))  # (B, C)
+                pooled = torch.cat([pooled, tab_repr], dim=1)  # (B, 2C)
             return self.classifier(pooled)  # (B, 1)
 
         @staticmethod
@@ -113,6 +146,8 @@ class CrossAttentionFusion:
         self.cfg = cfg
         self.dim_a = int(cfg.get("dim_a", 768))  # áudio (wav2vec2/hubert)
         self.dim_b = int(cfg.get("dim_b", 768))  # texto (roberta-emotion)
+        self.dim_tab = int(cfg.get("dim_tab") or 0)  # tabular/hesitação (inferido do cache)
+        self.use_tabular = bool(cfg.get("use_tabular", False))  # funde tab_seq (opcional)
         self.common_dim = int(cfg.get("common_dim", 512))
         self.num_heads = int(cfg.get("num_heads", 4))
         self.dropout = float(cfg.get("dropout", 0.1))
@@ -132,6 +167,8 @@ class CrossAttentionFusion:
             common_dim=self.common_dim,
             num_heads=self.num_heads,
             dropout=self.dropout,
+            dim_tab=self.dim_tab,
+            use_tabular=self.use_tabular,
         )
 
     def build_lightning_module(self):
@@ -214,9 +251,10 @@ def _build_lit_module(fusion, lr: float, weight_decay: float):
             """Batch do ``VideoSequenceDataset``: tensores empilhados (B, T, D) + máscara."""
             feat_a = batch["audio_seq"]  # (B, T, dim_a)
             feat_b = batch["text_seq"]  # (B, T, dim_b)
+            feat_tab = batch.get("tab_seq")  # (B, T, dim_tab) — usado só se use_tabular
             mask = batch["key_padding_mask"]  # (B, T) True = padding
             label = batch["label"].float()  # (B, 1) já vem do collate_sequences
-            logit = self.model(feat_a, feat_b, key_padding_mask=mask)
+            logit = self.model(feat_a, feat_b, key_padding_mask=mask, feat_tab=feat_tab)
             loss = nn.functional.binary_cross_entropy_with_logits(logit, label)
             proba = torch.sigmoid(logit)  # (B, 1)
             return loss, proba, label.int()

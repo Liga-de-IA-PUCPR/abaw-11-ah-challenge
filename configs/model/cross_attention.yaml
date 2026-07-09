@@ -4,7 +4,14 @@ family: lightning
 dim_a: 768                             # d_audio (wav2vec2/hubert)
 dim_b: 768                             # d_text  (roberta_emotion)
 common_dim: 512
-num_heads: 4
+num_heads: 8
 num_classes: 1                         # 1 logit/vídeo (BCEWithLogits)
 dropout: 0.1
+weight_decay: 0.01
 lr: 1e-3
+# Ramo tabular OPCIONAL: funde o tab_seq (features de hesitação + tabulares) na
+# cross-attention (pooling temporal → projeção → concat antes da cabeça). Alternativa:
+# embutir a hesitação no próprio embedding de áudio (token "hesitation" no librosa) e
+# deixar isto false. dim_tab é inferido do cache no fit (null = auto).
+use_tabular: false
+dim_tab: null

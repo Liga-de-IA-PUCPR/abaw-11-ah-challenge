@@ -162,6 +162,7 @@ class VideoSequenceDataset(Dataset):
         # O LightningTrainer infere as dims do modelo daqui (sem hardcode na config).
         self.dim_audio: int = int(self._audio[0].shape[1]) if self._audio else 0
         self.dim_text: int = int(self._text[0].shape[1]) if self._text else 0
+        self.dim_tab: int = int(self._tab[0].shape[1]) if self._tab else 0
         # Acessor público alinhado com WindowMatrixView (FASE_4 depende deste contrato):
         # {video_id: global_ah} (rótulo a nível de vídeo; -1 = test).
         self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels, strict=False))
