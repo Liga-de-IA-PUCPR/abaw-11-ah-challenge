@@ -64,10 +64,16 @@ def _run_featurize(cfg: DictConfig, device) -> int:
 
     log.info(f"Device dos embedders: {device}")
     summary = run_featurize(cfg, device=device)
-    log.info(
-        f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
-        f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
-    )
+    if summary.get("cached"):
+        log.info(
+            f"Featurize pulado (cache): {summary['n_windows']} janelas → "
+            f"{summary['parquet_path']}. Use 'data.force=true' p/ recomputar."
+        )
+    else:
+        log.info(
+            f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
+            f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
+        )
     return 0
 
 
