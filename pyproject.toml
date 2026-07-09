@@ -49,6 +49,7 @@ dependencies = [
     "soundfile>=0.12.1",         # I/O de áudio (.flac/.wav) — backend do librosa
     "audioread>=3.0.1",          # fallback de decodificação de áudio
     "numba>=0.60.0",             # acelera o librosa (JIT)
+    "praat-parselmouth>=0.4.3",  # Praat via Python: F0/jitter/shimmer/formantes p/ features de hesitação
     # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
     "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
     "numpy>=1.26.0",             # matrizes de features
