@@ -177,6 +177,28 @@ def _apply_threshold_override(cfg: DictConfig, trainer) -> None:
         log.info(f"Limiar sobreposto pela config (sem re-treinar): {trainer.threshold_:.4f}")
 
 
+def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
+    """Recalibra o limiar na val (sem re-treinar) se ``aggregation.recalibrate=true``.
+
+    O limiar salvo no checkpoint é congelado; mudar a estratégia de calibração só
+    valeria num re-treino. Com este flag, evaluate/submit rodam inferência na val e
+    recalculam ``threshold_`` com a config ``aggregation`` atual — a correção passa a
+    valer em qualquer checkpoint. Só age se ``threshold=="auto"`` (um float fixo vence).
+    """
+    agg = getattr(cfg, "aggregation", None)
+    if agg is None or not bool(agg.get("recalibrate", False)):
+        return
+    if agg.get("threshold", "auto") not in (None, "auto"):
+        return  # limiar fixo explícito tem prioridade sobre recalibrar
+    if not hasattr(trainer, "recalibrate_on_val"):
+        log.warning(f"family={family} não suporta recalibrar-na-val; mantendo limiar salvo.")
+        return
+    from src.data.datasets import load_split
+
+    val_loader = _as_loader(cfg, load_split(cfg, "val", family=family), family, "val")
+    trainer.recalibrate_on_val(val_loader)
+
+
 def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_dir) -> None:
     """Gera metrics.json + results.txt + plots automaticamente após CADA evaluate (FASE 5).
 
@@ -258,6 +280,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
+    _maybe_recalibrate(cfg, trainer, family)  # aggregation.recalibrate=true → recalibra na val
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
     split = cfg.get("split") or "val"
@@ -288,6 +311,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
     )
     trainer = load_trainer(family, ckpt_dir, cfg=cfg)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
+    _maybe_recalibrate(cfg, trainer, family)  # aggregation.recalibrate=true → recalibra na val
 
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")

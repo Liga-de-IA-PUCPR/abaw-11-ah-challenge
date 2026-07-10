@@ -1,9 +1,12 @@
 # configs/trainer/lightning.yaml  (accelerator derivado do device global — README §3)
 family: lightning
-max_epochs: 500
+max_epochs: 400
 accelerator: auto                      # resolvido de ${device}: cpu→"cpu" · mps→"mps" · cuda→"gpu"
 devices: 1
 gradient_clip_val: 1.0
-patience: 20                           # EarlyStopping(monitor="val_loss")
-monitor: val_loss
-mode: min
+patience: 20
+# Seleção de checkpoint/early-stop. val_ap (AP, livre de limiar) é o critério certo pra
+# "rankeia + calibra o limiar depois": val_loss (BCE) diverge do AP/F1 e escolhe época
+# sub-treinada. Alternativas: val_f1_macro (mode=max) | val_loss (mode=min).
+monitor: val_ap
+mode: max

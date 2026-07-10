@@ -93,17 +93,24 @@ class LightningTrainer(BaseTrainer):
             save_dir=out_root,
             log_model=True,
         )
+        # Critério de seleção do checkpoint/early-stop. Default = val_ap (AP, livre de
+        # limiar): a tarefa é "rankeia + calibra o limiar depois", então o melhor modelo
+        # é o de melhor RANKING, não o de menor BCE (val_loss diverge do AP/F1 e tende a
+        # escolher uma época sub-treinada). Configurável via trainer.monitor/mode.
+        monitor = tcfg.get("monitor", "val_ap")
+        mode = tcfg.get("mode", "max")
         # dirpath = <run_dir>/checkpoints → o .ckpt fica no MESMO run dir do
         # trainer_state.json (resolve_latest_checkpoint acha os dois juntos).
         ckpt_dir = str(Path(self.output_dir) / "checkpoints") if self.output_dir else None
         ckpt = ModelCheckpoint(
             dirpath=ckpt_dir,
-            monitor="val_loss",
-            mode="min",
+            monitor=monitor,
+            mode=mode,
             save_top_k=1,
-            filename="best-{epoch:02d}-{val_loss:.4f}",
+            filename=f"best-{{epoch:02d}}-{{{monitor}:.4f}}",
         )
         self._ckpt_cb = ckpt
+        log.info(f"Seleção de checkpoint/early-stop: monitor='{monitor}' (mode='{mode}')")
 
         return L.Trainer(
             max_epochs=tcfg.get("max_epochs", 200),
@@ -111,7 +118,10 @@ class LightningTrainer(BaseTrainer):
             devices=tcfg.get("devices", 1),
             gradient_clip_val=tcfg.get("gradient_clip_val", 1.0),
             logger=wandb_logger,
-            callbacks=[EarlyStopping(monitor="val_loss", patience=tcfg.get("patience", 20)), ckpt],
+            callbacks=[
+                EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
+                ckpt,
+            ],
         )
 
     # ==========================================================================
@@ -153,15 +163,7 @@ class LightningTrainer(BaseTrainer):
         agg = self._cfg_block("aggregation")
         thr_setting = agg.get("threshold", "auto")
         if thr_setting == "auto":
-            threshold, _ = calibrate_threshold(
-                val_proba=val_proba,
-                val_video_ids=val_ids,
-                val_video_labels=val_labels,
-                method="identity",
-                metric=self._cfg_block("metrics").get("primary", "macro_f1"),
-                selection=agg.get("calibration", "smooth"),
-                smooth_window=float(agg.get("smooth_window", 0.10)),
-            )
+            threshold, _ = self._calibrate(val_ids, val_proba, val_labels, agg)
         else:
             threshold = float(thr_setting)
             log.info(f"Limiar fixo da config: {threshold:.3f}")
@@ -169,6 +171,35 @@ class LightningTrainer(BaseTrainer):
         self.results["val"] = self._evaluate(val_ids, val_proba, val_labels)
         self.results["threshold"] = threshold
         return self.results
+
+    def _calibrate(self, val_ids, val_proba, val_labels, agg) -> tuple[float, float]:
+        """Calibra o limiar na val conforme o grupo ``aggregation`` (método/seleção)."""
+        return calibrate_threshold(
+            val_proba=val_proba,
+            val_video_ids=val_ids,
+            val_video_labels=val_labels,
+            method="identity",
+            metric=self._cfg_block("metrics").get("primary", "macro_f1"),
+            selection=agg.get("calibration", "base_rate"),
+            smooth_window=float(agg.get("smooth_window", 0.10)),
+            target_pos_rate=agg.get("target_pos_rate"),
+        )
+
+    def recalibrate_on_val(self, val_loader) -> float:
+        """Recalibra o limiar na val a partir do checkpoint carregado (SEM re-treinar).
+
+        Chave do fluxo evaluate/submit: o limiar salvo no ``trainer_state.json`` fica
+        congelado no checkpoint; mudar a estratégia de calibração só afetaria um re-treino.
+        Este método roda inferência na val e recalcula ``self.threshold_`` com a config
+        ``aggregation`` ATUAL — então ``aggregation.recalibrate=true`` faz a correção valer
+        imediatamente em qualquer checkpoint existente.
+        """
+        ids, proba = self._infer(val_loader)
+        labels = self._labels_from_loader(val_loader)
+        thr, score = self._calibrate(ids, proba, labels, self._cfg_block("aggregation"))
+        self.threshold_ = thr
+        log.info(f"Recalibrado na val (sem re-treino): thr={thr:.3f} -> macro_f1={score:.4f}")
+        return thr
 
     def evaluate(self, data) -> dict[str, Any]:
         """Avalia a nível de vídeo (limiar calibrado) — métricas sklearn canônicas."""
@@ -216,6 +247,8 @@ class LightningTrainer(BaseTrainer):
                     "dim_b": int(self.model.dim_b),
                     "dim_tab": int(getattr(self.model, "dim_tab", 0)),
                     "use_tabular": bool(getattr(self.model, "use_tabular", False)),
+                    "pool": str(getattr(self.model, "pool", "mean")),
+                    "tab_fusion": str(getattr(self.model, "tab_fusion", "late")),
                 },
                 indent=2,
             )
@@ -253,6 +286,9 @@ class LightningTrainer(BaseTrainer):
             model.use_tabular = bool(state["use_tabular"])
         if state.get("dim_tab"):
             model.dim_tab = int(state["dim_tab"])
+        # Restaura pooling/fusão tabular (default = legado, p/ checkpoints antigos sem estes campos).
+        model.pool = str(state.get("pool", "mean"))
+        model.tab_fusion = str(state.get("tab_fusion", "late"))
         trainer._lit_module = model.build_lightning_module()
         device = resolve_device(getattr(config, "device", "auto"))
         accelerator = _ACCELERATOR.get(device.type, "cpu")

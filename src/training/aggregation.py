@@ -127,6 +127,7 @@ def calibrate_threshold(
     grid: np.ndarray | None = None,
     selection: str = "smooth",
     smooth_window: float = 0.10,
+    target_pos_rate: float | None = None,
 ) -> tuple[float, float]:
     """Varre um grid de limiares em [0, 1] e escolhe o melhor na validação.
 
@@ -134,10 +135,16 @@ def calibrate_threshold(
     longo do grid (busca barata). Serve tanto ao RF (probas de janela) quanto à
     cross-attention (``method="identity"``: 1 sigmoid por vídeo).
 
-    A escolha do limiar usa ``selection`` (ver ``_select_threshold_index``):
-    ``"smooth"`` (default) pega o centro do platô da curva (robusto a val pequena);
-    ``"argmax"`` pega o pico cru. O Macro-F1 retornado é o **real** (não suavizado)
-    no limiar escolhido.
+    A escolha do limiar usa ``selection``:
+    - ``"argmax"``: pico cru da curva F1×limiar.
+    - ``"smooth"``: centro do platô da curva suavizada (ver ``_select_threshold_index``).
+    - ``"base_rate"``: **casamento de taxa-base** — ignora a curva de F1 e escolhe o
+      limiar que faz a fração predita positiva == ``target_pos_rate`` (quantil dos scores).
+      É o mais ROBUSTO quando a val é pequena (a curva de F1 é ruidosa e seu pico não
+      transfere pro test), pois só depende da prevalência — estável entre val/test/hidden.
+      ``target_pos_rate=None`` usa a prevalência observada na própria val.
+
+    O Macro-F1 retornado é o **real** (não suavizado) no limiar escolhido.
 
     Returns:
         ``(melhor_limiar, macro_f1_no_limiar)``.
@@ -156,10 +163,21 @@ def calibrate_threshold(
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
 
-    f1s = np.array(
-        [video_macro_f1(y_true, (s >= thr).astype(np.int64)) for thr in grid],
-        dtype=np.float64,
-    )
+    def _f1_at(thr: float) -> float:
+        return video_macro_f1(y_true, (s >= thr).astype(np.int64))
+
+    if selection == "base_rate":
+        # Limiar que reproduz a prevalência (quantil): predizer p+ fração de positivos.
+        p_plus = float(y_true.mean()) if target_pos_rate is None else float(target_pos_rate)
+        best_thr = float(np.quantile(s, 1.0 - p_plus))
+        best_score = _f1_at(best_thr)
+        log.info(
+            f"Limiar calibrado (method='{method}', selection='base_rate', "
+            f"p+={p_plus:.3f}): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+        )
+        return best_thr, best_score
+
+    f1s = np.array([_f1_at(thr) for thr in grid], dtype=np.float64)
     best_idx = _select_threshold_index(grid, f1s, selection, smooth_window)
     best_thr, best_score = float(grid[best_idx]), float(f1s[best_idx])
 
