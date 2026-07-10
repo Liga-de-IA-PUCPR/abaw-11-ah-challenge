@@ -85,17 +85,23 @@ class TabularFeaturizer:
     use_prosody: bool = True
     use_hesitation: bool = False
     hesitation: dict = field(default_factory=dict)
+    use_text_features: bool = False  # bloco de texto (ambivalência/hesitância) — late fusion
+    text_features: dict = field(default_factory=dict)
+    device: str = "auto"  # device do classificador de emoção do TextFeaturizer
     vocab_: dict[str, list[str]] = field(default_factory=dict)
     feature_names_: list[str] = field(default_factory=list)
     _fitted: bool = False
     _hes_ext: object = field(default=None, init=False, repr=False, compare=False)
+    _text_ext: object = field(default=None, init=False, repr=False, compare=False)
 
     # =========================================================================
     # Construção a partir da Config Hydra
     # =========================================================================
 
     @classmethod
-    def from_config(cls, cfg=None, *, sample_rate: int = 16000) -> TabularFeaturizer:
+    def from_config(
+        cls, cfg=None, *, sample_rate: int = 16000, device: str = "auto"
+    ) -> TabularFeaturizer:
         """Instancia o featurizer a partir de um nó de config (``cfg.data.tabular``).
 
         Tolera ``cfg=None`` (usa os defaults) e leitura via ``.get``/atributo, então
@@ -121,12 +127,13 @@ class TabularFeaturizer:
                 return cfg.get(key, default)
             return getattr(cfg, key, default)
 
-        hes_node = _get("hesitation", {})
-        # Normaliza DictConfig → dict puro (picklable + json.dumps no hash da config).
-        if hes_node is not None and hasattr(hes_node, "keys") and not isinstance(hes_node, dict):
-            from omegaconf import OmegaConf
+        def _to_dict(node):
+            # Normaliza DictConfig → dict puro (picklable + json.dumps no hash da config).
+            if node is not None and hasattr(node, "keys") and not isinstance(node, dict):
+                from omegaconf import OmegaConf
 
-            hes_node = OmegaConf.to_container(hes_node, resolve=True)
+                node = OmegaConf.to_container(node, resolve=True)
+            return dict(node or {})
 
         return cls(
             sample_rate=int(_get("sample_rate", sample_rate)),
@@ -135,7 +142,10 @@ class TabularFeaturizer:
             use_metadata=bool(_get("use_metadata", True)),
             use_prosody=bool(_get("use_prosody", True)),
             use_hesitation=bool(_get("use_hesitation", False)),
-            hesitation=dict(hes_node or {}),
+            hesitation=_to_dict(_get("hesitation", {})),
+            use_text_features=bool(_get("use_text_features", False)),
+            text_features=_to_dict(_get("text_features", {})),
+            device=str(_get("device", device)),
         )
 
     # =========================================================================
@@ -152,6 +162,15 @@ class TabularFeaturizer:
                 self.hesitation, sample_rate=self.sample_rate
             )
         return self._hes_ext
+
+    @property
+    def _text(self):
+        """:class:`TextFeaturizer` construído sob demanda a partir de ``text_features``."""
+        if self._text_ext is None:
+            from src.features.text_features import TextFeaturizer
+
+            self._text_ext = TextFeaturizer.from_config(self.text_features, device=self.device)
+        return self._text_ext
 
     # =========================================================================
     # Dimensão (contrato comum com os embedders — README §6.3)
@@ -186,6 +205,10 @@ class TabularFeaturizer:
                 values = sorted({str(self._meta_get(w, col)) for w in windows})
                 self.vocab_[col] = values
 
+        # Bloco de texto: treina o classificador contextual de hedge (H1) no train (sem vazamento).
+        if self.use_text_features:
+            self._text.fit([self._field(w, "text", "") or "" for w in windows])
+
         self.feature_names_ = self._build_feature_names()
         self._fitted = True
         parts = []
@@ -198,6 +221,8 @@ class TabularFeaturizer:
             parts.append("prosódia=3")
         if self.use_hesitation:
             parts.append(f"hesitação={self._hes.dim}")
+        if self.use_text_features:
+            parts.append(f"texto={self._text.dim}")
         log.info(f"TabularFeaturizer fit: d_tab={len(self.feature_names_)} ({', '.join(parts)})")
         return self
 
@@ -217,7 +242,17 @@ class TabularFeaturizer:
             raise RuntimeError("TabularFeaturizer.transform chamado antes de fit().")
 
         wavs = waveforms if waveforms is not None else [None] * len(windows)
-        rows = [self._transform_one(w, wav) for w, wav in zip(windows, wavs, strict=False)]
+        # Bloco de texto: computado EM BATCH (agrupado por vídeo → broadcast de A1/A3-resposta),
+        # pois não cabe no loop por-janela. Cada linha vai para o _transform_one correspondente.
+        text_feats = None
+        if self.use_text_features and windows:
+            texts = [self._field(w, "text", "") or "" for w in windows]
+            vids = [str(self._field(w, "video_id", "")) for w in windows]
+            text_feats = self._text.extract(texts, vids)  # (n, d_text) — broadcast interno
+        rows = [
+            self._transform_one(w, wav, None if text_feats is None else text_feats[i])
+            for i, (w, wav) in enumerate(zip(windows, wavs, strict=False))
+        ]
         result = (
             np.vstack(rows).astype(np.float32)
             if rows
@@ -234,8 +269,11 @@ class TabularFeaturizer:
     # Internals
     # =========================================================================
 
-    def _transform_one(self, window, wav) -> np.ndarray:
-        """Vetor tabular de uma janela (blocos condicionais aos flags ``use_*``)."""
+    def _transform_one(self, window, wav, text_row=None) -> np.ndarray:
+        """Vetor tabular de uma janela (blocos condicionais aos flags ``use_*``).
+
+        ``text_row`` é a linha (já computada em batch) do bloco de texto, ou ``None``.
+        """
         feats: list[float] = []
 
         # --- question_type one-hot ------------------------------------------
@@ -265,6 +303,10 @@ class TabularFeaturizer:
                 feats += self._hes.extract_one(wav).tolist()
             else:  # sem waveform → zeros (mantém a dimensão fixa)
                 feats += [0.0] * self._hes.dim
+
+        # --- bloco de texto (opcional; computado em batch e passado por linha) ---
+        if self.use_text_features:
+            feats += (text_row.tolist() if text_row is not None else [0.0] * self._text.dim)
 
         return np.asarray(feats, dtype=np.float32)
 
@@ -309,6 +351,8 @@ class TabularFeaturizer:
             names += ["prosody_duration", "prosody_speech_rate", "prosody_silence_ratio"]
         if self.use_hesitation:
             names += self._hes.feature_names()
+        if self.use_text_features:
+            names += self._text.feature_names()
         return names
 
     @staticmethod

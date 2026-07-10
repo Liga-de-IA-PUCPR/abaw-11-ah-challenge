@@ -208,6 +208,32 @@ class HesitationConfig:
 
 
 @dataclass
+class TextFeaturesConfig:
+    """Config do :class:`~src.features.text_features.TextFeaturizer` (ambivalência/hesitância).
+
+    Bloco de texto hand-crafted alinhado ao construto do BAH: A1 (índices psicométricos de
+    ambivalência, NÍVEL DE RESPOSTA), A3 (entropia por janela + flutuação de emoção por
+    resposta), A4 (contraste + shift de polaridade, por janela), H1 (hedges, por janela).
+    Feature de SUPORTE ao embedding de texto. Usado em ``data.tabular.text_features`` (late
+    fusion) e ``text_embedder.text_features`` (early fusion). Léxicos são constantes editáveis
+    em ``text_features.py``; aqui ficam os flags e parâmetros.
+    """
+
+    use_a1: bool = True  # índices de ambivalência (resposta)
+    use_a3: bool = True  # entropia (janela) + flutuação/conflito de emoção (resposta)
+    use_a4: bool = True  # contraste + shift de polaridade (janela)
+    use_h1: bool = True  # hedges (janela)
+    use_emotion: bool = True  # carrega o classificador de emoção (P/N emoção em A1 + A3)
+    use_hedge_classifier: bool = False  # H1 contextual (logreg de supervisão distante)
+    emotion_model: str = "cardiffnlp/twitter-roberta-base-emotion"
+    positive_labels: list[str] = field(default_factory=lambda: ["joy", "optimism"])
+    negative_labels: list[str] = field(default_factory=lambda: ["anger", "sadness"])
+    max_length: int = 128
+    batch_size: int = 32
+    norm: list[str] = field(default_factory=lambda: ["per_word", "per_100", "raw"])
+
+
+@dataclass
 class TabularConfig:
     """Sub-bloco ``data.tabular`` — grupos de features tabulares habilitados (FASE 3)."""
 
@@ -216,6 +242,8 @@ class TabularConfig:
     use_prosody: bool = True
     use_hesitation: bool = False  # anexa o bloco de hesitação ao lado do embedding
     hesitation: HesitationConfig = field(default_factory=HesitationConfig)
+    use_text_features: bool = False  # bloco de texto (ambivalência/hesitância) — late fusion
+    text_features: TextFeaturesConfig = field(default_factory=TextFeaturesConfig)
 
 
 @dataclass
@@ -248,6 +276,10 @@ class TextEmbedderConfig:
     max_length: int = 128
     batch_size: int = 32
     dim: int = 768
+    trust_remote_code: bool = False  # exigido por encoders com código custom (ex.: GTE-Large v1.5)
+    # Early fusion opcional: embute o TextFeaturizer NO text_emb (passa pela atenção do cross-attn).
+    fuse_text_features: bool = False
+    text_features: TextFeaturesConfig = field(default_factory=TextFeaturesConfig)
 
 
 @dataclass

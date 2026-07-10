@@ -52,6 +52,25 @@ tabular:
     nuclei_silence_db: 25.0        # piso de silêncio (dB abaixo do pico) p/ núcleos silábicos
     nuclei_min_dip_db: 2.0         # vale mínimo (dB) entre núcleos (de Jong & Wempe)
     use_praat: true                # F0/jitter/shimmer via parselmouth
+  # Bloco de TEXTO (ambivalência/hesitância): A1 (índices psicométricos, RESPOSTA) + A3
+  # (entropia por janela + flutuação de emoção por resposta) + A4 (contraste + shift) +
+  # H1 (hedges). Late fusion (acompanha qualquer text_embedder; vai ao RF e ao ramo tabular
+  # do cross-attn). ⚠️ Se text_embedder.fuse_text_features=true (early), NÃO ligar aqui —
+  # duplicaria. Desligue com use_text_features=false.
+  use_text_features: false
+  text_features:
+    use_a1: true                 # ambivalência (Griffin/Kaplan de P/N; nível de resposta)
+    use_a3: true                 # entropia (janela) + flutuação/conflito de emoção (resposta)
+    use_a4: true                 # contraste + shift de polaridade (janela)
+    use_h1: true                 # hedges (janela)
+    use_emotion: true            # classificador de emoção p/ P/N-emoção (A1) e A3
+    use_hedge_classifier: false  # H1 contextual (logreg de supervisão distante) — opcional
+    emotion_model: cardiffnlp/twitter-roberta-base-emotion
+    positive_labels: [joy, optimism]
+    negative_labels: [anger, sadness]
+    max_length: 128
+    batch_size: 32
+    norm: [per_word, per_100, raw]   # normalizações emitidas p/ contagens léxicas
 
 batch_size: 32                           # usado pelo caminho Lightning
 num_workers: 0

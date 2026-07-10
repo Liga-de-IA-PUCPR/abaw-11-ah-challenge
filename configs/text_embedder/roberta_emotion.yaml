@@ -5,4 +5,8 @@ pooling: mean                          # mean | cls
 max_length: 128
 batch_size: 32
 dim: 768                               # hidden_size (informativo; FASE 3 confere via config)
+trust_remote_code: false               # encoders de arquitetura padrão não precisam
+# Early fusion opcional das features de texto NO embedding (passa pela atenção do cross-attn).
+# ⚠️ Se data.tabular.use_text_features=true (late), NÃO ligar aqui — duplicaria.
+fuse_text_features: false
 # device herdado do global ${device} pelo embedder (resolve_device)
