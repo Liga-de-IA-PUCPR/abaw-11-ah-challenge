@@ -44,6 +44,7 @@ dependencies = [
     # --- Texto: embedders via HuggingFace (RoBERTa-emotion EN default, model-agnostic) ---
     "transformers>=4.44.0",      # AutoTokenizer / AutoModel (respeitam device CPU/MPS/CUDA)
     "torch>=2.4.0",              # backend dos embedders deep (texto + wav2vec2/hubert)
+    "vadersentiment>=3.3.2",     # léxico de sentimento (P/N) p/ features de ambivalência (texto)
     # --- Áudio: extração e features hand-crafted (baseline librosa, CPU/numpy) ---
     "librosa>=0.10.2",           # MFCC, prosódia, espectral, chroma, f0, tempo
     "soundfile>=0.12.1",         # I/O de áudio (.flac/.wav) — backend do librosa
