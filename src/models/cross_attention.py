@@ -78,6 +78,10 @@ def _build_fusion_module(
             if self.fuse_tab:
                 # Ramo tabular opcional: projeta o vetor por-janela p/ common_dim e
                 # concatena ao vídeo poolado (dobra a entrada da cabeça).
+                # BatchNorm no INPUT padroniza cada feature (escalas heterogêneas: f0~500,
+                # contagens~2, probs~0.5) — sem isso o proj_tab é dominado pelas de grande
+                # magnitude. É per-feature (ao contrário do LayerNorm, que é por-amostra).
+                self.tab_in_norm = nn.BatchNorm1d(dim_tab)
                 self.proj_tab = nn.Linear(dim_tab, common_dim)
                 self.tab_norm = nn.LayerNorm(common_dim)
                 head_in = common_dim * 2
@@ -114,6 +118,7 @@ def _build_fusion_module(
                         "espera [vídeo ‖ tabular]."
                     )
                 tab_pooled = self._masked_mean(feat_tab, key_padding_mask)  # (B, dim_tab)
+                tab_pooled = self.tab_in_norm(tab_pooled)  # padroniza cada feature (escala)
                 tab_repr = self.tab_norm(torch.relu(self.proj_tab(tab_pooled)))  # (B, C)
                 pooled = torch.cat([pooled, tab_repr], dim=1)  # (B, 2C)
             return self.classifier(pooled)  # (B, 1)
