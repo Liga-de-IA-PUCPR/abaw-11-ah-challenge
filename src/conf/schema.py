@@ -331,6 +331,8 @@ class ModelConfig:
     dim_b: int = 768
     dim_tab: int | None = None  # inferido do cache no fit (ramo tabular opcional)
     use_tabular: bool = False  # funde tab_seq (hesitação + tabulares) na cross-attention
+    pool: Literal["mean", "attention", "max"] = "mean"  # agregação temporal janela→vídeo
+    tab_fusion: Literal["late", "token"] = "late"  # tab: late (concat pós-pool) | token (pré-pool)
     common_dim: int = 512
     num_heads: int = 4
     num_classes: int = 1
@@ -356,8 +358,8 @@ class TrainerConfig:
     devices: int = 1
     gradient_clip_val: float = 1.0
     patience: int = 20
-    monitor: str = "val_loss"
-    mode: str = "min"
+    monitor: str = "val_ap"  # AP (livre de limiar) — ver configs/trainer/lightning.yaml
+    mode: str = "max"
 
 
 @dataclass
@@ -366,8 +368,10 @@ class AggregationConfig:
 
     method: Literal["mean_proba", "max_proba", "frac_positive", "any"] = "mean_proba"
     threshold: float | str = "auto"  # "auto" = calibrado na val; ou float fixo
-    calibration: Literal["smooth", "argmax"] = "smooth"  # robustez na escolha do limiar
+    calibration: Literal["smooth", "argmax", "base_rate"] = "base_rate"  # escolha do limiar
     smooth_window: float = 0.10  # largura da média móvel (unidades de limiar) p/ 'smooth'
+    target_pos_rate: float | None = None  # 'base_rate': prevalência-alvo (None = a da val)
+    recalibrate: bool = False  # evaluate/submit: recalibra na val (ignora o limiar salvo)
     metric: str = "macro_f1"
 
 
