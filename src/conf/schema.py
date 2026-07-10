@@ -415,6 +415,10 @@ class RootConfig:
     split: str | None = None
     out: str | None = None
     checkpoint: str | None = None
+    # Ensemble (evaluate/submit, só lightning): lista de run dirs cujas probas por vídeo
+    # são MEDIADAS. Ex.: ensemble=[outputs/cross_attention/A,outputs/cross_attention/B].
+    # O limiar é recalibrado nas probas médias da val. None = checkpoint único.
+    ensemble: list[str] | None = None
 
 
 # ==============================================================================

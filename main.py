@@ -178,18 +178,22 @@ def _apply_threshold_override(cfg: DictConfig, trainer) -> None:
 
 
 def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
-    """Recalibra o limiar na val (sem re-treinar) se ``aggregation.recalibrate=true``.
+    """Recalibra o limiar na val (sem re-treinar) se pedido.
 
     O limiar salvo no checkpoint é congelado; mudar a estratégia de calibração só
-    valeria num re-treino. Com este flag, evaluate/submit rodam inferência na val e
-    recalculam ``threshold_`` com a config ``aggregation`` atual — a correção passa a
-    valer em qualquer checkpoint. Só age se ``threshold=="auto"`` (um float fixo vence).
+    valeria num re-treino. Com ``aggregation.recalibrate=true``, evaluate/submit rodam
+    inferência na val e recalculam ``threshold_`` com a config atual. **Ensemble sempre
+    recalibra** (o limiar médio dos membros não vale para a proba média). Só age se
+    ``threshold=="auto"`` (um float fixo explícito vence).
     """
     agg = getattr(cfg, "aggregation", None)
-    if agg is None or not bool(agg.get("recalibrate", False)):
+    if agg is None:
         return
     if agg.get("threshold", "auto") not in (None, "auto"):
         return  # limiar fixo explícito tem prioridade sobre recalibrar
+    want = bool(agg.get("recalibrate", False)) or bool(cfg.get("ensemble"))
+    if not want:
+        return
     if not hasattr(trainer, "recalibrate_on_val"):
         log.warning(f"family={family} não suporta recalibrar-na-val; mantendo limiar salvo.")
         return
@@ -197,6 +201,36 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
 
     val_loader = _as_loader(cfg, load_split(cfg, "val", family=family), family, "val")
     trainer.recalibrate_on_val(val_loader)
+
+
+def _resolve_trainer(cfg: DictConfig, family: str):
+    """Carrega UM checkpoint ou um ENSEMBLE (média de probas). Retorna ``(trainer, report_dir)``.
+
+    ``ensemble=[dirA,dirB,...]`` (só lightning) monta um :class:`EnsembleTrainer` que média
+    as probas por vídeo dos membros; senão resolve 1 checkpoint (``cfg.checkpoint`` ou o
+    mais recente da família). O ``report_dir`` é onde ``_write_eval_report`` grava.
+    """
+    from pathlib import Path
+
+    from src.outputs.checkpoint import resolve_latest_checkpoint
+    from src.training.factory import load_trainer
+
+    ens = cfg.get("ensemble")
+    if ens:
+        if family != "lightning":
+            raise ValueError("ensemble só é suportado para a família lightning (cross_attention).")
+        from src.training.ensemble import EnsembleTrainer
+
+        dirs = [str(d) for d in ens]
+        members = [load_trainer(family, d, cfg=cfg) for d in dirs]
+        report_dir = Path(cfg.data.paths.output_root) / cfg.model.name / f"ensemble_{len(dirs)}"
+        log.info(f"Ensemble de {len(dirs)} checkpoints → relatórios em {report_dir}")
+        return EnsembleTrainer(members, cfg), str(report_dir)
+
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
+        cfg.data.paths.output_root, family=family
+    )
+    return load_trainer(family, ckpt_dir, cfg=cfg), ckpt_dir
 
 
 def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_dir) -> None:
@@ -269,18 +303,12 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     import json
 
     from src.data.datasets import load_split
-    from src.outputs.checkpoint import resolve_latest_checkpoint
-    from src.training.factory import load_trainer
 
     _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint filtra pela família (FASE 5): só os artefatos do
-    # modelo atual (model.joblib p/ RF | *.ckpt p/ neural) → devolve o mais recente.
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
-    )
-    trainer = load_trainer(family, ckpt_dir, cfg=cfg)
+    # Resolve 1 checkpoint (mais recente da família) OU um ensemble (ensemble=[...]).
+    trainer, ckpt_dir = _resolve_trainer(cfg, family)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
-    _maybe_recalibrate(cfg, trainer, family)  # aggregation.recalibrate=true → recalibra na val
+    _maybe_recalibrate(cfg, trainer, family)  # recalibrate=true OU ensemble → recalibra na val
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
     split = cfg.get("split") or "val"
@@ -300,18 +328,13 @@ def _run_submit(cfg: DictConfig, device) -> int:
     from pathlib import Path
 
     from src.data.datasets import load_split
-    from src.outputs.checkpoint import resolve_latest_checkpoint
     from src.outputs.submission import write_submission
-    from src.training.factory import load_trainer
 
     _, family = _build_trainer(cfg, device)
-    # resolve_latest_checkpoint filtra pela família do modelo atual (FASE 5).
-    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
-    )
-    trainer = load_trainer(family, ckpt_dir, cfg=cfg)
+    # Resolve 1 checkpoint OU um ensemble (ensemble=[...]) — média de probas por vídeo.
+    trainer, _ = _resolve_trainer(cfg, family)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
-    _maybe_recalibrate(cfg, trainer, family)  # aggregation.recalibrate=true → recalibra na val
+    _maybe_recalibrate(cfg, trainer, family)  # recalibrate=true OU ensemble → recalibra na val
 
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")
