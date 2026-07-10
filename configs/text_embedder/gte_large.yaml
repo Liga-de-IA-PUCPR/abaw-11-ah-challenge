@@ -1,0 +1,11 @@
+# configs/text_embedder/gte_large.yaml  (encoder de recuperação forte — lidera no BAH)
+# Semantic Matters (ABAW-8): GTE-Large > BERT/RoBERTa no A/H. Requer trust_remote_code.
+name: gte_large
+model_name: Alibaba-NLP/gte-large-en-v1.5
+pooling: cls                           # GTE usa o token [CLS]
+max_length: 512                        # GTE suporta contexto longo (resposta inteira cabe)
+batch_size: 16
+dim: 1024                              # hidden_size (informativo; FASE 3 confere via config)
+trust_remote_code: true                # executa código custom do repo HF (arquitetura nova)
+fuse_text_features: false              # early fusion opcional (ver roberta_emotion.yaml)
+# device herdado do global ${device}
