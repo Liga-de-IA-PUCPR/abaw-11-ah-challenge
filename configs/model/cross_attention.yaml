@@ -9,9 +9,18 @@ num_classes: 1                         # 1 logit/vídeo (BCEWithLogits)
 dropout: 0.1
 weight_decay: 0.01
 lr: 1e-3
+# AGREGAÇÃO TEMPORAL janela→vídeo (o gargalo: A/H é localizado, mean-pool dilui).
+#   mean       média mascarada (legado; trata A/H como uniforme — DILUI eventos localizados)
+#   attention  pooling atenção-MIL gated (Ilse 2018): aprende peso por janela → soma ponderada
+#   max        máximo mascarado (janela mais forte manda; sem parâmetros)
+pool: attention
+# COMO o tab_seq (features de suporte) entra — só vale se use_tabular=true:
+#   late   mean-pool do tab → proj → concat DEPOIS do pooling (ramo paralelo; pode ser "esmagado")
+#   token  soma o tab projetado em CADA janela ANTES do pooling → passa pela atenção-MIL
+tab_fusion: token
 # Ramo tabular OPCIONAL: funde o tab_seq (features de hesitação + tabulares) na
 # cross-attention (pooling temporal → projeção → concat antes da cabeça). Alternativa:
 # embutir a hesitação no próprio embedding de áudio (token "hesitation" no librosa) e
 # deixar isto false. dim_tab é inferido do cache no fit (null = auto).
-use_tabular: false
+use_tabular: true
 dim_tab: null
