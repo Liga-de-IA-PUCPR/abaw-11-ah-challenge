@@ -82,6 +82,13 @@ def _moving_average(y: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
+# Tolerância (em macro-F1) que define o platô "quase-máximo" na seleção 'smooth':
+# limiares cujo F1 suavizado está a <= _PLATEAU_TOL do máximo contam como platô. Numa
+# val pequena (~124 vídeos) diferenças dessa ordem são ruído — então escolhemos o CENTRO
+# da faixa indistinguível do máximo, não uma borda dela.
+_PLATEAU_TOL = 0.01
+
+
 def _select_threshold_index(
     grid: np.ndarray, f1s: np.ndarray, selection: str, smooth_window: float
 ) -> int:
@@ -89,16 +96,25 @@ def _select_threshold_index(
 
     - ``"argmax"``: pico cru — sensível a ruído quando a val é pequena (a curva é
       uma função degrau e um spike de 1-2 vídeos pode vencer mas não generalizar).
-    - ``"smooth"`` (default): suaviza a curva (média móvel de largura ``smooth_window``,
-      em unidades de limiar) e então pega o pico → escolhe o CENTRO do platô estável,
-      que transfere melhor para o test/hidden-test. Ver ``src/training/README.md``.
+    - ``"smooth"`` (default): suaviza a curva (média móvel de largura ``smooth_window``)
+      e escolhe o **CENTRO do maior platô** cujo F1 suavizado está a ``_PLATEAU_TOL`` do
+      máximo. Diferente do ``argmax`` da curva suavizada (que numa val plana escorrega
+      para uma borda — ex.: 0.5), o centro do platô transfere melhor para o test/hidden-test.
     """
     if selection == "argmax":
         return int(np.argmax(f1s))
     if selection == "smooth":
         spacing = float(grid[1] - grid[0]) if len(grid) > 1 else 1.0
         k = max(1, int(round(smooth_window / spacing)))
-        return int(np.argmax(_moving_average(f1s, k)))
+        s = _moving_average(f1s, k)
+        # Platô = índices a <= _PLATEAU_TOL do máximo suavizado.
+        plateau = np.flatnonzero(s >= float(s.max()) - _PLATEAU_TOL)
+        if plateau.size == 0:  # degenerado (não deve ocorrer): cai no argmax suavizado
+            return int(np.argmax(s))
+        # Centro do MAIOR segmento contíguo do platô (robusto a transferência val→test).
+        runs = np.split(plateau, np.flatnonzero(np.diff(plateau) > 1) + 1)
+        best = max(runs, key=len)
+        return int(best[len(best) // 2])
     raise ValueError(f"selection inválida: '{selection}'. Use 'smooth' | 'argmax'.")
 
 
