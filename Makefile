@@ -42,6 +42,11 @@ OUT           ?= outputs/submission.txt
 EXPERIMENT    ?=
 ARGS          ?=
 SWEEP         ?=
+# Ensemble de seeds (cross-attention): seeds a treinar + manifest com os run dirs.
+SEEDS             ?= 42 1 2 3 4 5 6
+ENSEMBLE_MANIFEST ?= outputs/cross_attention/ensemble_manifest.txt
+# Calibração usada no ensemble (a média suaviza a curva da val → smooth/argmax > base_rate).
+ENS_CALIB         ?= smooth
 
 # MPS (Apple Metal): habilita fallback p/ CPU em ops não suportadas pelo Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
@@ -56,6 +61,7 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
 .PHONY: help setup setup-neural setup-all ffmpeg-check \
         extract-audio preprocess featurize data \
         train train-rf train-neural sweep evaluate submit pipeline \
+        train-ensemble ensemble-evaluate ensemble-submit \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -83,6 +89,9 @@ help:
 	@echo "    sweep            multirun Hydra (SWEEP=\"model.lr=1e-3,5e-4 ...\")"
 	@echo "    evaluate         Macro-F1/AP num split (SPLIT=val por default)"
 	@echo "    submit           gera arquivo de submissão (SPLIT=test, OUT=$(OUT))"
+	@echo "    train-ensemble   treina N seeds (SEEDS=\"42 1 2 ...\") p/ ensemble"
+	@echo "    ensemble-evaluate  Macro-F1/AP do ensemble (média das probas)"
+	@echo "    ensemble-submit    submissão a partir do ensemble"
 	@echo "    pipeline         data + train + evaluate (ponta a ponta)"
 	@echo ""
 	@echo "  Qualidade (CI/CD):"
@@ -157,6 +166,40 @@ evaluate:
 submit:
 	$(PY) $(MAIN) mode=submit $(_EXP) $(if $(SPLIT),split=$(SPLIT),split=test) \
 	  out=$(OUT) device=$(DEVICE) $(ARGS)
+
+# --- Ensemble de seeds (cross-attention) -----------------------------------
+# Treina N seeds (mesma arquitetura/hiperparâmetros, só a seed muda) e registra os
+# run dirs num manifest. O ensemble MÉDIA as probas por vídeo → dissolve a variância
+# entre seeds (o modelo satura em ~2 épocas na val pequena) e cruza o teto do single.
+# SEEDS="42 1 2" muda os seeds; ARGS="..." passa overrides (ex.: audio_embedder, lr).
+train-ensemble:
+	@mkdir -p outputs/cross_attention
+	@: > $(ENSEMBLE_MANIFEST)
+	@for s in $(SEEDS); do \
+	  echo ">>> treinando seed=$$s"; \
+	  $(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=cross_attention \
+	    device=$(if $(filter auto,$(DEVICE)),mps,$(DEVICE)) seed=$$s $(ARGS) || exit 1; \
+	  ls -dt outputs/cross_attention/2*/ | head -1 | sed 's#/$$##' >> $(ENSEMBLE_MANIFEST); \
+	done
+	@echo "✓ Ensemble treinado ($(words $(SEEDS)) seeds). Manifest: $(ENSEMBLE_MANIFEST)"
+	@cat $(ENSEMBLE_MANIFEST)
+
+# Lista dos run dirs do manifest no formato Hydra (dir1,dir2,...).
+_ENS_LIST = $(shell paste -sd, $(ENSEMBLE_MANIFEST) 2>/dev/null)
+
+# Avalia o ensemble do manifest (média das probas + recalibra na val com ENS_CALIB).
+ensemble-evaluate:
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Manifest vazio: rode 'make train-ensemble' antes."; exit 1)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=evaluate +experiment=cross_attention \
+	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) \
+	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_ENS_LIST)]" $(ARGS)
+
+# Escreve a submissão a partir do ensemble do manifest.
+ensemble-submit:
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Manifest vazio: rode 'make train-ensemble' antes."; exit 1)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=submit +experiment=cross_attention \
+	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) out=$(OUT) \
+	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_ENS_LIST)]" $(ARGS)
 
 # Ponta a ponta (dados -> treino -> avaliação).
 pipeline: data train evaluate
