@@ -163,6 +163,15 @@ def calibrate_threshold(
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
 
+    if len(np.unique(y_true)) < 2:
+        log.warning(
+            "Conjunto de calibração tem UMA ÚNICA classe (%d vídeos) — o limiar resultante "
+            "não tem sentido. Provável causa: calibrando num split NÃO-ROTULADO (ex.: o test "
+            "externo, video_label=0 placeholder). Aponte data.paths.calib_parquet_path para um "
+            "Parquet rotulado (ex.: o raw) e use um data.calib_split com rótulos reais.",
+            len(y_true),
+        )
+
     def _f1_at(thr: float) -> float:
         return video_macro_f1(y_true, (s >= thr).astype(np.int64))
 

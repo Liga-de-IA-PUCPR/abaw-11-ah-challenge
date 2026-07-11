@@ -170,6 +170,10 @@ class PathsConfig:
     window_index: str = "data/interim/windows.parquet"
     processed_dir: str = "data/processed"
     parquet_path: str = "data/processed/text_audio_windows.parquet"
+    # Parquet usado SÓ para calibrar/recalibrar o limiar (evaluate/submit). None = mesmo
+    # que parquet_path. Permite predizer num Parquet (ex.: externo) e calibrar noutro
+    # (ex.: raw test rotulado) numa única submissão.
+    calib_parquet_path: str | None = None
     output_root: str = "outputs"
 
 
@@ -260,6 +264,10 @@ class DataConfig:
     tabular: TabularConfig = field(default_factory=TabularConfig)
     batch_size: int = 32
     num_workers: int = 0
+    # Composição de splits (mode=train). Defaults reproduzem o comportamento anterior.
+    # Ex. metodologia (avaliação real é externa): train_splits=[train,val], calib_split=test.
+    train_splits: list[str] = field(default_factory=lambda: ["train"])
+    calib_split: str = "val"
 
 
 @dataclass

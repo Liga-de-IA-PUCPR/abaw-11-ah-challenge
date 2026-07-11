@@ -151,10 +151,13 @@ def _run_train(cfg: DictConfig, device) -> int:
     trainer.output_dir = str(out_dir)
 
     result = trainer.fit(train_data, val_data)
+    # O split de calibração pode não ser 'val' (ex.: 'test' na metodologia externa) — o log
+    # reflete qual foi, para não enganar (as métricas de result['val'] são desse split).
+    calib_name = cfg.data.get("calib_split", "val")
     log.info(
         f"Treino concluído (family={family}). "
-        f"Macro-F1(val)={result['val']['macro_f1']:.4f} | "
-        f"AP(val)={result['val'].get('average_precision', 0.0):.4f} | "
+        f"Macro-F1({calib_name})={result['val']['macro_f1']:.4f} | "
+        f"AP({calib_name})={result['val'].get('average_precision', 0.0):.4f} | "
         f"limiar={result.get('threshold', 0.5):.4f}."
     )
 
@@ -199,8 +202,14 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
         return
     from src.data.datasets import load_split
 
-    val_loader = _as_loader(cfg, load_split(cfg, "val", family=family), family, "val")
-    trainer.recalibrate_on_val(val_loader)
+    # Recalibra no MESMO split usado no treino (data.calib_split), lido de
+    # data.paths.calib_parquet_path se definido (senão do parquet de predição). Isso
+    # permite PREDIZER num parquet (ex.: externo) e CALIBRAR noutro (ex.: raw test).
+    calib_split = cfg.data.get("calib_split", "val")
+    calib_pq = cfg.data.paths.get("calib_parquet_path", None)
+    calib_view = load_split(cfg, calib_split, family=family, parquet_path=calib_pq)
+    calib_loader = _as_loader(cfg, calib_view, family, str(calib_split))
+    trainer.recalibrate_on_val(calib_loader)
 
 
 def _resolve_trainer(cfg: DictConfig, family: str):

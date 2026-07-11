@@ -12,6 +12,7 @@ Colunas esperadas no Parquet (1 linha por janela):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -236,13 +237,17 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
 # ==============================================================================
 
 
-def _split_video_ids(df: pl.DataFrame, split: str) -> set[str]:
-    """Resolve os ``id`` (vídeos) de um split a partir do Parquet de janelas.
+def _split_video_ids(df: pl.DataFrame, split: str | Sequence[str]) -> set[str]:
+    """Resolve os ``id`` (vídeos) de um split (ou UNIÃO de splits) do Parquet de janelas.
 
     O split é **participant-wise**; o Parquet de features (FASE 3) carrega o split
     de cada janela na coluna ``split`` (derivada do ``VideoRecord`` na indexação).
+    Aceita uma string única (``"train"``) OU uma sequência (``["train", "val"]``) —
+    a união é usada para compor o conjunto de treino (splits são disjuntos por
+    participante, então combinar não vaza).
     """
-    return set(df.filter(pl.col("split") == split)["id"].unique().to_list())
+    splits = [split] if isinstance(split, str) else list(split)
+    return set(df.filter(pl.col("split").is_in(splits))["id"].unique().to_list())
 
 
 def _view_for_family(parquet_path: str | Path, family: str, split_ids: set[str]):
@@ -258,35 +263,58 @@ def _view_for_family(parquet_path: str | Path, family: str, split_ids: set[str])
     raise ValueError(f"família desconhecida: {family!r} (use 'sklearn' | 'lightning').")
 
 
-def load_split(cfg: DictConfig, split: str, *, family: str):
-    """Carrega UM split do cache Parquet (FASE 3) na visão da ``family``.
+def load_split(
+    cfg: DictConfig,
+    split: str | Sequence[str],
+    *,
+    family: str,
+    parquet_path: str | Path | None = None,
+):
+    """Carrega UM split (ou união de splits) do cache Parquet (FASE 3) na visão da ``family``.
 
     Args:
-        cfg: config Hydra composto (usa ``cfg.data.paths.parquet_path``).
-        split: "train" | "val" | "test".
+        cfg: config Hydra composto (usa ``cfg.data.paths.parquet_path`` por padrão).
+        split: "train" | "val" | "test", ou uma sequência (ex.: ``["train", "val"]``).
         family: "sklearn" (WindowMatrixView) | "lightning" (VideoSequenceDataset).
+        parquet_path: sobrepõe o Parquet lido (ex.: calibrar num Parquet diferente do
+            de predição). ``None`` = usa ``cfg.data.paths.parquet_path``.
 
     Returns:
-        :class:`WindowMatrixView` ou :class:`VideoSequenceDataset` do split pedido.
+        :class:`WindowMatrixView` ou :class:`VideoSequenceDataset` do(s) split(s) pedido(s).
     """
-    parquet_path = Path(cfg.data.paths.parquet_path)
-    df = pl.read_parquet(parquet_path)
+    pq = Path(parquet_path) if parquet_path is not None else Path(cfg.data.paths.parquet_path)
+    df = pl.read_parquet(pq)
     split_ids = _split_video_ids(df, split)
-    log.info(f"load_split(split={split}, family={family}): {len(split_ids)} vídeos")
-    return _view_for_family(parquet_path, family, split_ids)
+    log.info(f"load_split(split={split}, family={family}): {len(split_ids)} vídeos [{pq.name}]")
+    return _view_for_family(pq, family, split_ids)
 
 
 def load_train_val(cfg: DictConfig, *, family: str):
-    """Carrega os splits de treino e validação na visão da ``family``.
+    """Carrega os splits de treino e de calibração na visão da ``family``.
 
-    Atalho usado por ``mode=train`` (FASE 6): devolve ``(train_data, val_data)`` já
-    na visão certa (matriz p/ sklearn, sequência p/ Lightning).
+    Atalho usado por ``mode=train`` (FASE 6): devolve ``(train_data, calib_data)`` já
+    na visão certa (matriz p/ sklearn, sequência p/ Lightning). Configurável:
+    - ``data.train_splits`` (default ``[train]``): splits UNIDOS para treinar (ex.:
+      ``[train, val]`` p/ usar toda a base rotulada quando a avaliação real é externa).
+    - ``data.calib_split`` (default ``val``): split usado para calibrar o limiar (e, no
+      caminho neural, para monitorar early-stop/checkpoint). Ex.: ``test`` (525, grande
+      e limpo) — calibra o limiar num conjunto robusto sem vazamento (splits disjuntos).
+
+    Os defaults reproduzem EXATAMENTE o comportamento anterior (train / val).
 
     Args:
         cfg: config Hydra composto.
         family: "sklearn" | "lightning".
 
     Returns:
-        Tupla ``(train_data, val_data)``.
+        Tupla ``(train_data, calib_data)``.
     """
-    return load_split(cfg, "train", family=family), load_split(cfg, "val", family=family)
+    data = cfg.data
+    train_splits = data.get("train_splits", ["train"])
+    train_splits = [train_splits] if isinstance(train_splits, str) else list(train_splits)
+    calib_split = data.get("calib_split", "val")
+    log.info(f"Composição de splits: treino={train_splits} · calibração/monitor='{calib_split}'")
+    return (
+        load_split(cfg, train_splits, family=family),
+        load_split(cfg, calib_split, family=family),
+    )

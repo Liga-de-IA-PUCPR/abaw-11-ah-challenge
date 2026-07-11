@@ -85,6 +85,15 @@ class SklearnTrainer(BaseTrainer):
         """
         if train_data.y is None:
             raise ValueError("Split de treino sem rótulos (y is None).")
+        # Guarda: janelas de 'test' têm rótulo -1 (sem label de janela). Se 'test' entrar
+        # em data.train_splits, o RF treinaria numa classe espúria -1 sem erro. Falha claro.
+        y_arr = np.asarray(train_data.y)
+        if (y_arr < 0).any():
+            raise ValueError(
+                f"{int((y_arr < 0).sum())} janelas de treino têm rótulo -1 (desconhecido). "
+                "Provável causa: 'test' está em data.train_splits — o split de test não tem "
+                "rótulo de janela. Use 'test' apenas como data.calib_split, nunca em train_splits."
+            )
 
         log.info("=== Treino do modelo de janela (sklearn, CPU) ===")
         self.model.fit(train_data.X, train_data.y, sample_weight=None)
