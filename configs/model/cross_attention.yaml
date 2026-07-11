@@ -6,9 +6,11 @@ dim_b: 768                             # d_text  (roberta_emotion)
 common_dim: 512
 num_heads: 8
 num_classes: 1                         # 1 logit/vídeo (BCEWithLogits)
-dropout: 0.1
-weight_decay: 0.01
-lr: 1e-3
+# Regularização: defaults ajustados p/ o train pequeno (778 vídeos, overfit em ~2 épocas).
+# Estes valores produziram o melhor ensemble (Macro-F1 test 0.7245).
+dropout: 0.3
+weight_decay: 0.05
+lr: 3e-4
 # AGREGAÇÃO TEMPORAL janela→vídeo (o gargalo: A/H é localizado, mean-pool dilui).
 #   mean       média mascarada (legado; trata A/H como uniforme — DILUI eventos localizados)
 #   attention  pooling atenção-MIL gated (Ilse 2018): aprende peso por janela → soma ponderada
