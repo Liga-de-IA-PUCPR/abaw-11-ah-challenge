@@ -1,0 +1,18 @@
+# configs/audio_embedder/wav2vec2_emotion.yaml  (deep — wav2vec2 fine-tunado p/ EMOÇÃO)
+# Motivação: o wav2vec2-base genérico é ASR-oriented (fonética/lexical) e NÃO bateu a
+# prosódia librosa no A/H (F1 0.71 vs 0.72). Este encoder é fine-tunado em reconhecimento
+# de emoção — hipótese: features afetivas alinham melhor com ambivalência/hesitância.
+# Carregado via AutoModel (base encoder Wav2Vec2Model; a head de classificação é ignorada
+# com warning) → last_hidden_state.mean(1), mesmo caminho do DeepAudioEmbedder.
+name: wav2vec2_emotion
+backend: wav2vec2                      # factory trata como wav2vec2 (sem "hubert" no nome)
+model_name: superb/wav2vec2-base-superb-er   # 768-d, SUPERB Emotion Recognition
+sample_rate: 16000
+pooling: mean
+dim: 768                               # informativo; a FASE 3 confere via config do modelo
+# device herdado do global ${device}
+#
+# Alternativa DIMENSIONAL (arousal/valence/dominance, mais alinhada a ambivalência, porém
+# LARGE 1024-d e mais pesada no MPS):
+#   model_name: audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim
+#   dim: 1024
