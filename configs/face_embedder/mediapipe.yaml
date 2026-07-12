@@ -1,6 +1,6 @@
-# MediaPipe Face Mesh — 468 landmarks (x,y,z) por janela temporal
+# MediaPipe Face Landmarker (Tasks) — 478 landmarks (x,y,z) por janela temporal
 enabled: true
-max_frames: 8
+max_frames: 2
 min_detection_confidence: 0.5
 min_tracking_confidence: 0.5
 refine_landmarks: true

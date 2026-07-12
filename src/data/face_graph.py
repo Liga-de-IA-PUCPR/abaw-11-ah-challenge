@@ -1,4 +1,4 @@
-"""Grafo facial dinâmico — 468 landmarks, arestas por distância (estilo GNN4TS).
+"""Grafo facial dinâmico — landmarks MediaPipe, arestas por distância (estilo GNN4TS).
 
 Em cada instante temporal (janela), a adjacência é derivada das distâncias
 euclidianas entre keypoints: vizinhos k-NN com peso ``exp(-d²/σ²)``.
