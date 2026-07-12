@@ -1,0 +1,29 @@
+# configs/model/multimodal_hetero_full.yaml — stack completo para competição
+name: multimodal_hetero_full
+family: lightning
+dim_a: 768
+dim_b: 768
+dim_tab: 32
+common_dim: 512
+hidden_channels: 128
+heads: 4
+out_channels: 64
+gcn_out_dim: 128
+top_k: 8
+fusion: attention
+dropout: 0.1
+use_latent_gcn: true
+use_bilstm: true
+lstm_hidden: 64
+lr: 1e-3
+weight_decay: 1e-2
+pos_weight: auto
+gae_init: null
+contrastive:
+  enabled: true
+  lambda_supcon: 0.1
+  lambda_triplet: 0.05
+  lambda_ntxent: 0.05
+  temperature: 0.07
+  margin: 0.2
+  miner: batch_hard

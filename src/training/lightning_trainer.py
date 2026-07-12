@@ -96,12 +96,14 @@ class LightningTrainer(BaseTrainer):
         # dirpath = <run_dir>/checkpoints → o .ckpt fica no MESMO run dir do
         # trainer_state.json (resolve_latest_checkpoint acha os dois juntos).
         ckpt_dir = str(Path(self.output_dir) / "checkpoints") if self.output_dir else None
+        monitor = tcfg.get("monitor", "val_loss")
+        mode = tcfg.get("mode", "min")
         ckpt = ModelCheckpoint(
             dirpath=ckpt_dir,
-            monitor="val_loss",
-            mode="min",
+            monitor=monitor,
+            mode=mode,
             save_top_k=1,
-            filename="best-{epoch:02d}-{val_loss:.4f}",
+            filename=f"best-{{epoch:02d}}-{{{monitor}:.4f}}",
         )
         self._ckpt_cb = ckpt
 
@@ -111,7 +113,10 @@ class LightningTrainer(BaseTrainer):
             devices=tcfg.get("devices", 1),
             gradient_clip_val=tcfg.get("gradient_clip_val", 1.0),
             logger=wandb_logger,
-            callbacks=[EarlyStopping(monitor="val_loss", patience=tcfg.get("patience", 20)), ckpt],
+            callbacks=[
+                EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
+                ckpt,
+            ],
         )
 
     # ==========================================================================
@@ -128,8 +133,14 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         L.seed_everything(getattr(self.config, "seed", 42))
-        # Infere as dims dos embeddings do CACHE (librosa 320 / wav2vec2 768) em vez de
-        # confiar no hardcode da config — assim o modelo casa com o Parquet existente.
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.set_float32_matmul_precision("high")
+        except Exception:  # noqa: BLE001
+            pass
+        # Infere as dims dos embeddings do CACHE
         d_a, d_b, d_tab = self._dims_from_loader(train_data)
         if d_a and d_b:
             self.model.dim_a, self.model.dim_b = d_a, d_b
@@ -206,6 +217,8 @@ class LightningTrainer(BaseTrainer):
         """Salva o caminho do checkpoint + limiar (o peso fica no ckpt do Lightning)."""
         import json
 
+        from src.models.checkpoint_compat import snapshot_model_cfg
+
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "trainer_state.json").write_text(
@@ -216,6 +229,7 @@ class LightningTrainer(BaseTrainer):
                     "dim_a": int(self.model.dim_a),
                     "dim_b": int(self.model.dim_b),
                     "dim_tab": int(getattr(self.model, "dim_tab", 0)),
+                    "model_cfg": snapshot_model_cfg(self.model),
                 },
                 indent=2,
             )
@@ -230,6 +244,7 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         from src.conf import resolve_device
+        from src.models.checkpoint_compat import resolve_model_cfg_for_load
 
         state = json.loads((Path(out_dir) / "trainer_state.json").read_text())
         trainer = cls(model=model, config=config)
@@ -244,12 +259,12 @@ class LightningTrainer(BaseTrainer):
             )
             ckpt_path = str(cands[-1]) if cands else ckpt_path
         trainer._ckpt_path = ckpt_path
-        # Restaura as dims treinadas p/ o módulo casar com os pesos do ckpt, e monta
-        # um L.Trainer leve (sem logger/callbacks) p/ inferência (evaluate/predict).
+        # Restaura dims + arquitetura (hidden_channels, heads, …) p/ casar com o ckpt.
         if state.get("dim_a") and state.get("dim_b"):
             model.dim_a, model.dim_b = int(state["dim_a"]), int(state["dim_b"])
         if state.get("dim_tab") and hasattr(model, "dim_tab"):
             model.dim_tab = int(state["dim_tab"])
+        resolve_model_cfg_for_load(model, state, ckpt_path)
         trainer._lit_module = model.build_lightning_module()
         device = resolve_device(getattr(config, "device", "auto"))
         accelerator = _ACCELERATOR.get(device.type, "cpu")

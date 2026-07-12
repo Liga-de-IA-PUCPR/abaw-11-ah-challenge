@@ -26,6 +26,8 @@ if TYPE_CHECKING:  # evita importar torch no caminho sklearn/CPU
 else:  # base dummy p/ não forçar dependência neural no import do módulo
     Dataset = object
 
+from src.features.face_mesh import LANDMARK_DIM, NUM_FACE_LANDMARKS
+
 log = get_logger("data.datasets")
 
 
@@ -141,12 +143,14 @@ class VideoSequenceDataset(Dataset):
         self._torch = torch
         df = _read_window_parquet(parquet_path, split_video_ids)
         df = df.sort(["id", "window_idx"])
+        self._has_face = "face_landmarks" in df.columns
 
         # Agrupa janelas por vídeo preservando a ordem temporal.
         self.video_ids: list[str] = []
         self._audio: list[np.ndarray] = []
         self._text: list[np.ndarray] = []
         self._tab: list[np.ndarray] = []
+        self._face: list[np.ndarray] = []
         self._labels: list[int] = []
 
         for vid, g in df.group_by("id", maintain_order=True):
@@ -155,6 +159,9 @@ class VideoSequenceDataset(Dataset):
             self._audio.append(np.vstack(g["audio_emb"].to_numpy()).astype(np.float32))
             self._text.append(np.vstack(g["text_emb"].to_numpy()).astype(np.float32))
             self._tab.append(np.vstack(g["tabular"].to_numpy()).astype(np.float32))
+            if self._has_face:
+                face_flat = np.vstack(g["face_landmarks"].to_numpy()).astype(np.float32)
+                self._face.append(face_flat.reshape(-1, NUM_FACE_LANDMARKS, LANDMARK_DIM))
             self._labels.append(int(g["video_label"][0]))
 
         self.lengths: list[int] = [a.shape[0] for a in self._audio]
@@ -163,6 +170,10 @@ class VideoSequenceDataset(Dataset):
         self.dim_audio: int = int(self._audio[0].shape[1]) if self._audio else 0
         self.dim_text: int = int(self._text[0].shape[1]) if self._text else 0
         self.dim_tab: int = int(self._tab[0].shape[1]) if self._tab else 0
+        self.has_face: bool = self._has_face
+        self.dim_face: tuple[int, int] = (
+            (NUM_FACE_LANDMARKS, LANDMARK_DIM) if self._has_face else (0, 0)
+        )
         # Acessor público alinhado com WindowMatrixView (FASE_4 depende deste contrato):
         # {video_id: global_ah} (rótulo a nível de vídeo; -1 = test).
         self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels, strict=False))
@@ -177,7 +188,7 @@ class VideoSequenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         torch = self._torch
-        return {
+        item = {
             "audio_seq": torch.tensor(self._audio[idx], dtype=torch.float32),  # (T, d_a)
             "text_seq": torch.tensor(self._text[idx], dtype=torch.float32),  # (T, d_b)
             "tab_seq": torch.tensor(self._tab[idx], dtype=torch.float32),  # (T, d_tab)
@@ -185,6 +196,9 @@ class VideoSequenceDataset(Dataset):
             "label": self._labels[idx],
             "video_id": self.video_ids[idx],
         }
+        if self._has_face:
+            item["face_seq"] = torch.tensor(self._face[idx], dtype=torch.float32)
+        return item
 
 
 def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -220,7 +234,7 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
         1
     )  # (B, 1) p/ BCEWithLogits
 
-    return {
+    out: dict[str, Any] = {
         "audio_seq": audio,
         "text_seq": text,
         "tab_seq": tab,
@@ -229,6 +243,10 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "label": labels,
         "video_id": [b["video_id"] for b in batch],
     }
+    if "face_seq" in batch[0]:
+        face = pad_sequence([b["face_seq"] for b in batch], batch_first=True)
+        out["face_seq"] = face
+    return out
 
 
 # ==============================================================================

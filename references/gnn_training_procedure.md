@@ -30,6 +30,37 @@ de atenção por **message passing aprendido** sobre essa topologia.
 |--------|---------------|-----------|
 | **`gnn_baseline`** (default do preset) | `model=gnn_baseline` | MultimodalBlock + LatentCorrelationGCN — espelha cross-attention |
 | **`hetero_gnn`** (avançado) | `model=hetero_gnn` | HeteroGAT com grafo áudio/texto/vídeo |
+| **`hetero_gnn_contrastive`** | `model=hetero_gnn_contrastive` | HeteroGAT + BCE + SupCon (+ triplet opcional) |
+| **`multimodal_hetero_full`** (competição) | `+experiment=multimodal_hetero_full` | Stack completo: MultimodalBlock → HetGAT (grafo fused) → LatentGCN → BiLSTM + contrastive multi-task |
+| **`multimodal_hetero_face`** (competição + face) | `+experiment=multimodal_hetero_face` | Stack acima + **Face Mesh 468 pts** com GCN espacial (arestas por distância) + GCN temporal (GNN4TS-style) |
+
+## Face Mesh + GCN temporal (GNN4TS-style)
+
+Pipeline visual opcional para A/H (expressão facial):
+
+1. **`mode=featurize_face`** — MediaPipe Face Mesh extrai **468 landmarks** `(x,y,z)` por janela
+   temporal, alinhados a `[t0, t1]` do mp4. Grava coluna `face_landmarks` no Parquet.
+2. **Grafo espacial (por janela)** — 468 nós; arestas k-NN ponderadas por
+   `exp(-d²/σ²)` entre distâncias euclidianas entre keypoints (`src/data/face_graph.py`).
+3. **Grafo temporal (por vídeo)** — sequência de embeddings de janela conectada em cadeia
+   `t→t+1` (`src/models/face_gcn_ts.py`), análogo a grafos que variam no tempo (GNN4TS).
+4. **Modelo** — `multimodal_hetero_face` concatena o readout facial ao stack HetGAT+LatentGCN+BiLSTM.
+
+```bash
+# deps visuais (MediaPipe + OpenCV)
+uv sync --group neural --group vision
+
+# 1) featurize áudio+texto (já existente)
+uv run python main.py mode=featurize device=cuda
+
+# 2) adicionar face landmarks ao Parquet
+uv run python main.py mode=featurize_face +face_embedder=mediapipe
+
+# 3) treinar
+uv run python main.py +experiment=multimodal_hetero_face mode=train device=cuda wandb.mode=disabled
+```
+
+Requer `data/raw/Videos/**/*.mp4` (mesmos paths do índice).
 
 ## Logging de experimentos
 

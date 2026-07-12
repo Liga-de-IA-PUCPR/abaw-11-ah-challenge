@@ -1,21 +1,22 @@
 # @package _global_
-# Preset avançado: HeteroGAT + contrastive + wav2vec2 + RoBERTa-emotion
+# Preset competição: modelo multimodal completo
 defaults:
-  - override /model: hetero_gnn_contrastive
+  - override /model: multimodal_hetero_full
   - override /audio_embedder: wav2vec2
   - override /text_embedder: roberta_emotion
   - override /trainer: lightning
 
-experiment_name: abaw-ah-hetero-gnn-advanced
+experiment_name: abaw-ah-multimodal-full
 
 text_embedder:
-  batch_size: 8
-
+  batch_size: 16
+s
 data:
   num_workers: 8
+  batch_size: 64
 
 trainer:
-  max_epochs: 500
-  patience: 20
+  max_epochs: 5000
+  patience: 200
   monitor: val_f1_macro
   mode: max

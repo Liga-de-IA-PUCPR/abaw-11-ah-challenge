@@ -1,7 +1,7 @@
 # Ensemble de modelos Lightning para evaluate/submit
-combine: mean                        # mean | weighted
+combine: mean
 members:
-  - model: hetero_gnn
+  - model: multimodal_hetero_full
     checkpoint: null
   - model: hetero_gnn_contrastive
     checkpoint: null

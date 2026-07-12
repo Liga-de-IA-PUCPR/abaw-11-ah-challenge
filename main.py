@@ -431,9 +431,22 @@ def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _run_featurize_face(cfg: DictConfig) -> int:
+    """``mode=featurize_face`` — MediaPipe Face Mesh → coluna face_landmarks no Parquet."""
+    from src.pipeline.featurize_face import run_featurize_face
+
+    summary = run_featurize_face(cfg)
+    log.info(
+        f"Featurize face concluído: {summary.get('n_windows', '?')} janelas → "
+        f"{summary['parquet_path']} (d_face={summary.get('d_face', '?')})."
+    )
+    return 0
+
+
 _DISPATCH = {
     "preprocess": lambda cfg, dev: _run_preprocess(cfg),
     "featurize": _run_featurize,
+    "featurize_face": lambda cfg, dev: _run_featurize_face(cfg),
     "train": _run_train,
     "pretrain_gae": _run_pretrain_gae,
     "evaluate": _run_evaluate,

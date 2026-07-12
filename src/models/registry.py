@@ -155,3 +155,29 @@ register_lazy(
     family="lightning",
     loader=_load_hetero_gnn_contrastive,
 )
+
+
+def _load_multimodal_hetero_full() -> type:
+    from src.models.multimodal_hetero_full import MultimodalHeteroFullFusion
+
+    return MultimodalHeteroFullFusion
+
+
+register_lazy(
+    "multimodal_hetero_full",
+    family="lightning",
+    loader=_load_multimodal_hetero_full,
+)
+
+
+def _load_multimodal_hetero_face() -> type:
+    from src.models.multimodal_hetero_face import MultimodalHeteroFaceFusion
+
+    return MultimodalHeteroFaceFusion
+
+
+register_lazy(
+    "multimodal_hetero_face",
+    family="lightning",
+    loader=_load_multimodal_hetero_face,
+)

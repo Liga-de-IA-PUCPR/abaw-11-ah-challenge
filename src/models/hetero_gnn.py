@@ -155,7 +155,6 @@ class HeteroGnnFusion:
         self.gae_init = cfg.get("gae_init", None)
         self._resolved_pos_weight: float | None = None
         self._gae_init_path: str | None = None
-        self._gae_init_path: str | None = None
 
     @classmethod
     def from_config(cls, config: Any) -> HeteroGnnFusion:

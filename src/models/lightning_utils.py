@@ -57,12 +57,18 @@ def build_classification_metrics():
     return _ClassificationMetrics()
 
 
-def configure_adamw_scheduler(params, lr: float, weight_decay: float, monitor: str = "val_loss"):
+def configure_adamw_scheduler(
+    params,
+    lr: float,
+    weight_decay: float,
+    monitor: str = "val_loss",
+):
     from torch import optim
 
+    mode = "max" if "f1" in monitor.lower() else "min"
     optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10
+        optimizer, mode=mode, factor=0.5, patience=10
     )
     return {
         "optimizer": optimizer,

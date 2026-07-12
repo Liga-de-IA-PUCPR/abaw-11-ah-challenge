@@ -81,6 +81,10 @@ dev = [
     "pytest>=8.3.0",             # testes (fora dos docs de implementação)
     "ipykernel>=6.29.0",         # exploração em notebooks
 ]
+vision = [
+    "mediapipe>=0.10.14",
+    "opencv-python-headless>=4.10.0",
+]
 
 [project.scripts]
 # CLI entrypoint da FASE 6 (@hydra.main). Substitui o stub src/main.py.
