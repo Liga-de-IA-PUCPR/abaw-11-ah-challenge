@@ -94,13 +94,49 @@ def _as_loader(cfg: DictConfig, data, family: str, split: str):
 
     from src.data.datasets import collate_sequences
 
+    sampler = None
+    shuffle = split == "train"
+    hard_path = cfg.data.get("hard_examples") if hasattr(cfg.data, "get") else None
+    if split == "train" and hard_path:
+        sampler = _build_weighted_sampler(hard_path, data)
+        if sampler is not None:
+            shuffle = False  # sampler e shuffle são mutuamente exclusivos
+
     return DataLoader(
         data,
         batch_size=cfg.data.batch_size,
-        shuffle=(split == "train"),
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=cfg.data.num_workers,
         collate_fn=collate_sequences,
     )
+
+
+def _build_weighted_sampler(hard_path: str, dataset):
+    """WeightedRandomSampler alinhado à ordem de ``dataset.video_ids`` (mode=hard_mining)."""
+    import json
+    from pathlib import Path
+
+    p = Path(hard_path)
+    if not p.exists():
+        log.warning(f"hard_examples ausente ({p}); amostragem uniforme.")
+        return None
+
+    from torch.utils.data import WeightedRandomSampler
+
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    weights_map = payload.get("weights", payload)
+    video_ids = getattr(dataset, "video_ids", None)
+    if not video_ids:
+        log.warning("Dataset sem video_ids; amostragem uniforme.")
+        return None
+
+    weights = [float(weights_map.get(str(vid), 1.0)) for vid in video_ids]
+    log.info(
+        f"WeightedRandomSampler: {len(weights)} amostras, "
+        f"peso∈[{min(weights):.2f}, {max(weights):.2f}] de {p}"
+    )
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
 def _build_trainer(cfg: DictConfig, device):
@@ -185,7 +221,7 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
 
     import numpy as np
 
-    from src.outputs.reporter import Reporter
+    from src.outputs.reporter import Reporter, load_video_metadata_for_eval
     from src.training.aggregation import threshold_curve
 
     out_dir = Path(ckpt_dir) / f"eval_{split}"
@@ -204,6 +240,21 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
             rep.plot_precision_recall(o["y_true"], o["y_proba"])
             grid, f1s = threshold_curve(o["y_true"], o["y_proba"])
             rep.plot_threshold_curve(grid, f1s, threshold)
+            meta = load_video_metadata_for_eval(cfg, o["video_ids"])
+            rep.save_predictions_csv(
+                o["video_ids"],
+                o["y_true"],
+                o["y_proba"],
+                o["y_pred"],
+                threshold,
+                metadata=meta,
+            )
+            rep.save_error_analysis(
+                o["video_ids"],
+                o["y_true"],
+                o["y_pred"],
+                metadata=meta,
+            )
         except Exception as exc:  # noqa: BLE001 — plots nunca derrubam o evaluate
             log.warning(f"Plots a nível de vídeo pulados: {exc}")
 
@@ -431,6 +482,188 @@ def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _run_ensemble_submit(cfg: DictConfig, device) -> int:
+    """``mode=ensemble_submit`` — calibra limiar na val e gera submissão no teste."""
+    from pathlib import Path
+
+    import numpy as np
+    from omegaconf import OmegaConf
+
+    from src.data.datasets import load_split
+    from src.outputs.checkpoint import resolve_latest_checkpoint
+    from src.outputs.submission import write_submission
+    from src.training.aggregation import calibrate_threshold
+    from src.training.factory import load_trainer
+
+    ensemble = cfg.get("ensemble")
+    if ensemble is None:
+        raise ValueError("mode=ensemble_submit requer +ensemble=... na config.")
+
+    val_raw = load_split(cfg, "val", family="lightning")
+    val_data = _as_loader(cfg, val_raw, "lightning", "val")
+    val_labels = {str(vid): int(lab) for vid, lab in val_raw.video_labels.items()}
+
+    member_scores_val: list[dict[str, float]] = []
+    weights: list[float] = []
+    for member in ensemble.members:
+        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        model_name = str(member.model)
+        member_cfg.model = OmegaConf.load(f"configs/model/{model_name}.yaml")
+        ckpt = member.get("checkpoint")
+        ckpt_dir = (
+            resolve_latest_checkpoint(cfg.data.paths.output_root, family="lightning", model_name=model_name)
+            if ckpt in (None, "null")
+            else ckpt
+        )
+        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
+        ids, proba = trainer._infer(val_data)
+        member_scores_val.append({str(v): float(p) for v, p in zip(ids, proba, strict=False)})
+        weights.append(float(member.get("weight", 1.0)))
+
+    combine = str(ensemble.get("combine", "mean"))
+    val_combined: dict[str, float] = {}
+    for vid in sorted(set().union(*member_scores_val)):
+        vals = [s[vid] for s in member_scores_val if vid in s]
+        val_combined[vid] = float(np.mean(vals)) if combine != "weighted" else float(
+            np.average(vals, weights=weights[: len(vals)])
+        )
+
+    val_ids = np.array([v for v in val_combined if v in val_labels])
+    val_proba = np.array([val_combined[v] for v in val_ids], dtype=np.float32)
+    agg = getattr(cfg, "aggregation", {}) or {}
+    threshold, val_f1 = calibrate_threshold(
+        val_proba=val_proba,
+        val_video_ids=val_ids,
+        val_video_labels=val_labels,
+        method="identity",
+        metric="macro_f1",
+        selection=agg.get("calibration", "smooth"),
+        smooth_window=float(agg.get("smooth_window", 0.10)),
+    )
+    log.info(f"Ensemble submit: limiar val={threshold:.4f} (macro_f1={val_f1:.4f})")
+
+    test_raw = load_split(cfg, "test", family="lightning")
+    test_data = _as_loader(cfg, test_raw, "lightning", "test")
+    member_scores_test: list[dict[str, float]] = []
+    for member in ensemble.members:
+        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        model_name = str(member.model)
+        member_cfg.model = OmegaConf.load(f"configs/model/{model_name}.yaml")
+        ckpt = member.get("checkpoint")
+        ckpt_dir = (
+            resolve_latest_checkpoint(cfg.data.paths.output_root, family="lightning", model_name=model_name)
+            if ckpt in (None, "null")
+            else ckpt
+        )
+        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
+        ids, proba = trainer._infer(test_data)
+        member_scores_test.append({str(v): float(p) for v, p in zip(ids, proba, strict=False)})
+
+    test_combined: dict[str, float] = {}
+    for vid in sorted(set().union(*member_scores_test)):
+        vals = [s[vid] for s in member_scores_test if vid in s]
+        test_combined[vid] = float(np.mean(vals)) if combine != "weighted" else float(
+            np.average(vals, weights=weights[: len(vals)])
+        )
+
+    preds = {vid: int(score >= threshold) for vid, score in test_combined.items()}
+    out_path = Path(cfg.get("out") or "outputs/submission_ensemble.txt")
+    write_submission(preds, out_path)
+    log.info(f"Submissão ensemble: {out_path} ({len(preds)} vídeos).")
+    return 0
+
+
+def _run_hard_mining(cfg: DictConfig, device) -> int:
+    """``mode=hard_mining`` — pontua o split de treino e gera pesos de amostragem.
+
+    Roda o checkpoint atual sobre o **treino**, identifica *hard positives* (rótulo 1,
+    proba baixa) e *hard negatives* (rótulo 0, proba alta) + casos limítrofes, e grava
+    ``{video_id: weight}`` em JSON. O treino consome esses pesos via
+    ``WeightedRandomSampler`` (``data.hard_examples=<json>``).
+    """
+    import json
+    from pathlib import Path
+
+    from src.data.datasets import load_split
+    from src.outputs.checkpoint import resolve_latest_checkpoint
+    from src.outputs.reporter import load_video_metadata_for_eval
+    from src.training.factory import load_trainer
+
+    _, family = _build_trainer(cfg, device)
+    if family != "lightning":
+        raise ValueError("mode=hard_mining requer um modelo da família lightning.")
+
+    ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
+        cfg.data.paths.output_root, family=family
+    )
+    trainer = load_trainer(family, ckpt_dir, cfg=cfg)
+    log.info(f"Hard mining: checkpoint {ckpt_dir}")
+
+    split = cfg.get("split") or "train"
+    data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
+    o = trainer.video_outputs(data)
+
+    hard_hi = float(cfg.get("hard_hi", 0.7))
+    hard_lo = float(cfg.get("hard_lo", 0.3))
+    hard_weight = float(cfg.get("hard_weight", 3.0))
+    border_margin = float(cfg.get("hard_border", 0.1))
+    border_weight = float(cfg.get("hard_border_weight", 2.0))
+    rare_types = set(cfg.get("hard_rare_types", ["neutral", "willing"]))
+    rare_mult = float(cfg.get("hard_rare_mult", 1.5))
+
+    meta = load_video_metadata_for_eval(cfg, o["video_ids"])
+    threshold = float(getattr(trainer, "threshold_", 0.5) or 0.5)
+
+    weights: dict[str, float] = {}
+    n_hard = n_border = n_rare = 0
+    for i, vid in enumerate(o["video_ids"]):
+        vid = str(vid)
+        yt = int(o["y_true"][i])
+        p = float(o["y_proba"][i])
+        w = 1.0
+        is_hard_pos = yt == 1 and p < hard_lo
+        is_hard_neg = yt == 0 and p > hard_hi
+        if is_hard_pos or is_hard_neg:
+            w *= hard_weight
+            n_hard += 1
+        elif abs(p - threshold) < border_margin:
+            w *= border_weight
+            n_border += 1
+        qtype = (meta.get(vid, {}) or {}).get("question_type")
+        if qtype in rare_types:
+            w *= rare_mult
+            n_rare += 1
+        weights[vid] = round(w, 4)
+
+    out_path = Path(cfg.get("out") or "data/interim/hard_examples.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "split": split,
+        "checkpoint": str(ckpt_dir),
+        "threshold": threshold,
+        "params": {
+            "hard_hi": hard_hi,
+            "hard_lo": hard_lo,
+            "hard_weight": hard_weight,
+            "border_margin": border_margin,
+            "border_weight": border_weight,
+            "rare_types": sorted(rare_types),
+            "rare_mult": rare_mult,
+        },
+        "n_videos": len(weights),
+        "n_hard": n_hard,
+        "n_border": n_border,
+        "n_rare": n_rare,
+        "weights": weights,
+    }
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    log.info(
+        f"Hard mining: {len(weights)} vídeos → {out_path} "
+        f"(hard={n_hard}, borderline={n_border}, raros={n_rare})."
+    )
+    return 0
+
+
 def _run_featurize_face(cfg: DictConfig) -> int:
     """``mode=featurize_face`` — MediaPipe Face Mesh → coluna face_landmarks no Parquet."""
     from src.pipeline.featurize_face import run_featurize_face
@@ -451,6 +684,8 @@ _DISPATCH = {
     "pretrain_gae": _run_pretrain_gae,
     "evaluate": _run_evaluate,
     "ensemble_evaluate": _run_ensemble_evaluate,
+    "ensemble_submit": _run_ensemble_submit,
+    "hard_mining": _run_hard_mining,
     "submit": _run_submit,
 }
 

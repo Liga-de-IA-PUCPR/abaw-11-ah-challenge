@@ -323,6 +323,194 @@ class Reporter:
         log.info(f"Plot salvo: {path}")
         return path
 
+    # ==========================================================================
+    # Export de predições e análise de erros (nível de vídeo)
+    # ==========================================================================
+
+    def save_predictions_csv(
+        self,
+        video_ids: np.ndarray,
+        y_true: np.ndarray,
+        y_proba: np.ndarray,
+        y_pred: np.ndarray,
+        threshold: float,
+        metadata: dict[str, dict[str, Any]] | None = None,
+    ) -> Path:
+        """Salva ``predictions.csv`` com TP/TN/FP/FN e metadados por vídeo."""
+        import csv
+
+        metadata = metadata or {}
+        path = self.output_dir / "predictions.csv"
+        fieldnames = [
+            "video_id",
+            "y_true",
+            "y_proba",
+            "y_pred",
+            "error_type",
+            "margin",
+            "participant_id",
+            "question_type",
+            "split",
+            "ah_duration_s",
+            "certainty_ah_mean",
+        ]
+        rows: list[dict[str, Any]] = []
+        for i, vid in enumerate(video_ids):
+            vid = str(vid)
+            yt, yp, ypr = int(y_true[i]), float(y_proba[i]), int(y_pred[i])
+            if yt == 1 and ypr == 1:
+                err = "TP"
+            elif yt == 0 and ypr == 0:
+                err = "TN"
+            elif yt == 0 and ypr == 1:
+                err = "FP"
+            else:
+                err = "FN"
+            meta = metadata.get(vid, {})
+            rows.append(
+                {
+                    "video_id": vid,
+                    "y_true": yt,
+                    "y_proba": round(yp, 6),
+                    "y_pred": ypr,
+                    "error_type": err,
+                    "margin": round(abs(yp - threshold), 6),
+                    "participant_id": meta.get("participant_id", ""),
+                    "question_type": meta.get("question_type", ""),
+                    "split": meta.get("split", ""),
+                    "ah_duration_s": meta.get("ah_duration_s", ""),
+                    "certainty_ah_mean": meta.get("certainty_ah_mean", ""),
+                }
+            )
+        with path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        log.info(f"Predições salvas: {path} ({len(rows)} vídeos)")
+        return path
+
+    def save_error_analysis(
+        self,
+        video_ids: np.ndarray,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        metadata: dict[str, dict[str, Any]] | None = None,
+    ) -> Path:
+        """Agrega erros por ``question_type`` e ``participant_id`` em JSON."""
+        from collections import defaultdict
+
+        from src.training.metrics import per_class_f1, video_macro_f1
+
+        metadata = metadata or {}
+        by_qtype: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"n": 0, "tp": 0, "tn": 0, "fp": 0, "fn": 0, "y_true": [], "y_pred": []}
+        )
+        by_participant: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"n": 0, "tp": 0, "tn": 0, "fp": 0, "fn": 0, "y_true": [], "y_pred": []}
+        )
+
+        def _bump(bucket: dict, yt: int, ypr: int) -> None:
+            bucket["n"] += 1
+            bucket["y_true"].append(yt)
+            bucket["y_pred"].append(ypr)
+            if yt == 1 and ypr == 1:
+                bucket["tp"] += 1
+            elif yt == 0 and ypr == 0:
+                bucket["tn"] += 1
+            elif yt == 0 and ypr == 1:
+                bucket["fp"] += 1
+            else:
+                bucket["fn"] += 1
+
+        for i, vid in enumerate(video_ids):
+            meta = metadata.get(str(vid), {})
+            yt, ypr = int(y_true[i]), int(y_pred[i])
+            qtype = meta.get("question_type") or "unknown"
+            pid = meta.get("participant_id") or "unknown"
+            _bump(by_qtype[qtype], yt, ypr)
+            _bump(by_participant[pid], yt, ypr)
+
+        def _summarize(groups: dict[str, dict]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for key, g in sorted(groups.items()):
+                yt = np.array(g["y_true"], dtype=np.int64)
+                yp = np.array(g["y_pred"], dtype=np.int64)
+                out.append(
+                    {
+                        "group": key,
+                        "n_videos": g["n"],
+                        "tp": g["tp"],
+                        "tn": g["tn"],
+                        "fp": g["fp"],
+                        "fn": g["fn"],
+                        "macro_f1": video_macro_f1(yt, yp),
+                        "per_class": per_class_f1(yt, yp),
+                    }
+                )
+            return out
+
+        payload = {
+            "by_question_type": _summarize(by_qtype),
+            "by_participant": _summarize(by_participant),
+        }
+        path = self.output_dir / "errors_by_question_type.json"
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False, default=_json_default)
+        log.info(f"Análise de erros salva: {path}")
+        return path
+
+
+def load_video_metadata_for_eval(
+    cfg: Any,
+    video_ids: list[str] | np.ndarray,
+) -> dict[str, dict[str, Any]]:
+    """Metadados por vídeo (Parquet + anotações YAML) para relatórios de erro."""
+    from pathlib import Path
+
+    import polars as pl
+
+    from src.data.indexing import load_annotation_yaml
+
+    ids = {str(v) for v in video_ids}
+    parquet_path = Path(cfg.data.paths.parquet_path)
+    raw_root = Path(cfg.data.paths.data_root)
+    ann_path = raw_root / "video_annotation_transcript.yaml"
+    annotations = load_annotation_yaml(ann_path)
+
+    df = pl.read_parquet(parquet_path)
+    df = df.filter(pl.col("id").is_in(list(ids)))
+    video_meta = (
+        df.group_by("id")
+        .agg(
+            pl.col("participant_id").first(),
+            pl.col("question_type").first(),
+            pl.col("split").first(),
+            pl.col("video_label").first(),
+        )
+        .to_dicts()
+    )
+
+    out: dict[str, dict[str, Any]] = {}
+    for row in video_meta:
+        vid = str(row["id"])
+        ann = annotations.get(vid, {})
+        intervals = ann.get("time_detailed_ah") or []
+        ah_duration = 0.0
+        for iv in intervals:
+            if isinstance(iv, (list, tuple)) and len(iv) >= 2:
+                ah_duration += float(iv[1]) - float(iv[0])
+        cert = ann.get("certainty_ah") or []
+        cert_mean = float(sum(cert) / len(cert)) if cert else None
+        out[vid] = {
+            "participant_id": row.get("participant_id"),
+            "question_type": row.get("question_type"),
+            "split": row.get("split"),
+            "video_label": row.get("video_label"),
+            "ah_duration_s": round(ah_duration, 3) if ah_duration else 0.0,
+            "certainty_ah_mean": round(cert_mean, 3) if cert_mean is not None else "",
+        }
+    return out
+
 
 def _json_default(obj: Any) -> Any:
     """Serializador de fallback p/ numpy no ``json.dump``."""

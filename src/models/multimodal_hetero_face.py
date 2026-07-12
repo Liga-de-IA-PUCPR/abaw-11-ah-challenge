@@ -163,6 +163,7 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             weight_decay=self.weight_decay,
             pos_weight=self._resolved_pos_weight,
             contrastive_cfg=self.contrastive,
+            loss_cfg=self.loss,
         )
 
         def _forward_with_face(batch):

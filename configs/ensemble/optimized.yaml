@@ -1,0 +1,12 @@
+# Ensemble otimizado por validação (scripts/ensemble_sweep.py).
+combine: weighted
+members:
+  - model: multimodal_hetero_full
+    checkpoint: outputs/multimodal_hetero_full/20260706_213403
+    weight: 0.416667
+  - model: hetero_gnn_contrastive
+    checkpoint: outputs/hetero_gnn_contrastive/20260706_211918
+    weight: 0.541667
+  - model: multimodal_hetero_face
+    checkpoint: outputs/multimodal_hetero_face/20260712_141548
+    weight: 0.041667

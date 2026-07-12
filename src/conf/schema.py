@@ -205,6 +205,8 @@ class DataConfig:
     tabular: TabularConfig = field(default_factory=TabularConfig)
     batch_size: int = 32
     num_workers: int = 0
+    # Caminho p/ pesos de amostragem por vídeo (mode=hard_mining). None = amostragem uniforme.
+    hard_examples: str | None = None
 
 
 @dataclass
@@ -292,6 +294,7 @@ class TrainerConfig:
     accelerator: str = "auto"
     devices: int = 1
     gradient_clip_val: float = 1.0
+    accumulate_grad_batches: int = 1
     patience: int = 20
     monitor: str = "val_loss"
     mode: str = "min"

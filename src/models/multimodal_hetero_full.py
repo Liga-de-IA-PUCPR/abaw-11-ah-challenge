@@ -247,6 +247,12 @@ class MultimodalHeteroFullFusion:
             "margin": float(c.get("margin", 0.2)),
             "miner": str(c.get("miner", "batch_hard")),
         }
+        loss = cfg.get("loss", {}) or {}
+        self.loss = {
+            "type": str(loss.get("type", "bce")),
+            "gamma": float(loss.get("gamma", 2.0)),
+            "alpha": loss.get("alpha", 0.25),
+        }
         self._resolved_pos_weight: float | None = None
         self._gae_init_path: str | None = None
 
@@ -283,6 +289,7 @@ class MultimodalHeteroFullFusion:
             weight_decay=self.weight_decay,
             pos_weight=self._resolved_pos_weight,
             contrastive_cfg=self.contrastive,
+            loss_cfg=self.loss,
         )
 
     def load_from_checkpoint(self, ckpt_path, map_location=None):
@@ -306,8 +313,9 @@ def build_full_lit_module(
     weight_decay: float,
     pos_weight: float | None = None,
     contrastive_cfg: dict[str, Any] | None = None,
+    loss_cfg: dict[str, Any] | None = None,
 ):
-    """LightningModule com BCE + SupCon + triplet + NT-Xent cross-modal."""
+    """LightningModule com BCE/focal + SupCon + triplet + NT-Xent cross-modal."""
     import lightning as L
     import torch
 
@@ -315,8 +323,15 @@ def build_full_lit_module(
         bce_with_logits,
         build_classification_metrics,
         configure_adamw_scheduler,
+        focal_loss_with_logits,
         log_val_metrics,
     )
+
+    lcfg = loss_cfg or {}
+    loss_type = str(lcfg.get("type", "bce")).lower()
+    focal_gamma = float(lcfg.get("gamma", 2.0))
+    focal_alpha = lcfg.get("alpha", 0.25)
+    focal_alpha = None if focal_alpha in (None, "none", "null") else float(focal_alpha)
 
     ccfg = contrastive_cfg or {}
     use_contrastive = bool(ccfg.get("enabled", False))
@@ -353,6 +368,9 @@ def build_full_lit_module(
             self.triplet_fn = triplet_fn
             self.ntxent_fn = ntxent_fn
             self.miner = miner
+            self._loss_type = loss_type
+            self._focal_gamma = focal_gamma
+            self._focal_alpha = focal_alpha
 
         def _forward(self, batch):
             return self.model(
@@ -407,7 +425,16 @@ def build_full_lit_module(
         def _shared_step(self, batch, log_aux: bool = True):
             label = batch["label"].float()
             logit, video_emb, align_a, align_b = self._forward(batch)
-            loss = bce_with_logits(logit, label, self._pos_weight)
+            if self._loss_type == "focal":
+                loss = focal_loss_with_logits(
+                    logit,
+                    label,
+                    gamma=self._focal_gamma,
+                    alpha=self._focal_alpha,
+                    pos_weight=self._pos_weight,
+                )
+            else:
+                loss = bce_with_logits(logit, label, self._pos_weight)
             loss = loss + self._contrastive_losses(
                 video_emb, align_a, align_b, label, log_aux
             )

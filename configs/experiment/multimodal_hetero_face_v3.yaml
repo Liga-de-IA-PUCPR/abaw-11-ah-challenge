@@ -1,5 +1,5 @@
 # @package _global_
-# Preset competição: multimodal completo + Face Mesh GCN temporal (468 pts)
+# Ablação v3: lr/weight_decay menores
 defaults:
   - /face_embedder: mediapipe
   - override /model: multimodal_hetero_face
@@ -7,10 +7,7 @@ defaults:
   - override /text_embedder: roberta_emotion
   - override /trainer: lightning
 
-experiment_name: abaw-ah-multimodal-face
-
-text_embedder:
-  batch_size: 32
+experiment_name: abaw-ah-multimodal-face-v3
 
 data:
   num_workers: 6
@@ -21,4 +18,8 @@ trainer:
   patience: 100
   monitor: val_f1_macro
   mode: max
-  accumulate_grad_batches: 4              # 16 × 4 = batch efetivo 64 (menos VRAM/RAM)
+  accumulate_grad_batches: 4
+
+model:
+  lr: 5e-4
+  weight_decay: 5e-3

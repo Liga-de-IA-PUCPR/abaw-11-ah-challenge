@@ -107,10 +107,15 @@ class LightningTrainer(BaseTrainer):
         )
         self._ckpt_cb = ckpt
 
+        accumulate = int(tcfg.get("accumulate_grad_batches", 1))
+        if accumulate > 1:
+            log.info(f"Gradient accumulation: {accumulate} steps (batch efetivo ≈ data.batch_size × {accumulate})")
+
         return L.Trainer(
             max_epochs=tcfg.get("max_epochs", 200),
             accelerator=accelerator,
             devices=tcfg.get("devices", 1),
+            accumulate_grad_batches=accumulate,
             gradient_clip_val=tcfg.get("gradient_clip_val", 1.0),
             logger=wandb_logger,
             callbacks=[
@@ -151,6 +156,7 @@ class LightningTrainer(BaseTrainer):
         self._apply_pos_weight(train_data)
         self._apply_gae_init()
         self._lit_module = self.model.build_lightning_module()
+        self._init_weights_from_checkpoint()
         self._trainer = self._build_trainer()
 
         log.info("=== Treino da cross-attention (Lightning) ===")
@@ -308,6 +314,42 @@ class LightningTrainer(BaseTrainer):
             int(getattr(ds, "dim_text", 0)),
             int(getattr(ds, "dim_tab", 0)),
         )
+
+    def _init_weights_from_checkpoint(self) -> None:
+        """Carrega pesos de ``config.checkpoint`` (fine-tune; só state_dict, sem optimizer)."""
+        ckpt_arg = getattr(self.config, "checkpoint", None)
+        if not ckpt_arg:
+            return
+        import json
+
+        from src.models.checkpoint_compat import load_state_dict_from_ckpt
+
+        p = Path(str(ckpt_arg))
+        ckpt_path: str | None = None
+        if p.is_dir():
+            state_file = p / "trainer_state.json"
+            if state_file.exists():
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                cand = state.get("ckpt_path")
+                if cand and Path(cand).exists():
+                    ckpt_path = str(cand)
+            if ckpt_path is None:
+                cands = sorted(p.glob("checkpoints/*.ckpt")) + sorted(p.glob("*.ckpt"))
+                ckpt_path = str(cands[-1]) if cands else None
+        elif p.suffix == ".ckpt" and p.exists():
+            ckpt_path = str(p)
+
+        if not ckpt_path:
+            log.warning(f"Fine-tune: checkpoint não encontrado em {ckpt_arg}")
+            return
+
+        state_dict = load_state_dict_from_ckpt(ckpt_path)
+        missing, unexpected = self._lit_module.load_state_dict(state_dict, strict=False)
+        if missing:
+            log.warning(f"Fine-tune: {len(missing)} chaves ausentes no ckpt (ignoradas).")
+        if unexpected:
+            log.warning(f"Fine-tune: {len(unexpected)} chaves extras no ckpt (ignoradas).")
+        log.info(f"Fine-tune: pesos carregados de {ckpt_path}")
 
     def _apply_pos_weight(self, train_loader) -> None:
         if not hasattr(self.model, "pos_weight"):

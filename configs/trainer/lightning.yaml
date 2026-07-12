@@ -4,6 +4,7 @@ max_epochs: 500
 accelerator: auto                      # resolvido de ${device}: cpu→"cpu" · mps→"mps" · cuda→"gpu"
 devices: 1
 gradient_clip_val: 1.0
+accumulate_grad_batches: 1             # >1 reduz VRAM mantendo batch efetivo (batch_size × accumulate)
 patience: 20                           # EarlyStopping(monitor="val_loss")
 monitor: val_loss
 mode: min

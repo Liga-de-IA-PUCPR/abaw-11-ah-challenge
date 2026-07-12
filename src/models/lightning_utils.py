@@ -42,6 +42,38 @@ def bce_with_logits(logit, label, pos_weight: float | None):
     return nn.functional.binary_cross_entropy_with_logits(logit, label, pos_weight=pw)
 
 
+def focal_loss_with_logits(
+    logit,
+    label,
+    gamma: float = 2.0,
+    alpha: float | None = 0.25,
+    pos_weight: float | None = None,
+):
+    """Focal loss binária (Lin et al. 2017) — foca em exemplos difíceis.
+
+    Reduz o peso dos exemplos fáceis (bem classificados) por ``(1 - p_t)^gamma``,
+    concentrando o gradiente nos *hard positives/negatives*. ``alpha`` balanceia
+    classes (peso da classe positiva); ``pos_weight`` é aplicado de forma
+    multiplicativa como no BCE (compatível com ``pos_weight: auto``).
+    """
+    import torch
+    from torch import nn
+
+    pw = None
+    if pos_weight is not None:
+        pw = torch.tensor([pos_weight], device=logit.device, dtype=logit.dtype)
+    bce = nn.functional.binary_cross_entropy_with_logits(
+        logit, label, pos_weight=pw, reduction="none"
+    )
+    p = torch.sigmoid(logit)
+    p_t = p * label + (1 - p) * (1 - label)
+    focal = (1 - p_t).clamp(min=1e-6) ** gamma * bce
+    if alpha is not None:
+        alpha_t = alpha * label + (1 - alpha) * (1 - label)
+        focal = alpha_t * focal
+    return focal.mean()
+
+
 def build_classification_metrics():
     from torch import nn
     from torchmetrics.classification import BinaryAveragePrecision, MulticlassF1Score
