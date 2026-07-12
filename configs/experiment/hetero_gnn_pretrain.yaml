@@ -1,0 +1,16 @@
+# @package _global_
+# Preset: pré-treino HeteroGAE (stage 1) antes do HeteroGAT supervisionado
+defaults:
+  - override /model: hetero_gae_pretrain
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-hetero-gae-pretrain
+
+text_embedder:
+  batch_size: 8
+
+trainer:
+  max_epochs: 50
+  patience: 10

@@ -1,0 +1,6 @@
+# @package _global_
+# configs/experiment/rf_baseline.yaml — baseline: RandomForest + prosódia librosa + sklearn (CPU).
+defaults:
+  - override /model: random_forest
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn

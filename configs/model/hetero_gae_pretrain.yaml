@@ -1,0 +1,10 @@
+# configs/model/hetero_gae_pretrain.yaml — encoder GAE para init do HeteroGAT
+name: hetero_gae_pretrain
+family: gae_pretrain
+dim_a: 768
+dim_b: 768
+dim_tab: 32
+hidden_channels: 128
+out_channels: 64
+lr: 1e-3
+weight_decay: 1e-2

@@ -1,19 +1,135 @@
+# =============================================================================
+# pyproject.toml — projeto gerenciado por uv (https://docs.astral.sh/uv/)
+#
+# Pipeline AUDIO + TEXTO (sem vídeo) para o BAH AH-Challenge (ABAW11 @ ECCV 2026).
+# NUNCA usamos frames / cropped-aligned-faces.
+#
+# Filosofia de dependências (síntese):
+#   - CORE: tudo o que o caminho `random_forest` precisa → roda 100% em CPU, SEM Lightning.
+#           Inclui Hydra (config+multirun), W&B (tracking), Polars/PyArrow (cache Parquet),
+#           transformers/torch (embedders deep), librosa (prosódia), scikit-learn (modelo+métricas).
+#   - OPCIONAL [dependency-groups] `neural`: lightning + torchmetrics + accelerate.
+#           Só é instalado para treinar `cross_attention` (importado LAZY no LightningTrainer).
+#
+# Setup:
+#   brew install ffmpeg                # dependência de SISTEMA (mp4 -> flac)
+#   uv sync                            # ambiente CORE (RF, CPU) — SEM Lightning
+#   uv sync --group neural             # adiciona Lightning p/ o modelo neural (cross_attention)
+#   uv add <pacote>                    # adiciona dependência CORE
+#   uv add --group neural <pacote>     # adiciona dependência ao grupo neural
+#   uv run python main.py ...          # roda dentro do ambiente gerenciado
+# =============================================================================
+
 [project]
-name = "abaw-11th-ah-challenge"
+name = "abaw-11-ah-challenge"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pipeline áudio + texto (sem vídeo) para reconhecimento de ambivalência/hesitação — BAH AH-Challenge (ABAW11)."
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [{ name = "Liga IA" }]
+
+# -----------------------------------------------------------------------------
+# CORE — caminho random_forest (CPU) + pré-processamento + tracking.
+# NÃO inclui lightning/torchmetrics (esses vão no grupo opcional `neural`).
+# -----------------------------------------------------------------------------
 dependencies = [
-    "lightning>=2.6.5",
-    "torch>=2.12.0",
-    "torchvision>=0.27.0",
-    "transformers>=5.12.1",
+    # --- Config (Hydra): grupos + composição + multirun (sweeps) ---
+    "hydra-core>=1.3.2",          # @hydra.main, defaults list, override CLI, ConfigStore
+    "hydra-joblib-launcher>=1.2.0", # launcher p/ multirun paralelo (`python main.py -m ...`)
+    # --- Tracking ---
+    "wandb>=0.19.0",              # experimentos: curvas, sweeps, artefatos (mode online|offline|disabled)
+    # --- Cache de features em Parquet ---
+    "polars>=1.41.0",            # DataFrame rápido p/ o cache (1 linha por janela)
+    "pyarrow>=17.0.0",           # backend Parquet (escrita/leitura de listas float32)
+    # --- Texto: embedders via HuggingFace (RoBERTa-emotion EN default, model-agnostic) ---
+    "transformers>=4.44.0",      # AutoTokenizer / AutoModel (respeitam device CPU/MPS/CUDA)
+    "torch>=2.4.0",              # backend dos embedders deep (texto + wav2vec2/hubert)
+    # --- Áudio: extração e features hand-crafted (baseline librosa, CPU/numpy) ---
+    "librosa>=0.10.2",           # MFCC, prosódia, espectral, chroma, f0, tempo
+    "soundfile>=0.12.1",         # I/O de áudio (.flac/.wav) — backend do librosa
+    "audioread>=3.0.1",          # fallback de decodificação de áudio
+    "numba>=0.60.0",             # acelera o librosa (JIT)
+    # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
+    "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
+    "numpy>=1.26.0",             # matrizes de features
+    "scipy>=1.13.0",             # utilidades numéricas (estatísticas, sinais)
+    # --- Serialização / utilidades ---
+    "PyYAML>=6.0.2",             # leitura dos YAML do dataset (yaml.safe_load)
+    "tqdm>=4.66.0",              # barras de progresso (extração / featurização)
+    # --- Visualização / relatórios (FASE 5 — Reporter, roda sempre) ---
+    "matplotlib>=3.8.0",         # plots: confusão, PR, curva de limiar, importâncias
+    "seaborn>=0.13.0",           # heatmap da matriz de confusão
 ]
 
+# -----------------------------------------------------------------------------
+# Grupos de dependências (uv / PEP 735).
+#   - `neural` : OPCIONAL — só p/ treinar o cross_attention (Lightning).
+#                `uv sync --group neural`. Importado LAZY pelo LightningTrainer.
+#   - `dev`    : lint / type-check / testes / notebooks.
+# -----------------------------------------------------------------------------
 [dependency-groups]
-dev = [
-    "ipykernel>=7.3.0",
-    "ipywidgets>=8.1.8",
-    "tqdm>=4.68.3",
+neural = [
+    "lightning>=2.4.0",
+    "torchmetrics>=1.4.0",
+    "accelerate>=1.0.0",
+    "torch-geometric>=2.5.0",
+    "gnn-modalblocks",
 ]
+dev = [
+    "ruff>=0.6.0",               # lint + format
+    "mypy>=1.11.0",              # type checking
+    "pytest>=8.3.0",             # testes (fora dos docs de implementação)
+    "ipykernel>=6.29.0",         # exploração em notebooks
+]
+vision = [
+    "mediapipe>=0.10.14",
+    "opencv-python-headless>=4.10.0",
+]
+
+[project.scripts]
+# CLI entrypoint da FASE 6 (@hydra.main). Substitui o stub src/main.py.
+bah = "main:main"
+
+# -----------------------------------------------------------------------------
+# Build backend (src-layout: o pacote importável é `src`).
+# -----------------------------------------------------------------------------
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv.sources]
+gnn-modalblocks = { path = "../project_lib/gnn-modalblocks", editable = true }
+
+# -----------------------------------------------------------------------------
+# Ruff — lint + format
+# -----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = [
+    "PLR0913",  # muitos argumentos é aceitável em factories/configs
+    "PLC0415",  # import fora do topo: INTENCIONAL — imports LAZY mantêm o caminho
+                # random_forest livre de torch/lightning (Lightning é opcional).
+    "PLR2004",  # comparação com "magic value": ruidoso em thresholds/limiares.
+    "PLW2901",  # reuso de nome de variável de loop: aceitável nos parsers/loops.
+]
+
+# -----------------------------------------------------------------------------
+# mypy — type checking (gradual)
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+ignore_missing_imports = true   # librosa/transformers/lightning sem stubs completos
+
+# -----------------------------------------------------------------------------
+# pytest
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]

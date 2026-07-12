@@ -1,0 +1,8 @@
+# configs/audio_embedder/wav2vec2.yaml  (deep — competição)
+name: wav2vec2
+backend: wav2vec2
+model_name: facebook/wav2vec2-base
+sample_rate: 16000
+pooling: mean
+dim: 768
+batch_size: 4                            # inferência por lote (VRAM); reduza se OOM

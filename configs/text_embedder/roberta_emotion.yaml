@@ -1,0 +1,8 @@
+# configs/text_embedder/roberta_emotion.yaml  (DEFAULT)
+name: roberta_emotion
+model_name: cardiffnlp/twitter-roberta-base-emotion   # RoBERTa EN, fine-tuned p/ emoção
+pooling: mean                          # mean | cls
+max_length: 128
+batch_size: 32
+dim: 768                               # hidden_size (informativo; FASE 3 confere via config)
+# device herdado do global ${device} pelo embedder (resolve_device)

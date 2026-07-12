@@ -1,0 +1,21 @@
+# configs/model/hetero_gnn_contrastive.yaml — HeteroGAT + BCE + SupCon
+name: hetero_gnn_contrastive
+family: lightning
+dim_a: 768
+dim_b: 768
+dim_tab: 32
+hidden_channels: 128
+heads: 4
+out_channels: 64
+dropout: 0.1
+lr: 1e-3
+weight_decay: 1e-2
+pos_weight: auto
+gae_init: null
+contrastive:
+  enabled: true
+  lambda_supcon: 0.1
+  lambda_triplet: 0.0
+  temperature: 0.07
+  margin: 0.2
+  miner: batch_hard

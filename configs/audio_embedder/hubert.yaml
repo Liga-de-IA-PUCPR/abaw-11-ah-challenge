@@ -1,0 +1,7 @@
+# configs/audio_embedder/hubert.yaml  (deep — o que o SOTA usou)
+name: hubert
+backend: hubert
+model_name: facebook/hubert-base-ls960
+sample_rate: 16000
+pooling: mean
+dim: 768

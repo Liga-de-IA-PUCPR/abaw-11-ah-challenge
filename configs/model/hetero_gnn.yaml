@@ -1,0 +1,14 @@
+# configs/model/hetero_gnn.yaml  (family=lightning — GNN heterogêneo via gnn-modalblocks)
+name: hetero_gnn
+family: lightning
+dim_a: 768
+dim_b: 768
+dim_tab: 32
+hidden_channels: 128
+heads: 4
+out_channels: 64
+dropout: 0.1
+lr: 1e-3
+weight_decay: 1e-2
+pos_weight: auto
+gae_init: null

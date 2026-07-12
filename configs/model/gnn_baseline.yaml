@@ -1,0 +1,15 @@
+# configs/model/gnn_baseline.yaml  (family=lightning — GNN simples, espelha cross-attention)
+name: gnn_baseline
+family: lightning
+dim_a: 768
+dim_b: 768
+dim_tab: 32
+common_dim: 512
+gcn_out_dim: 128
+top_k: 8                               # vizinhos no LatentCorrelationGCN
+fusion: attention                      # MultimodalBlock: attention | gated | concat
+dropout: 0.1
+lr: 1e-3
+weight_decay: 1e-2
+pos_weight: auto
+use_tabular: true

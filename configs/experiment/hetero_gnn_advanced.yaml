@@ -1,0 +1,21 @@
+# @package _global_
+# Preset avançado: HeteroGAT + contrastive + wav2vec2 + RoBERTa-emotion
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-hetero-gnn-advanced
+
+text_embedder:
+  batch_size: 8
+
+data:
+  num_workers: 8
+
+trainer:
+  max_epochs: 500
+  patience: 20
+  monitor: val_f1_macro
+  mode: max

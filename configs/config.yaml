@@ -1,0 +1,37 @@
+# Raiz da composição Hydra. A ordem importa: _self_ por último deixa os campos
+# definidos aqui (seed/device/mode/wandb) sobreporem os defaults dos grupos.
+defaults:
+  - data: default
+  - text_embedder: roberta_emotion   # EN + emoção (README §7/§8)
+  - audio_embedder: librosa          # baseline prosódico (CPU); deep = wav2vec2/hubert
+  - model: random_forest             # baseline barato; competição = cross_attention
+  - trainer: sklearn                 # caminho CPU; neural = lightning
+  - aggregation: default
+  - override hydra/launcher: joblib  # multirun paralelo (-m)
+  - _self_
+
+seed: 42
+device: "auto"                      # auto (cuda▸cpu no Linux; mps▸cuda▸cpu no macOS) | cpu | cuda
+mode: "train"                        # train | preprocess | featurize | featurize_face | evaluate | submit | pretrain_gae | ensemble_evaluate
+experiment_name: "abaw-ah"
+
+# Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler
+# (split: val em evaluate / test em submit; checkpoint: bundle mais recente em outputs/).
+split: null                          # train | val | test
+out: null                            # arquivo de submissão (mode=submit)
+checkpoint: null                     # caminho do checkpoint (.joblib/.ckpt)
+
+# Tracking (FASE 5). W&B primário; Reporter local sempre roda como fallback.
+wandb:
+  project: "abaw-ah"
+  mode: "online"                     # online | offline | disabled
+  group: null                        # preenchido em multirun
+
+hydra:
+  launcher:
+    n_jobs: 1                        # multirun: -m hydra.launcher.n_jobs=4
+  run:
+    dir: outputs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: outputs/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

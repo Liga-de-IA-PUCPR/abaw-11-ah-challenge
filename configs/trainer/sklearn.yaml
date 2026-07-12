@@ -1,0 +1,4 @@
+# configs/trainer/sklearn.yaml  (caminho CPU, sem Lightning/torchmetrics)
+family: sklearn
+calibrate_threshold: true              # calibra limiar na val p/ max Macro-F1
+metric: macro_f1

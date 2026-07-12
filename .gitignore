@@ -1,5 +1,6 @@
-# Template
-data/
+# Dataset artifacts (root only — do not match src/data/)
+/data/
+outputs/
 
 
 # Byte-compiled / optimized / DLL files
