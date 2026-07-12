@@ -181,3 +181,16 @@ register_lazy(
     family="lightning",
     loader=_load_multimodal_hetero_face,
 )
+
+
+def _load_face_gnn_ts() -> type:
+    from src.models.face_gnn_ts_model import FaceGnnTsFusion
+
+    return FaceGnnTsFusion
+
+
+register_lazy(
+    "face_gnn_ts",
+    family="lightning",
+    loader=_load_face_gnn_ts,
+)

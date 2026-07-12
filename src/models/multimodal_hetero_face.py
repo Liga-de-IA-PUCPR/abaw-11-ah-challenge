@@ -38,6 +38,8 @@ def _build_face_module(
     face_spatial_out: int = 128,
     face_temporal_hidden: int = 64,
     face_temporal_out: int = 128,
+    face_temporal_mode: str = "chain",
+    face_use_velocity: bool = False,
 ):
     import torch
     from torch import nn
@@ -68,6 +70,8 @@ def _build_face_module(
         temporal_out=face_temporal_out,
         top_k=face_top_k,
         dropout=dropout,
+        temporal_mode=face_temporal_mode,  # type: ignore[arg-type]
+        use_velocity=face_use_velocity,
     )
 
     class _MultimodalHeteroFaceModule(nn.Module):
@@ -124,6 +128,8 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
         self.face_spatial_out = int(face.get("spatial_out", 128))
         self.face_temporal_hidden = int(face.get("temporal_hidden", 64))
         self.face_temporal_out = int(face.get("temporal_out", 128))
+        self.face_temporal_mode = str(face.get("temporal_mode", "chain"))
+        self.face_use_velocity = bool(face.get("use_velocity", False))
 
     def build_module(self):
         if not self.use_face:
@@ -148,6 +154,8 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             face_spatial_out=self.face_spatial_out,
             face_temporal_hidden=self.face_temporal_hidden,
             face_temporal_out=self.face_temporal_out,
+            face_temporal_mode=self.face_temporal_mode,
+            face_use_velocity=self.face_use_velocity,
         )
         from src.models.hetero_gnn import load_gae_projections
 

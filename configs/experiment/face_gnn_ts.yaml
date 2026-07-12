@@ -1,0 +1,21 @@
+# @package _global_
+# Experimento isolado: só Face Mesh + GNN4TS (arestas t→t+1 por landmark)
+defaults:
+  - /face_embedder: mediapipe
+  - override /model: face_gnn_ts
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-face-gnn4ts
+
+data:
+  num_workers: 6
+  batch_size: 16
+
+trainer:
+  max_epochs: 2500
+  patience: 100
+  monitor: val_f1_macro
+  mode: max
+  accumulate_grad_batches: 4

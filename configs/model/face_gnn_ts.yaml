@@ -1,0 +1,26 @@
+# configs/model/face_gnn_ts.yaml — classificador isolado Face Mesh GCN (GNN4TS)
+name: face_gnn_ts
+family: lightning
+dim_tab: 32
+use_tabular: true
+tab_hidden: 32
+dropout: 0.1
+lr: 1e-3
+weight_decay: 1e-2
+pos_weight: auto
+contrastive:
+  enabled: false
+  lambda_supcon: 0.1
+  temperature: 0.07
+loss:
+  type: bce
+  gamma: 2.0
+  alpha: 0.25
+face:
+  top_k: 8
+  spatial_hidden: 64
+  spatial_out: 64
+  temporal_hidden: 64
+  temporal_out: 128
+  temporal_mode: gnn4ts
+  use_velocity: true
