@@ -13,7 +13,7 @@ timestamps do Whisper, extrai **embeddings de texto** (RoBERTa-emotion EN, confi
 **RandomForest** (baseline, CPU) ou uma **cross-attention temporal** (Lightning, opcional);
 a predição final por vídeo vem da **agregação das janelas** com limiar calibrado.
 
-> 📚 Projeto, decisões de arquitetura e detalhes de cada módulo:
+> Projeto, decisões de arquitetura e detalhes de cada módulo:
 > **[docs/implementation/](docs/implementation/README.md)** (plano em 7 fases).
 
 <details open="open">
@@ -185,7 +185,7 @@ Procedimento detalhado do GNN: [`references/gnn_training_procedure.md`](referenc
 uv run python main.py -m model.n_estimators=400,800 data.window.size_s=4,5,6
 ```
 
-> 🍎 **Device:** `device=auto` resolve para **MPS ▸ CUDA ▸ CPU**. No Apple Silicon, o caminho
+> **Device:** `device=auto` resolve para **MPS ▸ CUDA ▸ CPU**. No Apple Silicon, o caminho
 > neural exporta `PYTORCH_ENABLE_MPS_FALLBACK=1` (o alvo `make train-neural` já faz isso) para
 > cair em CPU nas operações ainda não suportadas pelo Metal.
 
@@ -232,7 +232,7 @@ uv run python main.py model.n_estimators=800 text_embedder=minilm
 # 3) criar um preset em configs/experiment/<nome>.yaml e usar +experiment=<nome>
 ```
 
-> ⚠️ **Idioma do texto:** as transcrições do BAH são em **inglês**; o default é
+> **Idioma do texto:** as transcrições do BAH são em **inglês**; o default é
 > `cardiffnlp/twitter-roberta-base-emotion` (RoBERTa EN). Não use o `bertimbau` (PT) sobre o
 > texto original — só com tradução. Detalhes em [docs §8](docs/implementation/README.md).
 
