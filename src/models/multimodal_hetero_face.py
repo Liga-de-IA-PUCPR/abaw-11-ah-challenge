@@ -40,6 +40,8 @@ def _build_face_module(
     face_temporal_out: int = 128,
     face_temporal_mode: str = "chain",
     face_use_velocity: bool = False,
+    face_landmark_stride: int = 1,
+    face_max_windows: int | None = None,
 ):
     import torch
     from torch import nn
@@ -72,6 +74,8 @@ def _build_face_module(
         dropout=dropout,
         temporal_mode=face_temporal_mode,  # type: ignore[arg-type]
         use_velocity=face_use_velocity,
+        landmark_stride=face_landmark_stride,
+        max_windows=face_max_windows,
     )
 
     class _MultimodalHeteroFaceModule(nn.Module):
@@ -130,6 +134,9 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
         self.face_temporal_out = int(face.get("temporal_out", 128))
         self.face_temporal_mode = str(face.get("temporal_mode", "chain"))
         self.face_use_velocity = bool(face.get("use_velocity", False))
+        self.face_landmark_stride = int(face.get("landmark_stride", 1))
+        mw = face.get("max_windows")
+        self.face_max_windows = None if mw in (None, "null", "none", 0) else int(mw)
 
     def build_module(self):
         if not self.use_face:
@@ -156,6 +163,8 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             face_temporal_out=self.face_temporal_out,
             face_temporal_mode=self.face_temporal_mode,
             face_use_velocity=self.face_use_velocity,
+            face_landmark_stride=self.face_landmark_stride,
+            face_max_windows=self.face_max_windows,
         )
         from src.models.hetero_gnn import load_gae_projections
 
