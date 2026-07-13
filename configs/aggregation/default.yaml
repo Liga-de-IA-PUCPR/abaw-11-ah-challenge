@@ -2,6 +2,8 @@
 # cross_attention já prediz 1 logit/vídeo (ainda calibra o limiar do sigmoid).
 method: mean_proba                     # mean_proba | max_proba | frac_positive | any
 threshold: auto                        # "auto" = calibrado na val; ou float fixo
-calibration: smooth                    # smooth (robusto, default) | argmax (pico cru)
+score_calibration: none                # none | temperature (NLL na val, antes do limiar)
+calibration: smooth                    # smooth | argmax | base_rate (casamento taxa-base)
 smooth_window: 0.10                    # largura da média móvel (unidades de limiar) p/ 'smooth'
+target_pos_rate: null                  # null = prevalência na val (só p/ base_rate)
 metric: macro_f1

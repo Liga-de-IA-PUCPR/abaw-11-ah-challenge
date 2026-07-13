@@ -90,6 +90,7 @@ class FeatureBuilder:
         tabular: TabularFeaturizer,
         audio_dir: str | Path,
         sample_rate: int = 16000,
+        text_featurizer=None,
     ) -> None:
         """Inicializa o FeatureBuilder.
 
@@ -100,10 +101,13 @@ class FeatureBuilder:
             audio_dir: raiz dos ``.flac``; o waveform de cada janela é cortado de
                 ``audio_dir/<pid>/<stem>.flac`` em ``[t0, t1]``.
             sample_rate: taxa dos ``.flac`` (= ``data.audio.sample_rate``).
+            text_featurizer: :class:`TextFeaturizer` opcional p/ EARLY FUSION — quando
+                fornecido, suas colunas são concatenadas ao ``text_emb`` (passam pela atenção).
         """
         self.text_embedder = text_embedder
         self.audio_embedder = audio_embedder
         self.tabular = tabular
+        self.text_featurizer = text_featurizer
         self.audio_dir = Path(audio_dir)
         self.sample_rate = int(sample_rate)
         self.cfg_hash = self._config_hash()
@@ -121,17 +125,7 @@ class FeatureBuilder:
     ) -> pl.DataFrame:
         """Constrói o Parquet único de features (todas as janelas, todos os splits).
 
-        Processa em lotes de ``chunk_size`` janelas para limitar RAM/VRAM — essencial
-        com backends deep (wav2vec2 + RoBERTa) em ~15k janelas.
-
-        Args:
-            windows: ``WindowSample`` (FASE 2), na ordem das janelas.
-            out_path: destino do Parquet (``cfg.data.paths.parquet_path``).
-            records: opcional — fallback de ``video_label`` (``global_ah``) por vídeo.
-            chunk_size: janelas por lote (``cfg.data.featurize_chunk_size``).
-
-        Returns:
-            ``polars.DataFrame`` escrito em ``out_path``.
+        Processa em lotes de ``chunk_size`` janelas para limitar RAM/VRAM.
         """
         import gc
 
@@ -158,12 +152,15 @@ class FeatureBuilder:
             return rec_labels.get(w.video_id, -1)
 
         writer: pq.ParquetWriter | None = None
-        chunk_starts = range(0, n, chunk_size)
-
-        for start in tqdm(chunk_starts, desc="featurize", unit="chunk"):
+        for start in tqdm(range(0, n, chunk_size), desc="featurize", unit="chunk"):
             batch = windows[start : start + chunk_size]
             waveforms = self._load_waveforms(batch)
             text_emb = self.text_embedder.extract([w.text for w in batch])
+            if self.text_featurizer is not None and batch:
+                text_feats = self.text_featurizer.extract(
+                    [w.text for w in batch], [w.video_id for w in batch]
+                )
+                text_emb = np.concatenate([text_emb, text_feats], axis=1)
             audio_emb = self.audio_embedder.extract(waveforms)
             tab = self.tabular.transform(batch, waveforms)
 
@@ -213,7 +210,7 @@ class FeatureBuilder:
         df = pl.read_parquet(out_path)
         log.info(
             f"Parquet salvo: {out_path.name} | {n} janelas, "
-            f"d_text={self.text_embedder.dim}, d_audio={self.audio_embedder.dim}, "
+            f"d_text={self._text_dim()}, d_audio={self.audio_embedder.dim}, "
             f"d_tab={len(self.tabular.feature_names())}"
         )
         return df
@@ -259,9 +256,22 @@ class FeatureBuilder:
         log.info(f"Parquet carregado: {Path(out_path).name} ({df.height} janelas)")
         return df
 
+    def _text_names(self) -> list[str]:
+        """Nomes do grupo 'text' — inclui o TextFeaturizer se em early fusion."""
+        names = list(self.text_embedder.feature_names())
+        if self.text_featurizer is not None:
+            names += self.text_featurizer.feature_names()
+        return names
+
+    def _text_dim(self) -> int:
+        d = int(self.text_embedder.dim)
+        if self.text_featurizer is not None:
+            d += int(self.text_featurizer.dim)
+        return d
+
     def _all_feature_names(self) -> dict[str, list[str]]:
         return {
-            "text": self.text_embedder.feature_names(),
+            "text": self._text_names(),
             "audio": self.audio_embedder.feature_names(),
             "tabular": self.tabular.feature_names(),
         }
@@ -275,7 +285,7 @@ class FeatureBuilder:
                     "cfg_hash": self.cfg_hash,
                     "feature_names": self._all_feature_names(),
                     "dims": {
-                        "d_text": self.text_embedder.dim,
+                        "d_text": self._text_dim(),
                         "d_audio": self.audio_embedder.dim,
                         "d_tab": len(self.tabular.feature_names()),
                     },
@@ -294,6 +304,12 @@ class FeatureBuilder:
                 "max_length": self.text_embedder.max_length,
                 "normalize": self.text_embedder.normalize,
                 "dim": self.text_embedder.dim,
+                "fuse_text_features": self.text_featurizer is not None,
+                "text_features_names": (
+                    self.text_featurizer.feature_names()
+                    if self.text_featurizer is not None
+                    else None
+                ),
             },
             "audio": {
                 "backend": getattr(self.audio_embedder, "backend", "librosa"),
@@ -301,9 +317,19 @@ class FeatureBuilder:
                 "feature_set": getattr(self.audio_embedder, "feature_set", None),
                 "n_mfcc": getattr(self.audio_embedder, "n_mfcc", None),
                 "agg_stats": getattr(self.audio_embedder, "agg_stats", None),
+                "hesitation": getattr(self.audio_embedder, "hesitation_cfg", None),
                 "dim": self.audio_embedder.dim,
             },
-            "tabular": {"silence_rms_threshold": self.tabular.silence_rms_threshold},
+            "tabular": {
+                "silence_rms_threshold": self.tabular.silence_rms_threshold,
+                "use_question_type": getattr(self.tabular, "use_question_type", True),
+                "use_metadata": getattr(self.tabular, "use_metadata", True),
+                "use_prosody": getattr(self.tabular, "use_prosody", True),
+                "use_hesitation": getattr(self.tabular, "use_hesitation", False),
+                "hesitation": getattr(self.tabular, "hesitation", None),
+                "use_text_features": getattr(self.tabular, "use_text_features", False),
+                "text_features": getattr(self.tabular, "text_features", None),
+            },
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=_jsonable)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
@@ -340,6 +366,7 @@ def build_feature_components(
         batch_size=cfg.text_embedder.batch_size,
         normalize=cfg.text_embedder.get("normalize", True),
         device=cfg.device,
+        trust_remote_code=bool(cfg.text_embedder.get("trust_remote_code", False)),
     )
     audio_embedder = create_audio_embedder(
         backend=cfg.audio_embedder.backend,
@@ -351,8 +378,27 @@ def build_feature_components(
         batch_size=getattr(cfg.audio_embedder, "batch_size", 8),
         device=cfg.device,
     )
-    tabular = TabularFeaturizer(sample_rate=cfg.data.audio.sample_rate)
+    tabular = TabularFeaturizer.from_config(
+        getattr(cfg.data, "tabular", None),
+        sample_rate=cfg.data.audio.sample_rate,
+        device=cfg.device,
+    )
     tabular.fit(train_windows)
+
+    # Early fusion opcional: embute o TextFeaturizer NO text_emb (passa pela atenção do cross-attn).
+    text_featurizer = None
+    if bool(cfg.text_embedder.get("fuse_text_features", False)):
+        from src.features.text_features import TextFeaturizer
+
+        if getattr(tabular, "use_text_features", False):
+            log.warning(
+                "text_embedder.fuse_text_features (early) E data.tabular.use_text_features (late) "
+                "ligados juntos — as features de texto entram DUAS vezes. Escolha um."
+            )
+        text_featurizer = TextFeaturizer.from_config(
+            cfg.text_embedder.get("text_features", None), device=cfg.device
+        )
+        text_featurizer.fit([w.text for w in train_windows])
 
     return FeatureBuilder(
         text_embedder=text_embedder,
@@ -360,4 +406,5 @@ def build_feature_components(
         tabular=tabular,
         audio_dir=Path(cfg.data.paths.interim_dir) / "Audio",
         sample_rate=cfg.data.audio.sample_rate,
+        text_featurizer=text_featurizer,
     )

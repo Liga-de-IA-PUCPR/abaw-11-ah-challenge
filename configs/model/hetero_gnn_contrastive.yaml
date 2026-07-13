@@ -3,15 +3,21 @@ name: hetero_gnn_contrastive
 family: lightning
 dim_a: 768
 dim_b: 768
-dim_tab: 32
+dim_tab: 74
 hidden_channels: 128
 heads: 4
 out_channels: 64
+gat_num_layers: 2
 dropout: 0.1
 lr: 1e-3
 weight_decay: 1e-2
 pos_weight: auto
 gae_init: null
+loss:
+  type: bce
+  gamma: 2.0
+  alpha: 0.25
+  label_smoothing: 0.0
 contrastive:
   enabled: true
   lambda_supcon: 0.1

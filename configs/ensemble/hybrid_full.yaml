@@ -1,0 +1,17 @@
+# Ensemble híbrido: CatBoost (tabular+embeddings) + GNNs Lightning.
+# Calibração: smooth no ensemble GNN; base_rate no CatBoost isolado.
+# ⚠️ GNNs precisam ser re-treinados no parquet com d_tab=74 (features de suporte).
+combine: weighted
+members:
+  - model: catboost
+    checkpoint: outputs/catboost/20260713_152213
+    weight: 0.35
+  - model: multimodal_hetero_full
+    checkpoint: outputs/multimodal_hetero_full/20260706_213403
+    weight: 0.25
+  - model: hetero_gnn_contrastive
+    checkpoint: outputs/hetero_gnn_contrastive/20260713_153143
+    weight: 0.35
+  - model: multimodal_hetero_face
+    checkpoint: outputs/multimodal_hetero_face/20260712_141548
+    weight: 0.05

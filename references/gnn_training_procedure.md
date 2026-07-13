@@ -77,7 +77,7 @@ Embeddings brutos viram um **grafo por vídeo**, o HeteroGAT propaga informaçã
 flowchart LR
     A["áudio (768)"]:::audio --> G
     T["texto (768)"]:::text --> G
-    TAB["tabular (32)"]:::video --> G
+    TAB["tabular (74)"]:::video --> G
     G["grafo do vídeo<br/>(nós = janelas)"]:::video --> GAT["HeteroGAT<br/>3.6.2"]:::video
     GAT --> ZV["nó video (64)"]:::video
     ZV --> MLP["MLP"]:::gray --> OUT["P(A/H)"]:::gray
@@ -217,7 +217,18 @@ Arquivo: `gnn-modalblocks/fusion/multimodal_block.py`, `fusion/attention.py`.
 
 #### 3.6.2 HeteroGAT — message passing no grafo
 
-2 camadas de `HeteroConv` + `GATConv`, uma por tipo de aresta (`temporal`, `aligns`, `reports` + reversas).
+`num_layers` camadas de `HeteroConv` + `GATConv` (config: `model.gat_num_layers`, default **2**).
+Não houve sweep sistemático de profundidade — o default 2 é o histórico da lib `gnn-modalblocks`.
+Camadas intermediárias: hidden→hidden (multi-head); última: hidden→`out_channels` (1 head).
+
+Sweep sugerido:
+
+```bash
+uv run python main.py -m +experiment=hetero_gnn_v2 mode=train \
+  model.gat_num_layers=2,3,4 device=cuda wandb.mode=disabled
+```
+
+Arquivo: `gnn-modalblocks/architectures/hetero_gat.py` (`num_layers` configurável desde audit-004).
 
 ```mermaid
 flowchart LR
@@ -566,6 +577,8 @@ uv run python main.py \
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
+| `gat_num_layers` | 2 | Camadas HeteroConv+GAT (`model.gat_num_layers`) |
+| `lstm_num_layers` | 2 | Camadas BiLSTM no `multimodal_hetero_full` |
 | `hidden_channels` | 128 | Dimensão oculta do GAT |
 | `heads` | 4 | Cabeças de atenção |
 | `out_channels` | 64 | Embedding por tipo de nó após conv |
@@ -593,16 +606,83 @@ uv run python main.py +experiment=hetero_gnn model.heads=8 model.hidden_channels
 
 ```
 src/data/graph_builder.py      # topologia HeteroData + collate
-src/models/hetero_gnn.py       # HeteroGAT + Lightning
-src/models/registry.py         # registro hetero_gnn
-configs/model/hetero_gnn.yaml
-configs/experiment/hetero_gnn.yaml
-configs/ensemble/optimized.yaml
+src/models/hetero_gnn.py       # HeteroGAT + Lightning (+ focal/label-smooth)
+src/models/hetero_gnn_contrastive.py
+src/models/lightning_utils.py  # focal, cosine_warmup, SWA hooks
+src/models/registry.py
+configs/model/hetero_gnn_contrastive.yaml
+configs/experiment/hetero_gnn_v2.yaml
+configs/experiment/hetero_gnn_v2_tuned.yaml
+configs/experiment/hetero_gnn_v2_ablation.yaml
+configs/ensemble/hybrid_catboost_gnn_v2.yaml
+configs/ensemble/hybrid_full.yaml
 scripts/ensemble_sweep.py
-main.py                        # collate graph + ensemble_evaluate/submit
+main.py                        # ensemble sklearn+lightning, evaluate/submit
 ```
 
-## 9. Ensemble (produção)
+## 9. Pipeline completa (parquet d_tab=74)
+
+Features de suporte (hesitação + texto) elevam `d_tab` de 17 → **74**. Checkpoints GNN
+antigos (`dim_tab=32`) são **incompatíveis** — re-treinar obrigatório.
+
+```bash
+# 1) Featurize (wav2vec2 + RoBERTa + hesitation + text_features)
+uv run python main.py +experiment=featurize_deep mode=featurize device=cuda +data.force=true
+
+# 2) CatBoost tabular (melhor para modelo individual + base_rate)
+uv run python main.py +experiment=catboost_baseline mode=train aggregation.calibration=base_rate
+
+# 3) GNN contrastive (melhor score isolado no teste público)
+uv run python main.py +experiment=hetero_gnn_v2 mode=train device=cuda
+
+# 4) Avaliar / submeter
+uv run python main.py +experiment=hetero_gnn_v2 mode=evaluate split=test \
+  checkpoint=outputs/hetero_gnn_contrastive/<run> device=cuda
+```
+
+### Leaderboard atual (test público, 525 vídeos)
+
+| Run | Preset | Val F1 | **Test F1** | Checkpoint |
+|-----|--------|--------|-------------|------------|
+| **hetero_gnn_v2** | `+experiment=hetero_gnn_v2` | 0.653 | **0.7046** | `outputs/hetero_gnn_contrastive/20260713_153143` |
+| CatBoost + suporte | `catboost_baseline` + `base_rate` | 0.612 | 0.7007 | `outputs/catboost/20260713_152213` |
+| hetero_gnn_v2_tuned | focal+SWA+cosine+3 layers | 0.698 | 0.6691 | `outputs/hetero_gnn_contrastive/20260713_154500` |
+| hetero_gnn_v2_ablation | 3 layers + focal leve | 0.663 | 0.6638 | `outputs/hetero_gnn_contrastive/20260713_154930` |
+| Ensemble GNN antigo (3 membros) | `+ensemble=optimized` | 0.717 | 0.6843 | checkpoints Jul/06 |
+| Híbrido CatBoost+GNN v2 | `+ensemble=hybrid_catboost_gnn_v2` | 0.654 | 0.6970 | — |
+
+> **Melhor modelo isolado:** `hetero_gnn_v2` (sem tunings agressivos). Tunings pesados
+> (dropout 0.25, WD 0.05, SWA, cosine) melhoraram a val mas **pioraram** o teste (overfit).
+
+## 10. Tuning de competição (`hetero_gnn_v2_*`)
+
+Técnicas implementadas no código (opt-in via YAML):
+
+| Técnica | Config | Quando usar |
+|---------|--------|-------------|
+| **Focal loss** | `model.loss.type=focal` | classes desbalanceadas, hard examples |
+| **Label smoothing** | `model.loss.label_smoothing=0.02–0.05` | regularização leve |
+| **Cosine + warmup** | `trainer.scheduler=cosine_warmup`, `warmup_epochs=8` | treinos longos |
+| **SWA** | `trainer.swa=true`, `swa_epoch_start=200` | média de pesos no final |
+| **Mais camadas GAT** | `model.gat_num_layers=3` | mais hops no grafo (cuidado com overfit) |
+| **SupCon** | `model.contrastive.lambda_supcon` | embedding discriminativo |
+| **Gradient accum** | `trainer.accumulate_grad_batches=2` | batch efetivo maior |
+| **Calibração** | `aggregation.calibration=smooth` (GNN) / `base_rate` (CatBoost) | ver `aggregation.py` |
+
+Presets:
+
+- `+experiment=hetero_gnn_v2` — baseline que generalizou melhor (**usar este**)
+- `+experiment=hetero_gnn_v2_tuned` — preset agressivo (val↑ test↓ neste dataset)
+- `+experiment=hetero_gnn_v2_ablation` — meio-termo (3 layers + focal leve)
+
+Sweep de profundidade:
+
+```bash
+uv run python main.py -m +experiment=hetero_gnn_v2 mode=train \
+  model.gat_num_layers=2,3 device=cuda wandb.mode=disabled
+```
+
+## 11. Ensemble (produção)
 
 Três checkpoints Lightning são combinados para a submissão final. A otimização de pesos
 usa **predições CSV já exportadas** — sem retreino e sem GPU.
@@ -626,7 +706,20 @@ Config: `configs/ensemble/optimized.yaml` (`combine: weighted`, limiar 0.46).
 
 Evidência: `outputs/ensemble_eval/report_*.json` (baseline), `outputs/ensemble_eval/weight_sweep.json` (otimizado).
 
-### Comandos
+### Ensemble híbrido (CatBoost + GNN)
+
+`configs/ensemble/hybrid_catboost_gnn_v2.yaml` — CatBoost + `hetero_gnn_v2` (parquet d_tab=74).
+`configs/ensemble/hybrid_full.yaml` — inclui também `multimodal_hetero_full` e `face` (requer retreino).
+
+```bash
+uv run python main.py mode=ensemble_evaluate +ensemble=hybrid_catboost_gnn_v2 split=test \
+  device=cuda aggregation.calibration=smooth
+```
+
+⚠️ Membros GNN antigos (`dim_tab=32`) falham no parquet novo. Re-treine com
+`+experiment=hetero_gnn_v2` ou `multimodal_hetero_full` antes do ensemble completo.
+
+### Ensemble GNN legado (Jul/06, d_tab=32)
 
 ```bash
 # 1) Exportar predições de cada membro (val + test)
@@ -652,7 +745,7 @@ Submissão gerada: `outputs/submission_ensemble_optimized.txt` (525 vídeos).
 
 Baseline (média simples, 2 membros): `configs/ensemble/default.yaml` → `outputs/submission_ensemble.txt`.
 
-## 10. Referências
+## 12. Referências
 
 - BAH dataset: `data/raw/readme.md`
 - Challenge: https://affective-behavior-analysis-in-the-wild.github.io/11th/

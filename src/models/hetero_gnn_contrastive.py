@@ -43,6 +43,7 @@ class HeteroGnnContrastiveFusion(HeteroGnnFusion):
             heads=self.heads,
             out_channels=self.out_channels,
             dropout=self.dropout,
+            gat_num_layers=self.gat_num_layers,
             return_embedding=True,
         )
         gae_path = self._gae_init_path or self.gae_init
@@ -50,11 +51,13 @@ class HeteroGnnContrastiveFusion(HeteroGnnFusion):
             load_gae_projections(module, str(gae_path))
         return module
 
-    def build_lightning_module(self):
+    def build_lightning_module(self, trainer_cfg: dict[str, Any] | None = None):
         return build_hetero_lit_module(
             fusion=self.build_module(),
             lr=self.lr,
             weight_decay=self.weight_decay,
             pos_weight=self._resolved_pos_weight,
             contrastive_cfg=self.contrastive,
+            loss_cfg=self.loss,
+            trainer_cfg=trainer_cfg,
         )

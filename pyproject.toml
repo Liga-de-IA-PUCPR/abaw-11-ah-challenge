@@ -44,6 +44,8 @@ dependencies = [
     # --- Texto: embedders via HuggingFace (RoBERTa-emotion EN default, model-agnostic) ---
     "transformers>=4.44.0",      # AutoTokenizer / AutoModel (respeitam device CPU/MPS/CUDA)
     "torch>=2.4.0",              # backend dos embedders deep (texto + wav2vec2/hubert)
+    "vadersentiment>=3.3.2",     # léxico P/N p/ features de ambivalência (texto)
+    "praat-parselmouth>=0.4.3",  # F0/jitter/shimmer p/ features de hesitação
     # --- Áudio: extração e features hand-crafted (baseline librosa, CPU/numpy) ---
     "librosa>=0.10.2",           # MFCC, prosódia, espectral, chroma, f0, tempo
     "soundfile>=0.12.1",         # I/O de áudio (.flac/.wav) — backend do librosa
@@ -51,6 +53,7 @@ dependencies = [
     "numba>=0.60.0",             # acelera o librosa (JIT)
     # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
     "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
+    "catboost>=1.2.10",          # CatBoostClassifier — gradient boosting (lazy import no modelo)
     "numpy>=1.26.0",             # matrizes de features
     "scipy>=1.13.0",             # utilidades numéricas (estatísticas, sinais)
     # --- Serialização / utilidades ---
@@ -80,6 +83,7 @@ dev = [
     "mypy>=1.11.0",              # type checking
     "pytest>=8.3.0",             # testes (fora dos docs de implementação)
     "ipykernel>=6.29.0",         # exploração em notebooks
+    "optuna>=4.0.0",             # HPO (scripts/optuna_gnn_tune.py)
 ]
 vision = [
     "mediapipe>=0.10.14",

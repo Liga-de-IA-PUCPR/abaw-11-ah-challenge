@@ -1,0 +1,29 @@
+# @package _global_
+# HeteroGAT contrastive no parquet atual (d_tab=74) — retreino pós features de suporte.
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: hetero-gnn-v2
+
+model:
+  dim_tab: 74          # inferido do cache no fit; documenta o esperado
+  gat_num_layers: 2    # default histórico; sweep: model.gat_num_layers=2,3,4
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+data:
+  num_workers: 4
+  batch_size: 32
+
+trainer:
+  max_epochs: 500
+  patience: 30
+  monitor: val_f1_macro
+  mode: max

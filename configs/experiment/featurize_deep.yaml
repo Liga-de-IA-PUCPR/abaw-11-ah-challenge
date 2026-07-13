@@ -1,0 +1,4 @@
+# @package _global_
+# Re-featurização com embeddings deep + blocos de suporte (hesitation + text_features).
+defaults:
+  - override /audio_embedder: wav2vec2

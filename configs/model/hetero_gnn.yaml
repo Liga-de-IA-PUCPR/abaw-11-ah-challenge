@@ -3,10 +3,11 @@ name: hetero_gnn
 family: lightning
 dim_a: 768
 dim_b: 768
-dim_tab: 32
+dim_tab: 74
 hidden_channels: 128
 heads: 4
 out_channels: 64
+gat_num_layers: 2
 dropout: 0.1
 lr: 1e-3
 weight_decay: 1e-2

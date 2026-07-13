@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from src.data.graph_builder import BAH_GRAPH_METADATA, build_video_hetero_graph
 from src.logger import get_logger
 from src.models.lightning_utils import (
-    bce_with_logits,
     build_classification_metrics,
     configure_adamw_scheduler,
     log_val_metrics,
@@ -31,6 +30,7 @@ def _build_gnn_module(
     heads: int,
     out_channels: int,
     dropout: float,
+    gat_num_layers: int = 2,
     return_embedding: bool = False,
 ):
     import torch
@@ -55,6 +55,7 @@ def _build_gnn_module(
         head_node_type="video",
         num_classes=1,
         task="binary",
+        num_layers=gat_num_layers,
     )
 
     class _BahVideoHeteroGNN(nn.Module):
@@ -149,10 +150,18 @@ class HeteroGnnFusion:
         self.heads = int(cfg.get("heads", 4))
         self.out_channels = int(cfg.get("out_channels", 64))
         self.dropout = float(cfg.get("dropout", 0.1))
+        self.gat_num_layers = int(cfg.get("gat_num_layers", 2))
         self.lr = float(cfg.get("lr", 1e-3))
         self.weight_decay = float(cfg.get("weight_decay", 1e-2))
         self.pos_weight = cfg.get("pos_weight", "auto")
         self.gae_init = cfg.get("gae_init", None)
+        loss = cfg.get("loss", {}) or {}
+        self.loss = {
+            "type": str(loss.get("type", "bce")),
+            "gamma": float(loss.get("gamma", 2.0)),
+            "alpha": loss.get("alpha", 0.25),
+            "label_smoothing": float(loss.get("label_smoothing", 0.0)),
+        }
         self._resolved_pos_weight: float | None = None
         self._gae_init_path: str | None = None
 
@@ -169,18 +178,21 @@ class HeteroGnnFusion:
             heads=self.heads,
             out_channels=self.out_channels,
             dropout=self.dropout,
+            gat_num_layers=self.gat_num_layers,
         )
         gae_path = self._gae_init_path or self.gae_init
         if gae_path:
             load_gae_projections(module, str(gae_path))
         return module
 
-    def build_lightning_module(self):
+    def build_lightning_module(self, trainer_cfg: dict[str, Any] | None = None):
         return build_hetero_lit_module(
             fusion=self.build_module(),
             lr=self.lr,
             weight_decay=self.weight_decay,
             pos_weight=self._resolved_pos_weight,
+            loss_cfg=self.loss,
+            trainer_cfg=trainer_cfg,
         )
 
     def load_from_checkpoint(self, ckpt_path, map_location=None):
@@ -204,6 +216,8 @@ def build_hetero_lit_module(
     weight_decay: float,
     pos_weight: float | None = None,
     contrastive_cfg: dict[str, Any] | None = None,
+    loss_cfg: dict[str, Any] | None = None,
+    trainer_cfg: dict[str, Any] | None = None,
 ):
     """LightningModule para HeteroGAT (opcionalmente multi-task contrastive)."""
     import lightning as L
@@ -216,6 +230,20 @@ def build_hetero_lit_module(
     temperature = float(ccfg.get("temperature", 0.07))
     margin = float(ccfg.get("margin", 0.2))
     miner_key = str(ccfg.get("miner", "batch_hard"))
+
+    lcfg = loss_cfg or {}
+    loss_type = str(lcfg.get("type", "bce")).lower()
+    focal_gamma = float(lcfg.get("gamma", 2.0))
+    focal_alpha = lcfg.get("alpha", 0.25)
+    focal_alpha = None if focal_alpha in (None, "none", "null") else float(focal_alpha)
+    label_smoothing = float(lcfg.get("label_smoothing", 0.0))
+
+    tcfg = trainer_cfg or {}
+    monitor = str(tcfg.get("monitor", "val_loss"))
+    scheduler = str(tcfg.get("scheduler", "plateau"))
+    max_epochs = int(tcfg.get("max_epochs", 200))
+    warmup_epochs = int(tcfg.get("warmup_epochs", 5))
+    min_lr = float(tcfg.get("min_lr", 1e-6))
 
     supcon_fn = None
     triplet_fn = None
@@ -260,7 +288,17 @@ def build_hetero_lit_module(
             label = batch["label"].float()
             logit, video_emb = self._forward_logits(batch)
 
-            bce = bce_with_logits(logit, label, self._pos_weight)
+            from src.models.lightning_utils import classification_loss
+
+            bce = classification_loss(
+                logit,
+                label,
+                loss_type=loss_type,
+                pos_weight=self._pos_weight,
+                gamma=focal_gamma,
+                alpha=focal_alpha,
+                label_smoothing=label_smoothing,
+            )
             loss = bce
             if (
                 log_aux
@@ -311,7 +349,14 @@ def build_hetero_lit_module(
 
         def configure_optimizers(self):
             return configure_adamw_scheduler(
-                self.parameters(), self._lr, self._weight_decay
+                self.parameters(),
+                self._lr,
+                self._weight_decay,
+                monitor=monitor,
+                scheduler=scheduler,
+                max_epochs=max_epochs,
+                warmup_epochs=warmup_epochs,
+                min_lr=min_lr,
             )
 
     return LitHeteroGnn()

@@ -64,6 +64,7 @@ class TextEmbedder(BaseEmbedder):
         batch_size: int = 32,
         normalize: bool = True,
         device: str = "auto",
+        trust_remote_code: bool = False,
     ) -> None:
         """Inicializa o TextEmbedder.
 
@@ -83,9 +84,12 @@ class TextEmbedder(BaseEmbedder):
         self.device = resolve_device(device)
 
         log.info(f"Carregando tokenizer/modelo de texto: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # AutoModel devolve o encoder base; a head de classificação é ignorada.
-        self.model = AutoModel.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code
+        )
+        self.model = AutoModel.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code
+        )
         self.model.to(self.device)
         self.model.eval()
 

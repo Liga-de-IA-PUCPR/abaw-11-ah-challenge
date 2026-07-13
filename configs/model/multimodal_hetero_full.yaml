@@ -3,11 +3,13 @@ name: multimodal_hetero_full
 family: lightning
 dim_a: 768
 dim_b: 768
-dim_tab: 32
+dim_tab: 74
 common_dim: 512
 hidden_channels: 128
 heads: 4
 out_channels: 64
+gat_num_layers: 2
+lstm_num_layers: 2
 gcn_out_dim: 128
 top_k: 8
 fusion: attention

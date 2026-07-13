@@ -95,7 +95,9 @@ class Reporter:
         lines.append("=" * 70)
         lines.append("")
         lines.append(f"Macro-F1 (oficial) : {metrics.get('macro_f1', float('nan')):.4f}")
+        lines.append(f"Accuracy           : {metrics.get('accuracy', float('nan')):.4f}")
         lines.append(f"Average Precision  : {metrics.get('average_precision', float('nan')):.4f}")
+        lines.append(f"ROC-AUC            : {metrics.get('roc_auc', float('nan')):.4f}")
         if "n_videos" in metrics:
             lines.append(f"Vídeos avaliados   : {metrics['n_videos']}")
         if "threshold" in metrics:
@@ -106,8 +108,15 @@ class Reporter:
         if metrics.get("per_class"):
             lines.append("")
             lines.append("-" * 70)
-            lines.append("Métricas por classe:")
+            lines.append("F1 por classe:")
             for cls_name, vals in metrics["per_class"].items():
+                lines.append(f"  {cls_name}: {vals}")
+
+        if metrics.get("recall_per_class"):
+            lines.append("")
+            lines.append("-" * 70)
+            lines.append("Recall por classe:")
+            for cls_name, vals in metrics["recall_per_class"].items():
                 lines.append(f"  {cls_name}: {vals}")
 
         if metrics.get("classification_report"):
@@ -284,6 +293,35 @@ class Reporter:
         fig.savefig(path, dpi=150)
         plt.close(fig)
         log.info(f"Plot salvo: {path} (AP={ap:.3f})")
+        return path
+
+    def plot_roc_curve(self, y_true: np.ndarray, y_proba: np.ndarray) -> Path | None:
+        """Curva ROC + AUC (classe positiva A/H)."""
+        try:
+            import matplotlib.pyplot as plt
+            from sklearn.metrics import auc, roc_curve
+        except ImportError as exc:  # pragma: no cover
+            log.warning(f"Plot pulado (deps ausentes): {exc}")
+            return None
+
+        if len(np.unique(y_true)) < 2:
+            log.warning("ROC pulado (uma única classe verdadeira).")
+            return None
+
+        fpr, tpr, _ = roc_curve(y_true, y_proba)
+        roc_auc_val = auc(fpr, tpr)
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.plot(fpr, tpr, color="#4C72B0", lw=2, label=f"AUC = {roc_auc_val:.3f}")
+        ax.plot([0, 1], [0, 1], color="#999999", ls="--", lw=1)
+        ax.set_xlabel("FPR")
+        ax.set_ylabel("TPR (Recall)")
+        ax.set_title("Curva ROC (classe A/H, nível de vídeo)")
+        ax.legend(loc="lower right")
+        fig.tight_layout()
+        path = self.plots_dir / "roc_curve.png"
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        log.info(f"Plot salvo: {path} (AUC={roc_auc_val:.3f})")
         return path
 
     def plot_threshold_curve(

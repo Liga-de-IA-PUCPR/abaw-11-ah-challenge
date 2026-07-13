@@ -1,0 +1,11 @@
+# configs/model/catboost.yaml  (family=sklearn — CPU)
+name: catboost
+family: sklearn
+n_estimators: 300
+depth: 6
+learning_rate: 0.05
+l2_leaf_reg: 3.0
+auto_class_weights: Balanced
+thread_count: -1
+verbose: 0
+random_state: 42

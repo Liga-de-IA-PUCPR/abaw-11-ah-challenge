@@ -52,4 +52,69 @@ melhores checkpoints Lightning.
 
 ---
 
+### Run audit-002 — CatBoost + temperature scaling
+
+> 2026-07-13 | Scope: sklearn tabular | Checkpoint: `outputs/catboost/20260713_145505`
+
+**Pipeline:** CatBoost por janela (`auto_class_weights: Balanced`) → `mean_proba` →
+temperature scaling (NLL, T=5.0 na val) → limiar smooth (τ=0.44).
+
+**Resultados (test público, 525 vídeos):**
+
+| Métrica | Valor |
+|---------|-------|
+| Macro-F1 | 0.6562 |
+| Accuracy | 0.6590 |
+| ROC-AUC | 0.7551 |
+| AP | 0.8237 |
+| Recall classe 0 / 1 | 0.720 / 0.619 |
+| Matriz confusão | [[149, 58], [121, 197]] |
+
+**Artefatos:** `outputs/catboost/20260713_145505/eval_test/` (metrics.json, plots/, predictions.csv).
+
+**Comparação:** branch isa reportou F1 test **0.701** com CatBoost + smooth (sem temperature).
+Gap provável: Parquet atual usa embeddings deep (768+768 wav2vec2/RoBERTa) vs features
+librosa da isa; temperature saturou em T=5.0 (limite superior do otimizador).
+
+**Melhor caminho competição:** ensemble GNN otimizado (F1 test 0.6843) > CatBoost tabular neste cache.
+
+---
+
+### Run audit-003 — Pipeline completa: features de suporte + `base_rate`
+
+> 2026-07-13 | Scope: featurize + CatBoost + calibração Luiz | Checkpoint: `outputs/catboost/20260713_152213`
+
+**Mudanças integradas (branch `origin/luiz`):**
+- `hesitation.py` + `text_features.py` → tabular **d=74** (antes 17)
+- Calibração `base_rate` + platô central em `smooth` (`aggregation.py`)
+- `ensemble_evaluate` calibra limiar **sempre na val** (protocolo correto)
+
+**Featurize:** `+experiment=featurize_deep` + `+data.force=true` →
+`data/processed/text_audio_windows.parquet` (15622 janelas, d_text=768, d_audio=768, d_tab=74).
+
+**Pipeline vencedor:** CatBoost → `mean_proba` → **`base_rate`** (sem temperature).
+
+| Modelo | Calibração | Val F1 | **Test F1** | Limiar (val) |
+|--------|------------|--------|-------------|--------------|
+| CatBoost + suporte | `base_rate` | 0.6120 | **0.7007** ✅ | 0.195 |
+| CatBoost + suporte | `smooth` | 0.6314 | 0.6988 | 0.200 |
+| Ensemble GNN (3 membros) | `base_rate` | 0.7132 | 0.6854 | 0.423 |
+| Ensemble GNN | `argmax` | 0.7169 | 0.6843 | 0.460 |
+
+**Teste público (CatBoost vencedor, 525 vídeos):**
+- Macro-F1: **0.7007** | Accuracy: 0.7105 | ROC-AUC: 0.7837 | AP: 0.8443
+- Matriz: [[139, 68], [84, 234]]
+
+**Comando reprodução:**
+```bash
+uv run python main.py +experiment=featurize_deep mode=featurize device=cuda +data.force=true wandb.mode=disabled
+uv run python main.py +experiment=catboost_baseline mode=train wandb.mode=disabled
+uv run python main.py +experiment=catboost_baseline mode=evaluate split=test \
+  checkpoint=outputs/catboost/20260713_152213 wandb.mode=disabled
+```
+
+**Melhor caminho competição (atualizado):** CatBoost com features de suporte + `base_rate` (**F1 test 0.7007**).
+
+---
+
 _Last updated: 2026-07-13_

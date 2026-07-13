@@ -1,0 +1,6 @@
+# Ensemble mínimo: só CatBoost (sanity check do caminho sklearn no ensemble).
+combine: weighted
+members:
+  - model: catboost
+    checkpoint: outputs/catboost/20260713_152213
+    weight: 1.0

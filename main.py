@@ -67,10 +67,15 @@ def _run_featurize(cfg: DictConfig, device) -> int:
 
     log.info(f"Device dos embedders: {device}")
     summary = run_featurize(cfg, device=device)
-    log.info(
-        f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
-        f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
-    )
+    if summary.get("cached"):
+        log.info(
+            f"Featurize: cache reutilizado — {summary['n_windows']} janelas em {summary['parquet_path']}."
+        )
+    else:
+        log.info(
+            f"Featurize concluído: {summary['n_windows']} janelas → {summary['parquet_path']} "
+            f"(d_text={summary['d_text']}, d_audio={summary['d_audio']}, d_tab={summary['d_tab']})."
+        )
     return 0
 
 
@@ -237,6 +242,7 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
         try:
             o = trainer.video_outputs(data)
             rep.plot_confusion_matrix(o["y_true"], o["y_pred"])
+            rep.plot_roc_curve(o["y_true"], o["y_proba"])
             rep.plot_precision_recall(o["y_true"], o["y_proba"])
             grid, f1s = threshold_curve(o["y_true"], o["y_proba"])
             rep.plot_threshold_curve(grid, f1s, threshold)
@@ -367,70 +373,92 @@ def _run_pretrain_gae(cfg: DictConfig, device) -> int:
     return 0
 
 
-def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
-    """``mode=ensemble_evaluate`` — combina probas de N checkpoints e calibra limiar."""
-    import json
+def _ensemble_member_video_scores(
+    cfg: DictConfig,
+    member,
+    split: str,
+    device,
+) -> dict[str, float]:
+    """Scores contínuos por vídeo de um membro do ensemble (sklearn ou lightning)."""
     from pathlib import Path
 
-    import numpy as np
     from omegaconf import OmegaConf
 
     from src.data.datasets import load_split
+    from src.models.registry import get_family
     from src.outputs.checkpoint import resolve_latest_checkpoint
-    from src.training.aggregation import calibrate_threshold
+    from src.training.aggregation import video_scores
     from src.training.factory import load_trainer
-    from src.training.metrics import evaluate_video_predictions
 
-    ensemble = cfg.get("ensemble")
-    if ensemble is None:
-        raise ValueError("mode=ensemble_evaluate requer +ensemble=default ou bloco ensemble na config.")
+    model_name = str(member.model)
+    member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    model_yaml = Path("configs/model") / f"{model_name}.yaml"
+    if not model_yaml.exists():
+        raise FileNotFoundError(f"YAML ausente: {model_yaml}")
+    member_cfg.model = OmegaConf.load(str(model_yaml))
 
-    split = cfg.get("split") or "val"
+    ckpt = member.get("checkpoint")
+    if ckpt in (None, "null"):
+        family = get_family(model_name)
+        ckpt_dir = resolve_latest_checkpoint(
+            cfg.data.paths.output_root,
+            family=family,
+            model_name=model_name,
+        )
+    else:
+        ckpt_dir = ckpt
+        family = get_family(model_name)
+
+    trainer = load_trainer(family, ckpt_dir, cfg=member_cfg)
+
+    if family == "sklearn":
+        data_raw = load_split(cfg, split, family="sklearn")
+        proba = trainer.model.predict_proba(data_raw.X)
+        raw = video_scores(proba, data_raw.video_ids, trainer.method)
+        if hasattr(trainer, "_calibrated_scores_dict"):
+            return trainer._calibrated_scores_dict(raw)
+        return raw
+
     data_raw = load_split(cfg, split, family="lightning")
     data = _as_loader(cfg, data_raw, "lightning", split)
-    labels = {str(vid): int(lab) for vid, lab in data_raw.video_labels.items()}
+    ids, proba = trainer._infer(data)
+    return {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
+
+
+def _ensemble_infer_split(
+    cfg: DictConfig,
+    ensemble,
+    split: str,
+    device,
+) -> tuple[list[dict[str, float]], list[float], dict[str, int]]:
+    """Inferência de todos os membros do ensemble num split; retorna scores, pesos e labels."""
+    from src.data.datasets import load_split
+
+    labels_raw = load_split(cfg, split, family="lightning")
+    labels = {str(vid): int(lab) for vid, lab in labels_raw.video_labels.items()}
 
     member_scores: list[dict[str, float]] = []
     weights: list[float] = []
-
     for member in ensemble.members:
-        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
         model_name = str(member.model)
-        model_yaml = Path("configs/model") / f"{model_name}.yaml"
-        if not model_yaml.exists():
-            log.warning(f"Ensemble: modelo '{model_name}' ignorado (yaml ausente).")
-            continue
-        member_cfg.model = OmegaConf.load(str(model_yaml))
-        ckpt = member.get("checkpoint")
         try:
-            if ckpt in (None, "null"):
-                ckpt_dir = resolve_latest_checkpoint(
-                    cfg.data.paths.output_root,
-                    family="lightning",
-                    model_name=model_name,
-                )
-            else:
-                ckpt_dir = ckpt
-        except FileNotFoundError:
-            log.warning(
-                f"Ensemble: checkpoint ausente para '{model_name}' — membro ignorado."
-            )
+            scores = _ensemble_member_video_scores(cfg, member, split, device)
+        except FileNotFoundError as exc:
+            log.warning(f"Ensemble: membro '{model_name}' ignorado — {exc}")
             continue
-        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
-        ids, proba = trainer._infer(data)
-        scores = {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
         member_scores.append(scores)
-        w = float(member.get("weight", 1.0))
-        weights.append(w)
-        log.info(f"Ensemble member '{model_name}' carregado de {ckpt_dir}")
+        weights.append(float(member.get("weight", 1.0)))
+        log.info(f"Ensemble member '{model_name}' carregado")
+    return member_scores, weights, labels
 
-    if not member_scores:
-        raise FileNotFoundError(
-            "Ensemble: nenhum membro com checkpoint válido. Treine ao menos um modelo."
-        )
 
-    combine = str(ensemble.get("combine", "mean"))
-    total_w = sum(weights) or 1.0
+def _ensemble_combine_scores(
+    member_scores: list[dict[str, float]],
+    weights: list[float],
+    combine: str,
+) -> dict[str, float]:
+    import numpy as np
+
     video_ids = sorted(set().union(*member_scores))
     combined: dict[str, float] = {}
     for vid in video_ids:
@@ -446,23 +474,63 @@ def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
             combined[vid] = float(np.average(vals, weights=ws))
         else:
             combined[vid] = float(np.mean(vals))
+    return combined
 
-    proba_arr = np.array([combined[vid] for vid in video_ids if vid in labels], dtype=np.float32)
-    ids_arr = np.array([vid for vid in video_ids if vid in labels])
+
+def _run_ensemble_evaluate(cfg: DictConfig, device) -> int:
+    """``mode=ensemble_evaluate`` — combina probas de N checkpoints e calibra limiar."""
+    import json
+    from pathlib import Path
+
+    import numpy as np
+
+    from src.training.aggregation import calibrate_threshold
+    from src.training.metrics import evaluate_video_predictions
+
+    ensemble = cfg.get("ensemble")
+    if ensemble is None:
+        raise ValueError("mode=ensemble_evaluate requer +ensemble=default ou bloco ensemble na config.")
+
+    split = cfg.get("split") or "val"
+    combine = str(ensemble.get("combine", "mean"))
     agg = getattr(cfg, "aggregation", {}) or {}
     thr_setting = agg.get("threshold", "auto")
+
+    # Limiar SEMPRE calibrado na val (nunca no split de avaliação).
+    member_scores_val, weights, val_labels = _ensemble_infer_split(cfg, ensemble, "val", device)
+    if not member_scores_val:
+        raise FileNotFoundError(
+            "Ensemble: nenhum membro com checkpoint válido. Treine ao menos um modelo."
+        )
+    val_combined = _ensemble_combine_scores(member_scores_val, weights, combine)
+
     if thr_setting == "auto":
-        threshold, _ = calibrate_threshold(
-            val_proba=proba_arr,
-            val_video_ids=ids_arr,
-            val_video_labels=labels,
+        val_ids = np.array([v for v in val_combined if v in val_labels])
+        val_proba = np.array([val_combined[v] for v in val_ids], dtype=np.float32)
+        threshold, val_f1 = calibrate_threshold(
+            val_proba=val_proba,
+            val_video_ids=val_ids,
+            val_video_labels=val_labels,
             method="identity",
             metric="macro_f1",
             selection=agg.get("calibration", "smooth"),
             smooth_window=float(agg.get("smooth_window", 0.10)),
+            target_pos_rate=(
+                None
+                if agg.get("target_pos_rate") in (None, "null")
+                else float(agg.get("target_pos_rate"))
+            ),
         )
+        log.info(f"Ensemble: limiar calibrado na val={threshold:.4f} (macro_f1={val_f1:.4f})")
     else:
         threshold = float(thr_setting)
+
+    if split == "val":
+        combined = val_combined
+        labels = val_labels
+    else:
+        member_scores_eval, _, labels = _ensemble_infer_split(cfg, ensemble, split, device)
+        combined = _ensemble_combine_scores(member_scores_eval, weights, combine)
 
     preds = {vid: int(combined[vid] >= threshold) for vid in combined if vid in labels}
     report = evaluate_video_predictions(
@@ -487,47 +555,20 @@ def _run_ensemble_submit(cfg: DictConfig, device) -> int:
     from pathlib import Path
 
     import numpy as np
-    from omegaconf import OmegaConf
 
-    from src.data.datasets import load_split
-    from src.outputs.checkpoint import resolve_latest_checkpoint
     from src.outputs.submission import write_submission
     from src.training.aggregation import calibrate_threshold
-    from src.training.factory import load_trainer
 
     ensemble = cfg.get("ensemble")
     if ensemble is None:
         raise ValueError("mode=ensemble_submit requer +ensemble=... na config.")
 
-    val_raw = load_split(cfg, "val", family="lightning")
-    val_data = _as_loader(cfg, val_raw, "lightning", "val")
-    val_labels = {str(vid): int(lab) for vid, lab in val_raw.video_labels.items()}
-
-    member_scores_val: list[dict[str, float]] = []
-    weights: list[float] = []
-    for member in ensemble.members:
-        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-        model_name = str(member.model)
-        member_cfg.model = OmegaConf.load(f"configs/model/{model_name}.yaml")
-        ckpt = member.get("checkpoint")
-        ckpt_dir = (
-            resolve_latest_checkpoint(cfg.data.paths.output_root, family="lightning", model_name=model_name)
-            if ckpt in (None, "null")
-            else ckpt
-        )
-        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
-        ids, proba = trainer._infer(val_data)
-        member_scores_val.append({str(v): float(p) for v, p in zip(ids, proba, strict=False)})
-        weights.append(float(member.get("weight", 1.0)))
-
     combine = str(ensemble.get("combine", "mean"))
-    val_combined: dict[str, float] = {}
-    for vid in sorted(set().union(*member_scores_val)):
-        vals = [s[vid] for s in member_scores_val if vid in s]
-        val_combined[vid] = float(np.mean(vals)) if combine != "weighted" else float(
-            np.average(vals, weights=weights[: len(vals)])
-        )
+    member_scores_val, weights, val_labels = _ensemble_infer_split(cfg, ensemble, "val", device)
+    if not member_scores_val:
+        raise FileNotFoundError("Ensemble: nenhum membro válido para submit.")
 
+    val_combined = _ensemble_combine_scores(member_scores_val, weights, combine)
     val_ids = np.array([v for v in val_combined if v in val_labels])
     val_proba = np.array([val_combined[v] for v in val_ids], dtype=np.float32)
     agg = getattr(cfg, "aggregation", {}) or {}
@@ -539,33 +580,16 @@ def _run_ensemble_submit(cfg: DictConfig, device) -> int:
         metric="macro_f1",
         selection=agg.get("calibration", "smooth"),
         smooth_window=float(agg.get("smooth_window", 0.10)),
+        target_pos_rate=(
+            None
+            if agg.get("target_pos_rate") in (None, "null")
+            else float(agg.get("target_pos_rate"))
+        ),
     )
     log.info(f"Ensemble submit: limiar val={threshold:.4f} (macro_f1={val_f1:.4f})")
 
-    test_raw = load_split(cfg, "test", family="lightning")
-    test_data = _as_loader(cfg, test_raw, "lightning", "test")
-    member_scores_test: list[dict[str, float]] = []
-    for member in ensemble.members:
-        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-        model_name = str(member.model)
-        member_cfg.model = OmegaConf.load(f"configs/model/{model_name}.yaml")
-        ckpt = member.get("checkpoint")
-        ckpt_dir = (
-            resolve_latest_checkpoint(cfg.data.paths.output_root, family="lightning", model_name=model_name)
-            if ckpt in (None, "null")
-            else ckpt
-        )
-        trainer = load_trainer("lightning", ckpt_dir, cfg=member_cfg)
-        ids, proba = trainer._infer(test_data)
-        member_scores_test.append({str(v): float(p) for v, p in zip(ids, proba, strict=False)})
-
-    test_combined: dict[str, float] = {}
-    for vid in sorted(set().union(*member_scores_test)):
-        vals = [s[vid] for s in member_scores_test if vid in s]
-        test_combined[vid] = float(np.mean(vals)) if combine != "weighted" else float(
-            np.average(vals, weights=weights[: len(vals)])
-        )
-
+    member_scores_test, _, _ = _ensemble_infer_split(cfg, ensemble, "test", device)
+    test_combined = _ensemble_combine_scores(member_scores_test, weights, combine)
     preds = {vid: int(score >= threshold) for vid, score in test_combined.items()}
     out_path = Path(cfg.get("out") or "outputs/submission_ensemble.txt")
     write_submission(preds, out_path)

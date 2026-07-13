@@ -81,10 +81,16 @@ def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
     out_dir = Path(out_dir)
 
     if family == "sklearn":
+        from src.models.catboost_model import CatBoostModel
         from src.models.random_forest import RandomForestModel
         from src.training.sklearn_trainer import SklearnTrainer
 
-        model = RandomForestModel.load(out_dir / "model.joblib")
+        model_path = out_dir / "model.joblib"
+        model_name = str(getattr(cfg.model, "name", "random_forest"))
+        if model_name == "catboost":
+            model = CatBoostModel.load(model_path)
+        else:
+            model = RandomForestModel.load(model_path)
         log.info("Trainer: SklearnTrainer recarregado (CPU, sem lightning).")
         return SklearnTrainer.load(out_dir, model=model, config=cfg)
 

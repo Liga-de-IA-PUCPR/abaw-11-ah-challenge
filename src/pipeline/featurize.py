@@ -67,7 +67,11 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
     # Cache: pula a featurização cara (carrega RoBERTa/wav2vec2) se o Parquet já existe.
     if parquet_path.exists() and not force:
         log.info(f"Cache encontrado: {parquet_path} (use 'data.force=true' p/ recomputar).")
-        return {"n_windows": len(windows), "parquet_path": str(parquet_path), "cached": True}
+        return {
+            "n_windows": len(windows),
+            "parquet_path": str(parquet_path),
+            "cached": True,
+        }
 
     # --- 2. Componentes da FASE 3 (embedders deep honram device; tabular fitted no treino) -
     # ``split`` é campo de WindowSample (herdado do VideoRecord via índice); o tabular é

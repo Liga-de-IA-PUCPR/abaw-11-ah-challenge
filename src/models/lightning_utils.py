@@ -42,6 +42,32 @@ def bce_with_logits(logit, label, pos_weight: float | None):
     return nn.functional.binary_cross_entropy_with_logits(logit, label, pos_weight=pw)
 
 
+def smooth_binary_labels(label, smoothing: float):
+    """Label smoothing para BCE binária: y → y·(1-ε) + 0.5·ε."""
+    if smoothing <= 0:
+        return label
+    return label * (1.0 - smoothing) + 0.5 * smoothing
+
+
+def classification_loss(
+    logit,
+    label,
+    *,
+    loss_type: str = "bce",
+    pos_weight: float | None = None,
+    gamma: float = 2.0,
+    alpha: float | None = 0.25,
+    label_smoothing: float = 0.0,
+):
+    """BCE ou focal com label smoothing opcional."""
+    target = smooth_binary_labels(label, label_smoothing)
+    if loss_type == "focal":
+        return focal_loss_with_logits(
+            logit, target, gamma=gamma, alpha=alpha, pos_weight=pos_weight
+        )
+    return bce_with_logits(logit, target, pos_weight)
+
+
 def focal_loss_with_logits(
     logit,
     label,
@@ -94,17 +120,44 @@ def configure_adamw_scheduler(
     lr: float,
     weight_decay: float,
     monitor: str = "val_loss",
+    scheduler: str = "plateau",
+    max_epochs: int = 200,
+    warmup_epochs: int = 5,
+    min_lr: float = 1e-6,
 ):
     from torch import optim
 
     mode = "max" if "f1" in monitor.lower() else "min"
     optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+
+    if scheduler == "cosine_warmup":
+        warmup_epochs = max(0, int(warmup_epochs))
+        t_max = max(1, int(max_epochs) - warmup_epochs)
+        if warmup_epochs > 0:
+            warmup = optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.1, total_iters=warmup_epochs
+            )
+            cosine = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=t_max, eta_min=min_lr
+            )
+            sched = optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+            )
+        else:
+            sched = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=int(max_epochs), eta_min=min_lr
+            )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": sched, "interval": "epoch"},
+        }
+
+    sched = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode=mode, factor=0.5, patience=10
     )
     return {
         "optimizer": optimizer,
-        "lr_scheduler": {"scheduler": scheduler, "monitor": monitor},
+        "lr_scheduler": {"scheduler": sched, "monitor": monitor},
     }
 
 

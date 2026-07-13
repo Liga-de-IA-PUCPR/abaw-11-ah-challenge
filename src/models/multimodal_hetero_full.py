@@ -29,6 +29,8 @@ def _build_full_module(
     use_latent_gcn: bool = True,
     use_bilstm: bool = True,
     lstm_hidden: int = 64,
+    gat_num_layers: int = 2,
+    lstm_num_layers: int = 2,
 ):
     import torch
     from torch import nn
@@ -53,6 +55,7 @@ def _build_full_module(
         head_node_type="video",
         num_classes=1,
         task="binary",
+        num_layers=gat_num_layers,
     )
 
     class _MultimodalHeteroFullModule(nn.Module):
@@ -87,7 +90,7 @@ def _build_full_module(
                     "temporal",
                     input_dim=common_dim,
                     hidden_dim=lstm_hidden,
-                    num_layers=2,
+                    num_layers=lstm_num_layers,
                     dropout=dropout,
                 )
                 lstm_out = lstm_hidden
@@ -230,6 +233,8 @@ class MultimodalHeteroFullFusion:
         self.top_k = int(cfg.get("top_k", 8))
         self.fusion = str(cfg.get("fusion", "attention"))
         self.dropout = float(cfg.get("dropout", 0.1))
+        self.gat_num_layers = int(cfg.get("gat_num_layers", 2))
+        self.lstm_num_layers = int(cfg.get("lstm_num_layers", 2))
         self.use_latent_gcn = bool(cfg.get("use_latent_gcn", True))
         self.use_bilstm = bool(cfg.get("use_bilstm", True))
         self.lstm_hidden = int(cfg.get("lstm_hidden", 64))
@@ -276,6 +281,8 @@ class MultimodalHeteroFullFusion:
             use_latent_gcn=self.use_latent_gcn,
             use_bilstm=self.use_bilstm,
             lstm_hidden=self.lstm_hidden,
+            gat_num_layers=self.gat_num_layers,
+            lstm_num_layers=self.lstm_num_layers,
         )
         gae_path = self._gae_init_path or self.gae_init
         if gae_path:

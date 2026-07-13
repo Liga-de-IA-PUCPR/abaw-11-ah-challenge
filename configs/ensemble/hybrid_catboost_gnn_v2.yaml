@@ -1,0 +1,9 @@
+# CatBoost + hetero_gnn_v2 (parquet d_tab=74).
+combine: weighted
+members:
+  - model: catboost
+    checkpoint: outputs/catboost/20260713_152213
+    weight: 0.4
+  - model: hetero_gnn_contrastive
+    checkpoint: outputs/hetero_gnn_contrastive/20260713_153143
+    weight: 0.6

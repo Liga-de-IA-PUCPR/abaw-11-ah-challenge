@@ -1,6 +1,7 @@
 """Modelos do desafio BAH — dois na registry com tag de família.
 
 - ``random_forest``  (family="sklearn")   : classificador de janela em CPU.
+- ``catboost``       (family="sklearn")   : gradient boosting por janela (CPU).
 - ``cross_attention`` (family="lightning") : LightningModule sobre sequência de janelas.
 
 O import do ``random_forest`` é eager (CPU, sem deps pesadas). O ``cross_attention``
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.models.catboost_model import CatBoostModel  # eager: catboost lazy no from_config
 from src.models.random_forest import RandomForestModel  # eager: só sklearn
 from src.models.registry import create_model, list_models, register_model
 
@@ -29,6 +31,7 @@ __all__ = [
     "create_model",
     "list_models",
     "RandomForestModel",
+    "CatBoostModel",
     "CrossAttentionFusion",
     "LitCrossAttention",
 ]

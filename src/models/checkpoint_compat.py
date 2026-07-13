@@ -25,6 +25,8 @@ _ARCH_ATTRS = (
     "use_latent_gcn",
     "use_bilstm",
     "lstm_hidden",
+    "gat_num_layers",
+    "lstm_num_layers",
     "contrastive",
 )
 

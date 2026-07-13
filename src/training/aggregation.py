@@ -82,6 +82,13 @@ def _moving_average(y: np.ndarray, k: int) -> np.ndarray:
     return out
 
 
+# Tolerância (em macro-F1) que define o platô "quase-máximo" na seleção 'smooth':
+# limiares cujo F1 suavizado está a <= _PLATEAU_TOL do máximo contam como platô. Numa
+# val pequena (~124 vídeos) diferenças dessa ordem são ruído — então escolhemos o CENTRO
+# da faixa indistinguível do máximo, não uma borda dela.
+_PLATEAU_TOL = 0.01
+
+
 def _select_threshold_index(
     grid: np.ndarray, f1s: np.ndarray, selection: str, smooth_window: float
 ) -> int:
@@ -89,17 +96,47 @@ def _select_threshold_index(
 
     - ``"argmax"``: pico cru — sensível a ruído quando a val é pequena (a curva é
       uma função degrau e um spike de 1-2 vídeos pode vencer mas não generalizar).
-    - ``"smooth"`` (default): suaviza a curva (média móvel de largura ``smooth_window``,
-      em unidades de limiar) e então pega o pico → escolhe o CENTRO do platô estável,
-      que transfere melhor para o test/hidden-test. Ver ``src/training/README.md``.
+    - ``"smooth"`` (default): suaviza a curva (média móvel de largura ``smooth_window``)
+      e escolhe o **CENTRO do maior platô** cujo F1 suavizado está a ``_PLATEAU_TOL`` do
+      máximo. Diferente do ``argmax`` da curva suavizada (que numa val plana escorrega
+      para uma borda — ex.: 0.5), o centro do platô transfere melhor para o test/hidden-test.
     """
     if selection == "argmax":
         return int(np.argmax(f1s))
     if selection == "smooth":
         spacing = float(grid[1] - grid[0]) if len(grid) > 1 else 1.0
         k = max(1, int(round(smooth_window / spacing)))
-        return int(np.argmax(_moving_average(f1s, k)))
+        s = _moving_average(f1s, k)
+        plateau = np.flatnonzero(s >= float(s.max()) - _PLATEAU_TOL)
+        if plateau.size == 0:
+            return int(np.argmax(s))
+        runs = np.split(plateau, np.flatnonzero(np.diff(plateau) > 1) + 1)
+        best = max(runs, key=len)
+        return int(best[len(best) // 2])
     raise ValueError(f"selection inválida: '{selection}'. Use 'smooth' | 'argmax'.")
+
+
+def _calibrate_base_rate(
+    s: np.ndarray,
+    y_true: np.ndarray,
+    target_pos_rate: float | None,
+    method_label: str,
+) -> tuple[float, float]:
+    """Limiar por casamento de taxa-base (quantil dos scores)."""
+    if len(np.unique(y_true)) < 2:
+        log.warning(
+            "Conjunto de calibração tem UMA ÚNICA classe (%d vídeos) — o limiar resultante "
+            "não tem sentido.",
+            len(y_true),
+        )
+    p_plus = float(y_true.mean()) if target_pos_rate is None else float(target_pos_rate)
+    best_thr = float(np.quantile(s, 1.0 - p_plus))
+    best_score = video_macro_f1(y_true, (s >= best_thr).astype(np.int64))
+    log.info(
+        f"Limiar calibrado ({method_label}, selection='base_rate', "
+        f"p+={p_plus:.3f}): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+    )
+    return best_thr, best_score
 
 
 def calibrate_threshold(
@@ -111,17 +148,15 @@ def calibrate_threshold(
     grid: np.ndarray | None = None,
     selection: str = "smooth",
     smooth_window: float = 0.10,
+    target_pos_rate: float | None = None,
 ) -> tuple[float, float]:
     """Varre um grid de limiares em [0, 1] e escolhe o melhor na validação.
 
-    Os scores por vídeo são calculados **uma vez**; só a binarização varia ao
-    longo do grid (busca barata). Serve tanto ao RF (probas de janela) quanto à
-    cross-attention (``method="identity"``: 1 sigmoid por vídeo).
-
-    A escolha do limiar usa ``selection`` (ver ``_select_threshold_index``):
-    ``"smooth"`` (default) pega o centro do platô da curva (robusto a val pequena);
-    ``"argmax"`` pega o pico cru. O Macro-F1 retornado é o **real** (não suavizado)
-    no limiar escolhido.
+    A escolha do limiar usa ``selection``:
+    - ``"argmax"``: pico cru da curva F1×limiar.
+    - ``"smooth"``: centro do platô da curva suavizada (ver ``_select_threshold_index``).
+    - ``"base_rate"``: casamento de taxa-base — limiar cujo quantil reproduz ``target_pos_rate``
+      (fração predita positiva). ``target_pos_rate=None`` usa a prevalência na val.
 
     Returns:
         ``(melhor_limiar, macro_f1_no_limiar)``.
@@ -140,6 +175,11 @@ def calibrate_threshold(
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
 
+    if selection == "base_rate":
+        return _calibrate_base_rate(
+            s, y_true, target_pos_rate, f"method='{method}'"
+        )
+
     f1s = np.array(
         [video_macro_f1(y_true, (s >= thr).astype(np.int64)) for thr in grid],
         dtype=np.float64,
@@ -154,19 +194,49 @@ def calibrate_threshold(
     return best_thr, best_score
 
 
+def calibrate_threshold_from_video_scores(
+    video_scores_arr: np.ndarray,
+    video_labels: np.ndarray,
+    metric: str = "macro_f1",
+    grid: np.ndarray | None = None,
+    selection: str = "smooth",
+    smooth_window: float = 0.10,
+    target_pos_rate: float | None = None,
+) -> tuple[float, float]:
+    """Varre limiares sobre scores **já agregados** por vídeo (ex.: pós temperature scaling)."""
+    if metric != "macro_f1":
+        raise ValueError(f"Métrica de calibração não suportada: '{metric}'")
+    if grid is None:
+        grid = np.linspace(0.0, 1.0, 101)
+
+    y_true = np.asarray(video_labels, dtype=np.int64)
+    s = np.asarray(video_scores_arr, dtype=np.float32)
+    if len(s) == 0:
+        log.warning("Sem scores para calibrar; usando limiar 0.5")
+        return 0.5, 0.0
+
+    if selection == "base_rate":
+        return _calibrate_base_rate(
+            s, y_true, target_pos_rate, "scores pré-agregados"
+        )
+
+    f1s = np.array(
+        [video_macro_f1(y_true, (s >= thr).astype(np.int64)) for thr in grid],
+        dtype=np.float64,
+    )
+    best_idx = _select_threshold_index(grid, f1s, selection, smooth_window)
+    best_thr, best_score = float(grid[best_idx]), float(f1s[best_idx])
+    log.info(
+        f"Limiar calibrado (scores pré-agregados, selection='{selection}'): "
+        f"thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+    )
+    return best_thr, best_score
+
+
 def threshold_curve(
     y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Curva limiar × Macro-F1 sobre scores **a nível de vídeo** (para o Reporter, FASE 5).
-
-    Args:
-        y_true: rótulos de vídeo (0/1), alinhados a ``y_score``.
-        y_score: score contínuo por vídeo (proba/sigmoid agregada).
-        grid: limiares a varrer (default ``linspace(0, 1, 101)``).
-
-    Returns:
-        ``(grid, macro_f1s)`` — Macro-F1 a cada limiar.
-    """
+    """Curva limiar × Macro-F1 sobre scores **a nível de vídeo** (para o Reporter, FASE 5)."""
     if grid is None:
         grid = np.linspace(0.0, 1.0, 101)
     y_true = np.asarray(y_true, dtype=np.int64)

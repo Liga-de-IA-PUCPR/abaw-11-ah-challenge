@@ -42,6 +42,8 @@ def _build_face_module(
     face_use_velocity: bool = False,
     face_landmark_stride: int = 1,
     face_max_windows: int | None = None,
+    gat_num_layers: int = 2,
+    lstm_num_layers: int = 2,
 ):
     import torch
     from torch import nn
@@ -63,6 +65,8 @@ def _build_face_module(
         use_latent_gcn=use_latent_gcn,
         use_bilstm=use_bilstm,
         lstm_hidden=lstm_hidden,
+        gat_num_layers=gat_num_layers,
+        lstm_num_layers=lstm_num_layers,
     )
 
     face_encoder = _build_face_gcn_ts(
@@ -156,6 +160,8 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             use_latent_gcn=self.use_latent_gcn,
             use_bilstm=self.use_bilstm,
             lstm_hidden=self.lstm_hidden,
+            gat_num_layers=self.gat_num_layers,
+            lstm_num_layers=self.lstm_num_layers,
             face_top_k=self.face_top_k,
             face_spatial_hidden=self.face_spatial_hidden,
             face_spatial_out=self.face_spatial_out,

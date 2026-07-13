@@ -1,0 +1,55 @@
+# @package _global_
+# hetero_gnn_v2 com tunings típicos de competição DL:
+# focal loss + label smoothing + cosine warmup + SWA + dropout/WD + SupCon + 3 camadas GAT.
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: hetero-gnn-v2-tuned
+
+model:
+  dim_tab: 74
+  gat_num_layers: 3
+  hidden_channels: 128
+  heads: 4
+  out_channels: 64
+  dropout: 0.25
+  lr: 3.0e-4
+  weight_decay: 0.05
+  loss:
+    type: focal
+    gamma: 2.0
+    alpha: 0.25
+    label_smoothing: 0.05
+  contrastive:
+    enabled: true
+    lambda_supcon: 0.15
+    lambda_triplet: 0.05
+    temperature: 0.07
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+data:
+  num_workers: 4
+  batch_size: 24
+
+trainer:
+  max_epochs: 300
+  patience: 40
+  monitor: val_f1_macro
+  mode: max
+  scheduler: cosine_warmup
+  warmup_epochs: 8
+  min_lr: 1.0e-6
+  accumulate_grad_batches: 2
+  gradient_clip_val: 1.0
+  swa: true
+  swa_lrs: 5.0e-5
+  swa_epoch_start: 200
+  swa_annealing_epochs: 10

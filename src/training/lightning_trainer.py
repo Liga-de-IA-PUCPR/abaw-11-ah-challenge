@@ -69,7 +69,7 @@ class LightningTrainer(BaseTrainer):
     def _build_trainer(self):
         """Monta o ``L.Trainer`` com accelerator derivado do device + callbacks W&B."""
         import lightning as L
-        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging
         from lightning.pytorch.loggers import WandbLogger
 
         from src.conf import resolve_device  # FASE 1
@@ -111,6 +111,26 @@ class LightningTrainer(BaseTrainer):
         if accumulate > 1:
             log.info(f"Gradient accumulation: {accumulate} steps (batch efetivo ≈ data.batch_size × {accumulate})")
 
+        callbacks: list[Any] = [
+            EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
+            ckpt,
+        ]
+        if tcfg.get("swa"):
+            max_ep = int(tcfg.get("max_epochs", 200))
+            swa_start = tcfg.get("swa_epoch_start")
+            if swa_start is None:
+                swa_start = max(1, int(0.75 * max_ep))
+            else:
+                swa_start = int(swa_start)
+            callbacks.append(
+                StochasticWeightAveraging(
+                    swa_lrs=float(tcfg.get("swa_lrs", 1e-5)),
+                    swa_epoch_start=swa_start,
+                    annealing_epochs=int(tcfg.get("swa_annealing_epochs", 5)),
+                )
+            )
+            log.info(f"SWA ativo: início época {swa_start}, lr={tcfg.get('swa_lrs', 1e-5)}")
+
         return L.Trainer(
             max_epochs=tcfg.get("max_epochs", 200),
             accelerator=accelerator,
@@ -118,15 +138,21 @@ class LightningTrainer(BaseTrainer):
             accumulate_grad_batches=accumulate,
             gradient_clip_val=tcfg.get("gradient_clip_val", 1.0),
             logger=wandb_logger,
-            callbacks=[
-                EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
-                ckpt,
-            ],
+            callbacks=callbacks,
         )
 
     # ==========================================================================
     # Contrato BaseTrainer (README §6.4)
     # ==========================================================================
+
+    def _build_lit_module(self, trainer_cfg: dict[str, Any] | None = None):
+        """Instancia o LightningModule; passa ``trainer_cfg`` só se o modelo suportar."""
+        import inspect
+
+        sig = inspect.signature(self.model.build_lightning_module)
+        if "trainer_cfg" in sig.parameters:
+            return self.model.build_lightning_module(trainer_cfg=trainer_cfg)
+        return self.model.build_lightning_module()
 
     def fit(self, train_data, val_data) -> dict[str, Any]:
         """Treina o ``LitCrossAttention`` e calibra o limiar do sigmoid na val.
@@ -155,7 +181,8 @@ class LightningTrainer(BaseTrainer):
             log.info(f"Dim tabular inferida do cache: dim_tab={d_tab}")
         self._apply_pos_weight(train_data)
         self._apply_gae_init()
-        self._lit_module = self.model.build_lightning_module()
+        tcfg = self._cfg_block("trainer")
+        self._lit_module = self._build_lit_module(tcfg)
         self._init_weights_from_checkpoint()
         self._trainer = self._build_trainer()
 
@@ -179,6 +206,11 @@ class LightningTrainer(BaseTrainer):
                 metric=self._cfg_block("metrics").get("primary", "macro_f1"),
                 selection=agg.get("calibration", "smooth"),
                 smooth_window=float(agg.get("smooth_window", 0.10)),
+                target_pos_rate=(
+                    None
+                    if agg.get("target_pos_rate") in (None, "null")
+                    else float(agg.get("target_pos_rate"))
+                ),
             )
         else:
             threshold = float(thr_setting)
@@ -271,7 +303,7 @@ class LightningTrainer(BaseTrainer):
         if state.get("dim_tab") and hasattr(model, "dim_tab"):
             model.dim_tab = int(state["dim_tab"])
         resolve_model_cfg_for_load(model, state, ckpt_path)
-        trainer._lit_module = model.build_lightning_module()
+        trainer._lit_module = trainer._build_lit_module(trainer._cfg_block("trainer"))
         device = resolve_device(getattr(config, "device", "auto"))
         accelerator = _ACCELERATOR.get(device.type, "cpu")
         if accelerator == "mps":
