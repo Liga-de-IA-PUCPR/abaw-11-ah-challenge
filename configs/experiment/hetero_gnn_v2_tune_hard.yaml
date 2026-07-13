@@ -1,0 +1,46 @@
+# @package _global_
+# Fine-tune do melhor GNN wav2vec2 com hard mining focado (erros da CA).
+# Pré: generate hard_examples_ca.json via mine_hard_from_preds / evaluate train.
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: hetero-gnn-v2-tune-hard
+
+model:
+  dim_tab: 74
+  gat_num_layers: 2
+  use_tab_enhanced: false
+  use_ca_edge_weights: false
+  dropout: 0.25
+  lr: 1e-4
+  weight_decay: 0.04
+  contrastive:
+    enabled: true
+    lambda_supcon: 0.05
+    lambda_triplet: 0.02
+    miner: batch_hard
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows.parquet
+  num_workers: 4
+  batch_size: 32
+  hard_examples: data/interim/hard_examples_ca.json
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+trainer:
+  max_epochs: 80
+  patience: 20
+  monitor: val_f1_macro
+  mode: max

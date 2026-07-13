@@ -1,0 +1,24 @@
+# Gerado por luiz_cross_attention_repro.py (librosa) — não editar à mão.
+combine: mean
+members:
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175242
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175257
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175312
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175327
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175342
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175357
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175412
+    weight: 1.0

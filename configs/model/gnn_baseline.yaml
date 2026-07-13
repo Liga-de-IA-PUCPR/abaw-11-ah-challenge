@@ -3,7 +3,7 @@ name: gnn_baseline
 family: lightning
 dim_a: 768
 dim_b: 768
-dim_tab: 32
+dim_tab: 74
 common_dim: 512
 gcn_out_dim: 128
 top_k: 8                               # vizinhos no LatentCorrelationGCN

@@ -46,6 +46,10 @@ SWEEP         ?=
 # MPS (Apple Metal): habilita fallback p/ CPU em ops não suportadas pelo Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
 
+SEEDS             ?= 42 1 2 3 4 5 6
+LUIZ_MANIFEST     ?= outputs/cross_attention/luiz_ensemble_manifest.txt
+LUIZ_ENS_CALIB    ?= smooth
+
 # Preset Hydra opcional (ex.: EXPERIMENT=cross_attention -> "+experiment=cross_attention")
 _EXP          := $(if $(EXPERIMENT),+experiment=$(EXPERIMENT),)
 # Override de split opcional (vazio = usa o default do mode no main.py)
@@ -56,6 +60,9 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
 .PHONY: help setup setup-neural setup-all ffmpeg-check \
         extract-audio preprocess featurize data \
         train train-rf train-neural sweep evaluate submit pipeline \
+        train-luiz-ensemble eval-luiz-ensemble luiz-repro \
+        train-luiz-ensemble-librosa eval-luiz-ensemble-librosa luiz-repro-librosa \
+        train-gnn-ensemble eval-gnn-ensemble gnn-ensemble \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -83,6 +90,11 @@ help:
 	@echo "    sweep            multirun Hydra (SWEEP=\"model.lr=1e-3,5e-4 ...\")"
 	@echo "    evaluate         Macro-F1/AP num split (SPLIT=val por default)"
 	@echo "    submit           gera arquivo de submissão (SPLIT=test, OUT=$(OUT))"
+	@echo "    train-luiz-ensemble  7 seeds cross-attention Luiz (manifest)"
+	@echo "    eval-luiz-ensemble   ensemble test F1 (Luiz ENS_CALIB=smooth)"
+	@echo "    luiz-repro           train-luiz-ensemble + eval-luiz-ensemble"
+	@echo "    luiz-repro-librosa   featurize librosa + ensemble (FORCE_FEAT=1 p/ refazer parquet)"
+	@echo "    gnn-ensemble         7 seeds hetero_gnn_v2_tune + smooth (GNN_EXPERIMENT=...)"
 	@echo "    pipeline         data + train + evaluate (ponta a ponta)"
 	@echo ""
 	@echo "  Qualidade (CI/CD):"
@@ -161,6 +173,43 @@ submit:
 # Ponta a ponta (dados -> treino -> avaliação).
 pipeline: data train evaluate
 	@echo "✓ Pipeline completo executado."
+
+# --- Reprodução Luiz (cross-attention + ensemble de seeds) -------------------
+train-luiz-ensemble:
+	$(PY) scripts/luiz_cross_attention_repro.py train --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) \
+	  --seeds $(SEEDS) $(if $(filter 1,$(FORCE_FEAT)),--force-featurize,)
+
+eval-luiz-ensemble:
+	$(PY) scripts/luiz_cross_attention_repro.py evaluate --split=$(if $(SPLIT),$(SPLIT),test) \
+	  --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) --calibration=$(LUIZ_ENS_CALIB)
+
+luiz-repro: train-luiz-ensemble eval-luiz-ensemble
+	@echo "✓ Repro Luiz concluída (ver outputs/ensemble_eval/report_test.json)"
+
+train-luiz-ensemble-librosa:
+	$(PY) scripts/luiz_cross_attention_repro.py train --audio=librosa --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) \
+	  --seeds $(SEEDS) $(if $(filter 1,$(FORCE_FEAT)),--force-featurize,)
+
+eval-luiz-ensemble-librosa:
+	$(PY) scripts/luiz_cross_attention_repro.py evaluate --audio=librosa --split=$(if $(SPLIT),$(SPLIT),test) \
+	  --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) --calibration=$(LUIZ_ENS_CALIB)
+
+luiz-repro-librosa: train-luiz-ensemble-librosa eval-luiz-ensemble-librosa
+	@echo "✓ Repro Luiz (librosa) concluída (ver outputs/ensemble_eval/report_test.json)"
+
+GNN_EXPERIMENT ?= hetero_gnn_v2_tune
+
+train-gnn-ensemble:
+	$(PY) scripts/gnn_seed_ensemble.py train --experiment=$(GNN_EXPERIMENT) \
+	  --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) --seeds $(SEEDS)
+
+eval-gnn-ensemble:
+	$(PY) scripts/gnn_seed_ensemble.py evaluate --experiment=$(GNN_EXPERIMENT) \
+	  --split=$(if $(SPLIT),$(SPLIT),test) \
+	  --device=$(if $(filter auto,$(DEVICE)),cuda,$(DEVICE)) --calibration=$(LUIZ_ENS_CALIB)
+
+gnn-ensemble: train-gnn-ensemble eval-gnn-ensemble
+	@echo "✓ Ensemble GNN concluído (ver outputs/ensemble_eval/report_test.json)"
 
 # ----------------------------------------------------------------------------
 # Qualidade / CI-CD

@@ -71,13 +71,29 @@ def _to_video_edges(num_nodes: int, device: torch.device) -> Tensor:
     return torch.stack([src, dst])
 
 
+def _dense_align_edges(num_nodes: int, device: torch.device) -> Tensor:
+    """Arestas densas ``audio_i → text_j`` (T×T)."""
+    if num_nodes < 1:
+        return torch.zeros(2, 0, dtype=torch.long, device=device)
+    src = torch.arange(num_nodes, device=device).repeat_interleave(num_nodes)
+    dst = torch.arange(num_nodes, device=device).repeat(num_nodes)
+    return torch.stack([src, dst])
+
+
 def build_video_hetero_graph(
     audio_seq: Tensor,
     text_seq: Tensor,
     tab_seq: Tensor | None = None,
     fused_seq: Tensor | None = None,
+    aligns_weight: Tensor | None = None,
+    reports_weight: Tensor | None = None,
+    dense_aligns: bool = False,
 ) -> Any:
-    """Monta um ``HeteroData`` a partir das sequências de janelas de UM vídeo."""
+    """Monta um ``HeteroData`` a partir das sequências de janelas de UM vídeo.
+
+    ``aligns_weight``: ``(T,)`` (diagonal) ou ``(T, T)`` se ``dense_aligns``.
+    ``reports_weight``: ``(T,)`` — peso das arestas janela→vídeo (estilo MIL Luiz).
+    """
     from torch_geometric.data import HeteroData
 
     if audio_seq.ndim != 2 or text_seq.ndim != 2:
@@ -107,9 +123,30 @@ def build_video_hetero_graph(
 
     data["audio", "temporal", "audio"].edge_index = _chain_edges(t_windows, device)
     data["text", "temporal", "text"].edge_index = _chain_edges(t_windows, device)
-    data["audio", "aligns", "text"].edge_index = _same_index_edges(t_windows, device)
-    data["audio", "reports", "video"].edge_index = _to_video_edges(t_windows, device)
-    data["text", "reports", "video"].edge_index = _to_video_edges(t_windows, device)
+
+    if dense_aligns:
+        align_ei = _dense_align_edges(t_windows, device)
+    else:
+        align_ei = _same_index_edges(t_windows, device)
+    data["audio", "aligns", "text"].edge_index = align_ei
+    if aligns_weight is not None:
+        aw = aligns_weight.float().reshape(-1)
+        if aw.numel() != align_ei.size(1):
+            raise ValueError(
+                f"aligns_weight tem {aw.numel()} elementos, esperado {align_ei.size(1)}"
+            )
+        data["audio", "aligns", "text"].edge_attr = aw.unsqueeze(-1)
+
+    report_ei = _to_video_edges(t_windows, device)
+    data["audio", "reports", "video"].edge_index = report_ei
+    data["text", "reports", "video"].edge_index = report_ei.clone()
+    if reports_weight is not None:
+        rw = reports_weight.float().reshape(-1)
+        if rw.numel() != t_windows:
+            raise ValueError(f"reports_weight deve ter T={t_windows}, recebeu {rw.numel()}")
+        ea = rw.unsqueeze(-1)
+        data["audio", "reports", "video"].edge_attr = ea
+        data["text", "reports", "video"].edge_attr = ea.clone()
 
     if fused_seq is not None and fused_seq.numel() > 0:
         data["fused", "temporal", "fused"].edge_index = _chain_edges(t_windows, device)

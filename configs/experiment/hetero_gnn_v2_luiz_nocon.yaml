@@ -1,33 +1,40 @@
 # @package _global_
-# HeteroGAT contrastive no parquet com blocos Luiz (d_tab=74).
-# Pré-requisito: +experiment=featurize_deep mode=featurize (+data.force=true se cache antigo).
+# Mesmo preset Luiz, sem SupCon — ablation p/ isolar ganho das features tabulares.
 defaults:
   - override /model: hetero_gnn_contrastive
   - override /audio_embedder: wav2vec2
   - override /text_embedder: roberta_emotion
   - override /trainer: lightning
 
-experiment_name: hetero-gnn-v2
+experiment_name: hetero-gnn-v2-luiz-nocon
 
 model:
   dim_tab: 74
   gat_num_layers: 2
+  use_tab_enhanced: true
+  tab_pool: attention
+  dropout: 0.22
+  lr: 3e-4
+  weight_decay: 0.03
+  contrastive:
+    enabled: false
+    lambda_supcon: 0.0
 
 data:
   num_workers: 4
-  batch_size: 32
+  batch_size: 24
   tabular:
     use_hesitation: true
     use_text_features: true
 
 aggregation:
-  calibration: smooth    # melhor generalização p/ GNN neste dataset (vs base_rate do luiz/RF)
+  calibration: base_rate
 
 text_embedder:
   batch_size: 16
 
 trainer:
   max_epochs: 500
-  patience: 30
+  patience: 35
   monitor: val_f1_macro
   mode: max

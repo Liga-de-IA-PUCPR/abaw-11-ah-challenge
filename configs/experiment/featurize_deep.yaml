@@ -1,4 +1,13 @@
 # @package _global_
-# Re-featurização com embeddings deep + blocos de suporte (hesitation + text_features).
+# Re-featurização: wav2vec2 + RoBERTa-emotion + hesitation (18) + text_features (49) + qtype (7).
+# Resultado esperado: d_tab=74 no parquet (17 → 74 vs baseline sem suporte).
 defaults:
   - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+
+experiment_name: featurize-deep-support
+
+data:
+  tabular:
+    use_hesitation: true
+    use_text_features: true

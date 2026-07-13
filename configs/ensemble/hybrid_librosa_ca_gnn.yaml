@@ -1,0 +1,27 @@
+# Cross-attention Luiz librosa (7 seeds) + HeteroGAT librosa (common_dim=512).
+combine: mean
+members:
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175242
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175257
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175312
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175327
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175342
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175357
+    weight: 1.0
+  - model: cross_attention
+    checkpoint: outputs/cross_attention/20260713_175412
+    weight: 1.0
+  - model: hetero_gnn_contrastive
+    checkpoint: outputs/hetero_gnn_contrastive/20260713_181101
+    weight: 1.0

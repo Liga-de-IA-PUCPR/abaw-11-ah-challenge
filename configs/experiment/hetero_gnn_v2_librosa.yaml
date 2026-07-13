@@ -1,0 +1,43 @@
+# @package _global_
+# HeteroGAT + parquet librosa + projeção p/ common_dim (equilibra 320 vs 768).
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: librosa
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: hetero-gnn-v2-librosa
+
+model:
+  dim_tab: 74
+  common_dim: 512
+  gat_num_layers: 2
+  use_tab_enhanced: true
+  tab_pool: attention
+  dropout: 0.25
+  lr: 3e-4
+  weight_decay: 0.04
+  contrastive:
+    enabled: true
+    lambda_supcon: 0.08
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_librosa.parquet
+  num_workers: 4
+  batch_size: 32
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+trainer:
+  max_epochs: 500
+  patience: 40
+  monitor: val_f1_macro
+  mode: max

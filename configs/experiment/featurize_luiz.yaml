@@ -1,0 +1,6 @@
+# @package _global_
+# Parquet Luiz: wav2vec2 + RoBERTa-emotion + hesitation (18) + text_features (49).
+defaults:
+  - /experiment: featurize_deep
+
+experiment_name: featurize-luiz

@@ -8,6 +8,8 @@ hidden_channels: 128
 heads: 4
 out_channels: 64
 gat_num_layers: 2
+use_tab_enhanced: true
+tab_pool: attention
 dropout: 0.1
 lr: 1e-3
 weight_decay: 1e-2

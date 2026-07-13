@@ -1,0 +1,26 @@
+# @package _global_
+# Cross-attention do Luiz + features de suporte (late fusion tab_fusion=token).
+defaults:
+  - override /model: cross_attention
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: cross-attention-luiz
+
+data:
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: base_rate
+
+text_embedder:
+  batch_size: 16
+
+trainer:
+  max_epochs: 400
+  patience: 20
+  monitor: val_ap
+  mode: max

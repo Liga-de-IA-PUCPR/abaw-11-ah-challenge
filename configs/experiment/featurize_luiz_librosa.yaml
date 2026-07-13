@@ -1,0 +1,15 @@
+# @package _global_
+# Featurize Luiz com prosódia librosa (tabular domina mais que wav2vec2).
+# Parquet separado para não sobrescrever o cache deep.
+defaults:
+  - override /audio_embedder: librosa
+  - override /text_embedder: roberta_emotion
+
+experiment_name: featurize-luiz-librosa
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_librosa.parquet
+  tabular:
+    use_hesitation: true
+    use_text_features: true

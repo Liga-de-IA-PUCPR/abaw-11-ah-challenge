@@ -35,6 +35,7 @@ class HeteroGnnContrastiveFusion(HeteroGnnFusion):
         return cls(cfg=config)
 
     def build_module(self):
+        use_contrastive = bool(self.contrastive.get("enabled", True))
         module = _build_gnn_module(
             dim_a=self.dim_a,
             dim_b=self.dim_b,
@@ -44,7 +45,12 @@ class HeteroGnnContrastiveFusion(HeteroGnnFusion):
             out_channels=self.out_channels,
             dropout=self.dropout,
             gat_num_layers=self.gat_num_layers,
-            return_embedding=True,
+            return_embedding=use_contrastive,
+            use_tab_enhanced=self.use_tab_enhanced,
+            tab_pool=self.tab_pool,
+            common_dim=self.common_dim,
+            use_ca_edge_weights=self.use_ca_edge_weights,
+            ca_num_heads=self.ca_num_heads,
         )
         gae_path = self._gae_init_path or self.gae_init
         if gae_path:

@@ -1,7 +1,7 @@
 # configs/model/face_gnn_ts.yaml — classificador isolado Face Mesh GCN (GNN4TS)
 name: face_gnn_ts
 family: lightning
-dim_tab: 32
+dim_tab: 74
 use_tabular: true
 tab_hidden: 32
 dropout: 0.1

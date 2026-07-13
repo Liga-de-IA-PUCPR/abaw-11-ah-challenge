@@ -1,0 +1,17 @@
+# @package _global_
+# Replica o preset da branch luiz: RF + librosa + hesitation + text + base_rate.
+defaults:
+  - override /model: random_forest
+  - override /audio_embedder: librosa
+  - override /text_embedder: roberta_emotion
+  - override /trainer: sklearn
+
+experiment_name: rf-luiz-support
+
+data:
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: base_rate

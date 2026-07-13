@@ -5,6 +5,10 @@ Recognition Challenge**, implementada com a biblioteca
 [`gnn-modalblocks`](/home/rwp/code/project_lib/gnn-modalblocks) e o pipeline de
 dados da branch `origin/luiz`.
 
+> **Produção atual (test Macro-F1 0.7454):** ensemble **meta-router CA ⊕ GNN** —
+> fluxogramas, matriz de confusão, ROC/PR, MCC e como reproduzir em
+> [`meta_router_ca_gnn.md`](meta_router_ca_gnn.md).
+
 ## 1. Objetivo
 
 Classificação **binária em nível de vídeo**: prever se um vídeo contém
@@ -420,7 +424,11 @@ Todos treinam com BCE; os modelos "contrastive/full" somam termos auxiliares sob
 
 ### 3.8 Ensemble de inferência (produção)
 
-Três checkpoints já treinados; combinação linear das probabilidades e 1 limiar calibrado.
+**Stack atual recomendado:** meta-router CA (7 seeds librosa) ⊕ HeteroGAT wav2vec2 —
+doc completo com fluxogramas e plots em [`meta_router_ca_gnn.md`](meta_router_ca_gnn.md)
+(`scripts/meta_router_ca_gnn.py`, test F1 **0.7454**).
+
+Ensemble GNN legado (3 membros, média ponderada; test F1 ~0.684):
 
 ```mermaid
 flowchart LR
@@ -434,7 +442,7 @@ flowchart LR
     classDef gray fill:#f3f4f6,stroke:#9ca3af,color:#111827;
 ```
 
-Otimização offline dos pesos: `scripts/ensemble_sweep.py` → `configs/ensemble/optimized.yaml`.
+Otimização offline dos pesos legados: `scripts/ensemble_sweep.py` → `configs/ensemble/optimized.yaml`.
 
 ## Face Mesh + GCN temporal (GNN4TS-style)
 
@@ -617,22 +625,168 @@ configs/experiment/hetero_gnn_v2_ablation.yaml
 configs/ensemble/hybrid_catboost_gnn_v2.yaml
 configs/ensemble/hybrid_full.yaml
 scripts/ensemble_sweep.py
+scripts/meta_router_ca_gnn.py  # produção CA⊕GNN (ver meta_router_ca_gnn.md)
+scripts/gated_ensemble.py
 main.py                        # ensemble sklearn+lightning, evaluate/submit
+references/meta_router_ca_gnn.md
 ```
 
 ## 9. Pipeline completa (parquet d_tab=74)
 
-Features de suporte (hesitação + texto) elevam `d_tab` de 17 → **74**. Checkpoints GNN
+### Blocos de suporte (branch `luiz`)
+
+Dois blocos de **late fusion** entram na coluna `tabular` do parquet (não no embedding):
+
+| Bloco | Módulo | dim | Doc |
+|-------|--------|-----|-----|
+| Hesitação acústica | `HesitationExtractor` | 18 | [`HESITATION.md`](../src/features/HESITATION.md) |
+| Ambivalência/hesitação textual | `TextFeaturizer` | 49 | [`TEXT_FEATURES.md`](../src/features/TEXT_FEATURES.md) |
+| question_type one-hot | `TabularFeaturizer` | 7 | — |
+| **Total `d_tab`** | | **74** | (era 17 sem suporte) |
+
+Config: `data.tabular.use_hesitation=true` + `use_text_features=true` (já em `configs/data/default.yaml`).
+Preset unificado: `+experiment=luiz_support_features`. Calibração luiz: `aggregation.calibration=base_rate`.
+
+### Reprodução cross-attention Luiz (ensemble 7 seeds)
+
+Preset fiel: `+experiment=cross_attention_luiz_repro` — `monitor=val_ap`, `patience=20`,
+`tab_fusion=token`, `pool=attention`, `dropout=0.3`, `wd=0.05`, `lr=3e-4`, `d_tab=74`.
+
+| Etapa | Calibração | Notas |
+|-------|------------|-------|
+| Treino single-seed | `base_rate` | Early stop em `val_ap` |
+| Ensemble evaluate | `smooth` | Como `ENS_CALIB=smooth` no Makefile luiz |
+
+```bash
+# Pipeline completo (7 seeds + ensemble test)
+make luiz-repro DEVICE=cuda
+
+# Ou passo a passo
+make train-luiz-ensemble DEVICE=cuda          # SEEDS=42 1 2 3 4 5 6
+make eval-luiz-ensemble DEVICE=cuda SPLIT=test LUIZ_ENS_CALIB=smooth
+
+# Script equivalente
+uv run python scripts/luiz_cross_attention_repro.py all --device cuda
+```
+
+Manifest: `outputs/cross_attention/luiz_ensemble_manifest.txt` →
+`configs/ensemble/cross_attention_luiz_seeds.yaml` (gerado).
+
+**Resultado local (Jul/13):**
+
+| Áudio | Ensemble test F1 | vs Luiz 0.7245 |
+|-------|------------------|----------------|
+| wav2vec2 | 0.7059 | −0.019 |
+| **librosa** | **0.7240** | **≈ match** |
+
+Parquet librosa: `data/processed/text_audio_windows_librosa.parquet` (`d_audio=320`, `d_tab=74`).
+Manifest librosa: `outputs/cross_attention/luiz_ensemble_manifest_librosa.txt`.
+
+```bash
+# Librosa (recomendado — reproduz o F1 do Luiz)
+make luiz-repro-librosa DEVICE=cuda FORCE_FEAT=1   # 1ª vez: refeaturiza
+make luiz-repro-librosa DEVICE=cuda                # depois: só treina ensemble
+
+uv run python scripts/luiz_cross_attention_repro.py all --audio librosa \
+  --force-featurize --device cuda
+```
+
+Single-seed wav2vec2 repro: `outputs/cross_attention/20260713_172626` → test **0.7000**.
+
+### HeteroGAT + parquet librosa
+
+Preset: `+experiment=hetero_gnn_v2_librosa` — usa `text_audio_windows_librosa.parquet`
+e **`common_dim: 512`** (projeta áudio 320-d e texto 768-d antes do GAT; evita domínio do texto).
+
+| Variante | Test F1 | Checkpoint |
+|----------|---------|------------|
+| tab_enhanced + SupCon + common_dim | **0.6697** | `outputs/hetero_gnn_contrastive/20260713_181101` |
+| tab no grafo (sem enhanced) | 0.501 | — |
+| sem common_dim | 0.495 | — |
+
+O GNN **não** iguala cross-attention com librosa (0.724): message-passing beneficia menos
+do tabular do que a fusão token+MIL. Melhor GNN absoluto continua **wav2vec2**
+(`hetero_gnn_v2_tune_wav2vec2` **0.7109**).
+
+`hetero_gnn_v2_tune` atual = **librosa + CA edge weights** (`use_ca_edge_weights`):
+atenção áudio→texto como `aligns` densos (T×T) e MIL token-tab como `reports`
+janela→vídeo (`HeteroGATEdgeAttr` + `ca_scorer`). Test **0.691** — acima do GNN
+librosa naive (0.67), abaixo do wav2vec2 e do CA.
+
+```bash
+uv run python main.py +experiment=hetero_gnn_v2_tune mode=train device=cuda
+# legado wav2vec2 (0.7109):
+uv run python main.py +experiment=hetero_gnn_v2_tune_wav2vec2 mode=train device=cuda
+```
+
+### Ensemble de seeds GNN + stacking CA⊕GNN (Jul/13)
+
+```bash
+# 7 seeds do melhor preset GNN (wav2vec2)
+make gnn-ensemble DEVICE=cuda                    # GNN_EXPERIMENT=hetero_gnn_v2_tune
+make gnn-ensemble GNN_EXPERIMENT=hetero_gnn_v2_luiz_mil DEVICE=cuda
+
+# Weight sweep: média dos 7 CA-librosa ⊕ better GNN single (parquets distintos)
+uv run python scripts/export_and_sweep.py \
+  --member ca:+experiment=cross_attention_luiz_librosa:<ckpt> \
+  --member gnn:+experiment=hetero_gnn_v2_tune:outputs/hetero_gnn_contrastive/20260713_162753 \
+  --group-mean ca --device cuda --out outputs/ensemble_eval/ca_librosa_gnn_sweep.json
+```
+
+**Resultados:** GNN 7-seed ensemble **0.687** (pior que single 0.7109 — seeds novas
+cairam vs checkpoint histórico). Tab MIL Luiz (`hetero_gnn_v2_luiz_mil`) **0.669**.
+Stacking CA⊕GNN mean → test **0.716** — **abaixo** do CA librosa sozinha (**0.724**).
+
+### Hard mining vs miner vs dataset (CA⊕GNN)
+
+Dois mecanismos **desconectados**:
+
+| Mecanismo | O quê | Onde |
+|-----------|--------|------|
+| **Hard mining** (`mode=hard_mining` / `mine_hard_from_preds.py`) | Oversample vídeos hard pos/neg via `WeightedRandomSampler` | `data.hard_examples` JSON |
+| **Miner `batch_hard`** | Triplet no **batch** (pos longe, neg perto no embedding) | só se `lambda_triplet>0` |
+
+No GNN de produção `lambda_triplet=0` → o miner **não roda**; só SupCon.
+Hard mining legado (`rare_mult=1.5` em neutral/willing) upweight ~40% do train e
+dilui os ~18 hard reais — FT histórico piorou test.
+
+Diagnóstico CA↔GNN no test: **both_ok 342 | ca_only 44 | gnn_only 42 | both_wrong 97**.
+Oracle pick → **0.805**. Mean dilui; **qtype_soft** (pesos por `question_type` na val):
+
+```bash
+uv run python scripts/gated_ensemble.py --mode qtype_soft \
+  --out outputs/ensemble_eval/gated_ca_gnn.json
+# → test F1 **0.7255**
+
+# Meta-router: pesos dos 7 seeds CA + swap GNN nas discordâncias (seleção conjunta na val)
+uv run python scripts/meta_router_ca_gnn.py
+# → test F1 **0.7454** (oracle ~0.80). Sem features de anotação.
+# Doc + figuras: references/meta_router_ca_gnn.md
+
+# Hard mine focado (sem rare) + FT GNN — NÃO melhorou o stack (0.7208):
+uv run python scripts/mine_hard_from_preds.py \
+  --ca-csv outputs/cross_attention/.../eval_train/predictions.csv \
+  --gnn-csv outputs/hetero_gnn_contrastive/.../eval_train/predictions.csv \
+  --out data/interim/hard_examples_ca.json
+```
+
+Os **97 both_wrong** com |pca−pgnn|≈0.09 mostram concordância no erro → problema de
+**dataset/features** (qtypes `negative`/`positive`/`resistant`/`willing`), não de miner.
+
+Features de suporte elevam `d_tab` de 17 → **74**. Checkpoints GNN
 antigos (`dim_tab=32`) são **incompatíveis** — re-treinar obrigatório.
 
 ```bash
+# 0) Deps (Praat + VADER para hesitation/text)
+uv sync --group neural
+
 # 1) Featurize (wav2vec2 + RoBERTa + hesitation + text_features)
 uv run python main.py +experiment=featurize_deep mode=featurize device=cuda +data.force=true
 
-# 2) CatBoost tabular (melhor para modelo individual + base_rate)
+# 2) CatBoost tabular (melhor sklearn + base_rate)
 uv run python main.py +experiment=catboost_baseline mode=train aggregation.calibration=base_rate
 
-# 3) GNN contrastive (melhor score isolado no teste público)
+# 3) GNN contrastive (usa tab_seq com d_tab=74 no grafo heterogêneo)
 uv run python main.py +experiment=hetero_gnn_v2 mode=train device=cuda
 
 # 4) Avaliar / submeter
@@ -644,15 +798,29 @@ uv run python main.py +experiment=hetero_gnn_v2 mode=evaluate split=test \
 
 | Run | Preset | Val F1 | **Test F1** | Checkpoint |
 |-----|--------|--------|-------------|------------|
+| **CA⊕GNN meta-router (joint val)** | [`meta_router_ca_gnn.md`](meta_router_ca_gnn.md) | 0.724 | **0.7454** | `outputs/ensemble_eval/meta_router_ca_gnn.json` |
+| **CA⊕GNN qtype_soft (val-calibrated)** | `scripts/gated_ensemble.py` | 0.726 | **0.7255** | `outputs/ensemble_eval/gated_ca_gnn.json` |
+| **Cross-attention Luiz librosa ensemble** | `cross_attention_luiz_librosa` + smooth | 0.687 | **0.7240** | manifest `luiz_ensemble_manifest_librosa.txt` |
+| **hetero_gnn_v2_tune_wav2vec2** | `hetero_gnn_v2_tune_wav2vec2` | — | **0.7109** | `outputs/hetero_gnn_contrastive/20260713_162753` |
+| hetero_gnn_v2_tune (librosa + CA edges) | `hetero_gnn_v2_tune` + smooth | 0.701 | **0.6911** | `outputs/hetero_gnn_contrastive/20260713_185115` |
+| CA librosa ⊕ GNN tune (sweep val) | `export_and_sweep.py` ~0.73/0.27 | 0.701 | 0.7156 | `outputs/ensemble_eval/ca_librosa_gnn_sweep.json` |
+| hetero_gnn_v2_tune 7-seed ensemble | `gnn_seed_ensemble.py` | — | 0.6873 | manifest `hetero_gnn_v2_tune_manifest.txt` |
+| hetero_gnn_v2_luiz_mil (tab MIL) | `hetero_gnn_v2_luiz_mil` | 0.687 | 0.6694 | `outputs/hetero_gnn_contrastive/20260713_182333` |
+| hetero_gnn_v2_librosa + common_dim | `hetero_gnn_v2_librosa` | 0.693 | 0.6697 | `outputs/hetero_gnn_contrastive/20260713_181101` |
+| Cross-attention Luiz wav2vec2 ensemble (7 seeds) | `cross_attention_luiz_repro` + smooth | 0.682 | **0.7059** | manifest `luiz_ensemble_manifest.txt` |
 | **hetero_gnn_v2** | `+experiment=hetero_gnn_v2` | 0.653 | **0.7046** | `outputs/hetero_gnn_contrastive/20260713_153143` |
+| Cross-attention Luiz single | `cross_attention_luiz_repro` | — | 0.7000 | `outputs/cross_attention/20260713_172626` |
 | CatBoost + suporte | `catboost_baseline` + `base_rate` | 0.612 | 0.7007 | `outputs/catboost/20260713_152213` |
 | hetero_gnn_v2_tuned | focal+SWA+cosine+3 layers | 0.698 | 0.6691 | `outputs/hetero_gnn_contrastive/20260713_154500` |
 | hetero_gnn_v2_ablation | 3 layers + focal leve | 0.663 | 0.6638 | `outputs/hetero_gnn_contrastive/20260713_154930` |
 | Ensemble GNN antigo (3 membros) | `+ensemble=optimized` | 0.717 | 0.6843 | checkpoints Jul/06 |
 | Híbrido CatBoost+GNN v2 | `+ensemble=hybrid_catboost_gnn_v2` | 0.654 | 0.6970 | — |
 
-> **Melhor modelo isolado:** `hetero_gnn_v2` (sem tunings agressivos). Tunings pesados
-> (dropout 0.25, WD 0.05, SWA, cosine) melhoraram a val mas **pioraram** o teste (overfit).
+> **Melhor sistema (produção):** meta-router CA⊕GNN (**0.7454**) —
+> [`meta_router_ca_gnn.md`](meta_router_ca_gnn.md).
+> **Melhor GNN isolado histórico:** `hetero_gnn_v2_tune` wav2vec2 (**0.7109**).
+> Tunings pesados (dropout 0.25, WD 0.05, SWA, cosine) melhoraram a val mas costumam
+> **piorar** o teste (overfit).
 
 ## 10. Tuning de competição (`hetero_gnn_v2_*`)
 
@@ -682,12 +850,48 @@ uv run python main.py -m +experiment=hetero_gnn_v2 mode=train \
   model.gat_num_layers=2,3 device=cuda wandb.mode=disabled
 ```
 
+### Optuna (HPO automático)
+
+Script: `scripts/optuna_gnn_tune.py`. Otimiza **Macro-F1 na validação** (sem vazamento de teste);
+ao final avalia o melhor trial no split `test` uma vez.
+
+```bash
+# deps (neural + optuna; vision só p/ face)
+uv sync --group neural --group dev --group vision
+
+# HeteroGAT contrastive (parquet atual)
+uv run python scripts/optuna_gnn_tune.py --family hetero_gnn --n-trials 25 device=cuda \
+  --storage sqlite:///outputs/optuna/hetero_gnn.db --study-name hetero_gnn_v1
+
+# Face + landmarks (requer featurize_face antes — o script roda automaticamente)
+uv run python scripts/optuna_gnn_tune.py --family hetero_face --n-trials 20 device=cuda \
+  --storage sqlite:///outputs/optuna/hetero_face.db
+```
+
+Espaço de busca principal:
+
+| Parâmetro | hetero_gnn | hetero_face (extra) |
+|-----------|------------|---------------------|
+| `gat_num_layers` | 2, 3 | idem |
+| `hidden_channels` | 96, 128, 160 | idem |
+| `lr`, `weight_decay`, `dropout` | log-uniform | idem |
+| `loss.type` | bce, focal | idem |
+| `contrastive.lambda_supcon` | 0–0.25 | idem |
+| `face.temporal_mode` | — | chain, **gnn4ts** (espectral/temporal) |
+| `face.use_velocity` | — | true/false (derivada dos landmarks) |
+| `face.top_k`, `landmark_stride` | — | vizinhos espaciais + subsample |
+
+Preset face: `+experiment=multimodal_hetero_face_v2` (`d_tab=74`).
+
+Resultados: `outputs/optuna/<study>_best.json` + log em `outputs/optuna/hetero_gnn_run.log`.
+
 ## 11. Ensemble (produção)
 
-Três checkpoints Lightning são combinados para a submissão final. A otimização de pesos
-usa **predições CSV já exportadas** — sem retreino e sem GPU.
+**Atual:** CA Luiz librosa (7 seeds) + HeteroGAT + meta-router — ver
+[`meta_router_ca_gnn.md`](meta_router_ca_gnn.md). Abaixo: ensemble GNN legado
+(3 membros Lightning).
 
-### Modelos no ensemble otimizado
+### Modelos no ensemble otimizado (legado)
 
 | Modelo | Checkpoint | Peso |
 |--------|------------|------|

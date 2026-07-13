@@ -1,0 +1,6 @@
+# @package _global_
+# Alias do preset de reprodução Luiz (cross-attention + suporte + base_rate + val_ap).
+defaults:
+  - /experiment: cross_attention_luiz_repro
+
+experiment_name: luiz-baseline

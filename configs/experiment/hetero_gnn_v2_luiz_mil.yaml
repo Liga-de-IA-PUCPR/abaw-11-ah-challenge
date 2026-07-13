@@ -1,0 +1,43 @@
+# @package _global_
+# HeteroGAT wav2vec2 + tab MIL paralelo (estilo Luiz token+attention).
+# GAT foca áudio↔texto; tab não é esmagado no nó video.
+defaults:
+  - override /model: hetero_gnn_contrastive
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: hetero-gnn-v2-luiz-mil
+
+model:
+  dim_tab: 74
+  gat_num_layers: 2
+  use_tab_enhanced: true
+  tab_pool: attention
+  dropout: 0.3
+  lr: 3e-4
+  weight_decay: 0.05
+  contrastive:
+    enabled: true
+    lambda_supcon: 0.03
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows.parquet
+  num_workers: 4
+  batch_size: 32
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+trainer:
+  max_epochs: 400
+  patience: 25
+  monitor: val_ap
+  mode: max

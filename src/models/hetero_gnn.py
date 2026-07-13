@@ -32,6 +32,11 @@ def _build_gnn_module(
     dropout: float,
     gat_num_layers: int = 2,
     return_embedding: bool = False,
+    use_tab_enhanced: bool = True,
+    tab_pool: str = "attention",
+    common_dim: int | None = None,
+    use_ca_edge_weights: bool = False,
+    ca_num_heads: int = 8,
 ):
     import torch
     from torch import nn
@@ -39,37 +44,108 @@ def _build_gnn_module(
 
     from gnn_modalblocks import ENCODERS
 
+    from src.models.hetero_gat_edge import HeteroGATEdgeAttr, build_ca_edge_scorer
+    from src.models.tab_fusion import build_tab_support_encoder
+
+    gat_dim_a, gat_dim_b = dim_a, dim_b
+    if common_dim is not None:
+        gat_dim_a = gat_dim_b = int(common_dim)
+
     in_channels = {
-        "audio": dim_a,
-        "text": dim_b,
+        "audio": gat_dim_a,
+        "text": gat_dim_b,
         "video": max(dim_tab, 1),
     }
 
-    gat = ENCODERS.build(
-        "hetero_gat",
-        metadata=BAH_GRAPH_METADATA,
-        in_channels_dict=in_channels,
-        hidden_channels=hidden_channels,
-        heads=heads,
-        out_channels=out_channels,
-        head_node_type="video",
-        num_classes=1,
-        task="binary",
-        num_layers=gat_num_layers,
-    )
+    if use_ca_edge_weights:
+        if common_dim is None:
+            raise ValueError("use_ca_edge_weights requer model.common_dim")
+        gat = HeteroGATEdgeAttr(
+            metadata=BAH_GRAPH_METADATA,
+            in_channels_dict=in_channels,
+            hidden_channels=hidden_channels,
+            heads=heads,
+            out_channels=out_channels,
+            head_node_type="video",
+            num_classes=1,
+            task="binary",
+            num_layers=gat_num_layers,
+            edge_dim=1,
+        )
+    else:
+        gat = ENCODERS.build(
+            "hetero_gat",
+            metadata=BAH_GRAPH_METADATA,
+            in_channels_dict=in_channels,
+            hidden_channels=hidden_channels,
+            heads=heads,
+            out_channels=out_channels,
+            head_node_type="video",
+            num_classes=1,
+            task="binary",
+            num_layers=gat_num_layers,
+        )
 
     class _BahVideoHeteroGNN(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.gat = gat
             self.dropout = nn.Dropout(dropout)
+            self.proj_a = nn.Linear(dim_a, gat_dim_a) if common_dim is not None else None
+            self.proj_b = nn.Linear(dim_b, gat_dim_b) if common_dim is not None else None
+            self.use_ca_edge_weights = bool(use_ca_edge_weights)
+            self.ca_scorer = None
+            if self.use_ca_edge_weights:
+                self.ca_scorer = build_ca_edge_scorer(
+                    dim_a=dim_a,
+                    dim_b=dim_b,
+                    dim_tab=dim_tab,
+                    common_dim=int(common_dim),
+                    num_heads=ca_num_heads,
+                    dropout=dropout,
+                    use_tabular=dim_tab > 0,
+                )
+            self.use_tab_enhanced = bool(use_tab_enhanced) and dim_tab > 0
+            if self.use_tab_enhanced:
+                self.tab_encoder = build_tab_support_encoder(
+                    dim_tab, out_channels, pool=tab_pool, dropout=dropout
+                )
+                head_in = out_channels * 2
+            else:
+                self.tab_encoder = None
+                head_in = out_channels
             self.refine = nn.Sequential(
-                nn.Linear(out_channels, out_channels),
+                nn.Linear(head_in, out_channels),
                 nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.Linear(out_channels, 1),
             )
             self._return_embedding = return_embedding
+
+        def _project_modalities(
+            self,
+            feat_a: torch.Tensor,
+            feat_b: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            if self.proj_a is not None:
+                feat_a = self.proj_a(feat_a)
+            if self.proj_b is not None:
+                feat_b = self.proj_b(feat_b)
+            return feat_a, feat_b
+
+        def _video_embedding(
+            self,
+            feat_a: torch.Tensor,
+            feat_b: torch.Tensor,
+            tab_seq: torch.Tensor,
+            lengths: torch.Tensor,
+            key_padding_mask: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            gat_z = self._encode_batch(feat_a, feat_b, tab_seq, lengths, key_padding_mask)
+            if not self.use_tab_enhanced or self.tab_encoder is None:
+                return gat_z
+            tab_z = self.tab_encoder(tab_seq, key_padding_mask)
+            return torch.cat([gat_z, tab_z], dim=-1)
 
         def _encode_batch(
             self,
@@ -77,15 +153,35 @@ def _build_gnn_module(
             feat_b: torch.Tensor,
             tab_seq: torch.Tensor,
             lengths: torch.Tensor,
+            key_padding_mask: torch.Tensor | None = None,
         ) -> torch.Tensor:
+            align_w = report_w = None
+            if self.use_ca_edge_weights and self.ca_scorer is not None:
+                align_w, report_w, _ = self.ca_scorer(
+                    feat_a, feat_b, feat_tab=tab_seq, key_padding_mask=key_padding_mask
+                )
+
+            proj_a, proj_b = self._project_modalities(feat_a, feat_b)
             graphs = []
             for i in range(feat_a.size(0)):
                 t = int(lengths[i].item())
+                if self.use_tab_enhanced:
+                    tab_graph = torch.zeros(t, tab_seq.size(-1), device=tab_seq.device)
+                else:
+                    tab_graph = tab_seq[i, :t]
+                kwargs: dict[str, Any] = {}
+                if align_w is not None and report_w is not None:
+                    kwargs = {
+                        "aligns_weight": align_w[i, :t, :t].reshape(-1),
+                        "reports_weight": report_w[i, :t],
+                        "dense_aligns": True,
+                    }
                 graphs.append(
                     build_video_hetero_graph(
-                        feat_a[i, :t],
-                        feat_b[i, :t],
-                        tab_seq[i, :t],
+                        proj_a[i, :t],
+                        proj_b[i, :t],
+                        tab_graph,
+                        **kwargs,
                     )
                 )
             batch_graph = Batch.from_data_list(graphs)
@@ -107,10 +203,12 @@ def _build_gnn_module(
             lengths: torch.Tensor,
             key_padding_mask: torch.Tensor | None = None,
         ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-            video_z = self._encode_batch(feat_a, feat_b, tab_seq, lengths)
-            logit = self.refine(self.dropout(video_z))
+            video_emb = self._video_embedding(
+                feat_a, feat_b, tab_seq, lengths, key_padding_mask
+            )
+            logit = self.refine(self.dropout(video_emb))
             if self._return_embedding:
-                return logit, video_z
+                return logit, video_emb
             return logit
 
     return _BahVideoHeteroGNN()
@@ -151,6 +249,13 @@ class HeteroGnnFusion:
         self.out_channels = int(cfg.get("out_channels", 64))
         self.dropout = float(cfg.get("dropout", 0.1))
         self.gat_num_layers = int(cfg.get("gat_num_layers", 2))
+        self.common_dim = cfg.get("common_dim")
+        if self.common_dim is not None:
+            self.common_dim = int(self.common_dim)
+        self.use_tab_enhanced = bool(cfg.get("use_tab_enhanced", True))
+        self.tab_pool = str(cfg.get("tab_pool", "attention"))
+        self.use_ca_edge_weights = bool(cfg.get("use_ca_edge_weights", False))
+        self.ca_num_heads = int(cfg.get("ca_num_heads", 8))
         self.lr = float(cfg.get("lr", 1e-3))
         self.weight_decay = float(cfg.get("weight_decay", 1e-2))
         self.pos_weight = cfg.get("pos_weight", "auto")
@@ -179,6 +284,11 @@ class HeteroGnnFusion:
             out_channels=self.out_channels,
             dropout=self.dropout,
             gat_num_layers=self.gat_num_layers,
+            use_tab_enhanced=self.use_tab_enhanced,
+            tab_pool=self.tab_pool,
+            common_dim=self.common_dim,
+            use_ca_edge_weights=self.use_ca_edge_weights,
+            ca_num_heads=self.ca_num_heads,
         )
         gae_path = self._gae_init_path or self.gae_init
         if gae_path:
@@ -279,9 +389,9 @@ def build_hetero_lit_module(
                 batch["lengths"],
                 key_padding_mask=batch["key_padding_mask"],
             )
-            if self._use_contrastive:
+            if isinstance(out, tuple):
                 logit, video_emb = out
-                return logit, video_emb
+                return logit, video_emb if self._use_contrastive else None
             return out, None
 
         def _shared_step(self, batch, log_aux: bool = True):

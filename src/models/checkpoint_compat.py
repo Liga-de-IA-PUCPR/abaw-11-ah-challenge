@@ -27,6 +27,12 @@ _ARCH_ATTRS = (
     "lstm_hidden",
     "gat_num_layers",
     "lstm_num_layers",
+    "use_tab_enhanced",
+    "tab_pool",
+    "use_ca_edge_weights",
+    "ca_num_heads",
+    "pool",
+    "tab_fusion",
     "contrastive",
 )
 
@@ -54,6 +60,13 @@ def infer_model_cfg_from_state_dict(state_dict: dict[str, Any]) -> dict[str, Any
     cfg: dict[str, Any] = {}
 
     audio_w = state_dict.get("model.gat.projections.audio.weight")
+    hetero_proj_a = state_dict.get("model.proj_a.weight")
+    if hetero_proj_a is not None:
+        cfg["common_dim"] = int(hetero_proj_a.shape[0])
+        cfg["dim_a"] = int(hetero_proj_a.shape[1])
+        hetero_proj_b = state_dict.get("model.proj_b.weight")
+        if hetero_proj_b is not None:
+            cfg["dim_b"] = int(hetero_proj_b.shape[1])
     if audio_w is not None:
         cfg["hidden_channels"] = int(audio_w.shape[0])
         att = state_dict.get("model.gat.conv1.convs.<audio___temporal___audio>.att_src")
@@ -64,7 +77,15 @@ def infer_model_cfg_from_state_dict(state_dict: dict[str, Any]) -> dict[str, Any
             cfg["out_channels"] = int(out_w.shape[0])
         refine_w = state_dict.get("model.refine.0.weight")
         if refine_w is not None:
-            cfg["out_channels"] = int(refine_w.shape[1])
+            in_dim = int(refine_w.shape[1])
+            out_dim = int(refine_w.shape[0])
+            cfg["out_channels"] = out_dim
+            if state_dict.get("model.tab_encoder.proj_tab.weight") is not None:
+                cfg["use_tab_enhanced"] = True
+            elif in_dim == out_dim * 2:
+                cfg["use_tab_enhanced"] = True
+            else:
+                cfg["use_tab_enhanced"] = False
         classifier_w = state_dict.get("model.classifier.0.weight")
         if classifier_w is not None and "out_channels" not in cfg:
             # multimodal_hetero_full: readout concat; out_channels ≈ GAT branch width
@@ -109,14 +130,20 @@ def resolve_model_cfg_for_load(
     ckpt_path: str | None,
 ) -> None:
     """Restaura arquitetura do modelo para casar com o checkpoint."""
-    if trainer_state.get("model_cfg"):
-        restore_model_cfg(model, trainer_state["model_cfg"])
-        log.info(f"Arquitetura restaurada de trainer_state: {trainer_state['model_cfg']}")
+    cfg: dict[str, Any] = dict(trainer_state.get("model_cfg") or {})
+    if ckpt_path:
+        inferred = infer_model_cfg_from_state_dict(load_state_dict_from_ckpt(ckpt_path))
+        # Completa chaves ausentes (runs antigos / Optuna sem use_tab_enhanced no JSON).
+        for key, val in inferred.items():
+            if key not in cfg:
+                cfg[key] = val
+    if cfg:
+        restore_model_cfg(model, cfg)
+        log.info(f"Arquitetura restaurada: {cfg}")
         return
 
     if ckpt_path:
-        state_dict = load_state_dict_from_ckpt(ckpt_path)
-        inferred = infer_model_cfg_from_state_dict(state_dict)
+        inferred = infer_model_cfg_from_state_dict(load_state_dict_from_ckpt(ckpt_path))
         if inferred:
             restore_model_cfg(model, inferred)
             return

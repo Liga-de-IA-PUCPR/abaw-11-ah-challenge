@@ -1,0 +1,30 @@
+# @package _global_
+# Reprodução fiel da branch luiz: cross-attention + wav2vec2 + features de suporte.
+# Diferenças críticas vs nosso cross_attention_luiz anterior:
+#   - EarlyStopping/monitor: val_ap (não val_f1_macro)
+#   - Calibração: base_rate
+#   - tab_fusion=token, pool=attention (defaults do model/cross_attention.yaml)
+defaults:
+  - override /model: cross_attention
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: cross-attention-luiz-repro
+
+data:
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: base_rate
+
+text_embedder:
+  batch_size: 16
+
+trainer:
+  max_epochs: 400
+  patience: 20
+  monitor: val_ap
+  mode: max

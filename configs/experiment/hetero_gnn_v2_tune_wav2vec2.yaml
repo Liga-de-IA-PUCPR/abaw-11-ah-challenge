@@ -1,17 +1,23 @@
 # @package _global_
-# HeteroGAT contrastive no parquet com blocos Luiz (d_tab=74).
-# Pré-requisito: +experiment=featurize_deep mode=featurize (+data.force=true se cache antigo).
+# Preset histórico wav2vec2 (test F1 0.7109 em 20260713_162753).
 defaults:
   - override /model: hetero_gnn_contrastive
   - override /audio_embedder: wav2vec2
   - override /text_embedder: roberta_emotion
   - override /trainer: lightning
 
-experiment_name: hetero-gnn-v2
+experiment_name: hetero-gnn-v2-tune-wav2vec2
 
 model:
   dim_tab: 74
   gat_num_layers: 2
+  use_tab_enhanced: false
+  dropout: 0.25
+  lr: 3e-4
+  weight_decay: 0.04
+  contrastive:
+    enabled: true
+    lambda_supcon: 0.08
 
 data:
   num_workers: 4
@@ -21,13 +27,13 @@ data:
     use_text_features: true
 
 aggregation:
-  calibration: smooth    # melhor generalização p/ GNN neste dataset (vs base_rate do luiz/RF)
+  calibration: smooth
 
 text_embedder:
   batch_size: 16
 
 trainer:
   max_epochs: 500
-  patience: 30
+  patience: 40
   monitor: val_f1_macro
   mode: max

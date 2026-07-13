@@ -1,0 +1,22 @@
+# @package _global_
+# Blocos de suporte da branch luiz (hesitation + text_features) — late fusion no tabular.
+#
+# Referências:
+#   src/features/HESITATION.md   — 18 features acústicas de hesitação/incerteza
+#   src/features/TEXT_FEATURES.md — 49 features de ambivalência/hesitação textual
+#
+# Pré-requisito: parquet com d_tab=74 (+experiment=featurize_deep mode=featurize +data.force=true).
+# Os defaults em configs/data/default.yaml já ligam use_hesitation/use_text_features.
+defaults:
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+
+experiment_name: luiz-support-features
+
+data:
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+aggregation:
+  calibration: base_rate   # default luiz; sklearn/CatBoost se beneficiam mais que smooth
