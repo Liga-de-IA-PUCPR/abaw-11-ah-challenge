@@ -233,7 +233,13 @@ def _resolve_trainer(cfg: DictConfig, family: str):
         dirs = [str(d) for d in ens]
         members = [load_trainer(family, d, cfg=cfg) for d in dirs]
         report_dir = Path(cfg.data.paths.output_root) / cfg.model.name / f"ensemble_{len(dirs)}"
-        log.info(f"Ensemble de {len(dirs)} checkpoints → relatórios em {report_dir}")
+        # Loga QUAIS checkpoints entram (auditabilidade: confirma o ensemble usado) +
+        # o limiar individual de cada membro (calibrado no treino).
+        member_info = "\n".join(
+            f"    [{i}] {d}  (thr_membro={getattr(m, 'threshold_', None)})"
+            for i, (d, m) in enumerate(zip(dirs, members, strict=False))
+        )
+        log.info(f"Ensemble de {len(dirs)} checkpoints → relatórios em {report_dir}:\n{member_info}")
         return EnsembleTrainer(members, cfg), str(report_dir)
 
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
