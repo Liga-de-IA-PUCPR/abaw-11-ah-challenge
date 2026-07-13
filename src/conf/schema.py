@@ -427,6 +427,11 @@ class RootConfig:
     # são MEDIADAS. Ex.: ensemble=[outputs/cross_attention/A,outputs/cross_attention/B].
     # O limiar é recalibrado nas probas médias da val. None = checkpoint único.
     ensemble: list[str] | None = None
+    # Submissão (mode=submit, formato oficial do desafio). submission_reference: caminho do
+    # trial-0.txt de referência que define a ORDEM exigida (None = ordem alfabética + aviso).
+    # submission_probabilities: escreve 'video_id,p0,p1,pred' (habilita AP) em vez de 'video_id,pred'.
+    submission_reference: str | None = None
+    submission_probabilities: bool = False
 
 
 # ==============================================================================

@@ -44,37 +44,78 @@ log = get_logger("outputs.submission")
 def write_submission(
     video_preds: dict[str, int],
     path: str | Path,
-    with_header: bool = True,
+    *,
+    order: list[str] | None = None,
+    probabilities: dict[str, float] | None = None,
+    with_header: bool = False,
 ) -> Path:
-    """Escreve o arquivo de submissão (``video_id, pred``), ordenado por video_id.
+    """Escreve o arquivo de submissão no FORMATO OFICIAL do desafio BAH (README §9).
+
+    Formato oficial (validate_submission.py dos organizadores): **sem cabeçalho**,
+    **sem espaço** entre itens, uma linha por vídeo. Dois formatos aceitos:
+    - sem probabilidades: ``video_id,pred``
+    - com probabilidades: ``video_id,p0,p1,pred`` (habilita o AP; exige ``p0+p1==1``).
+
+    ⚠️ A ORDEM DOS VÍDEOS importa: o validador compara linha-a-linha com o ``trial-0.txt``
+    de referência. Passe ``order`` com a ordem exata da referência.
 
     Args:
-        video_preds: Mapa ``{video_id: pred}`` (saída de ``aggregate_to_video`` ou
-            da predição direta a nível de vídeo do ``cross_attention``).
-        path: Caminho de saída (ex.: ``outputs/submission.txt``).
-        with_header: Se True, escreve o cabeçalho ``video_id, pred``.
+        video_preds: ``{video_id: pred 0/1}``.
+        path: caminho de saída (ex.: ``outputs/submission/trial-0.txt``).
+        order: ordem EXATA dos ``video_id`` (da referência do desafio). ``None`` = ordem
+            alfabética (avisa — pode NÃO bater com a referência).
+        probabilities: ``{video_id: p1}`` (prob. da classe 1). Se dado, escreve o formato
+            com probabilidades (``video_id,p0,p1,pred``, p0=1-p1 a 4 casas). ``None`` =
+            formato ``video_id,pred``.
+        with_header: se True, escreve cabeçalho (default False — o oficial NÃO tem).
 
     Returns:
         Caminho do arquivo escrito.
 
     Raises:
-        ValueError: Se alguma predição não estiver em {0, 1}.
+        ValueError: se alguma predição não estiver em {0,1}, ou (com ``order``) se algum
+            vídeo da ordem não tiver predição (cobertura incompleta).
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    if order is not None:
+        missing = [v for v in order if v not in video_preds]
+        if missing:
+            raise ValueError(
+                f"{len(missing)} vídeos da referência sem predição (ex.: {missing[:3]}) — "
+                "o cache de predição não cobre toda a ordem da referência."
+            )
+        vids = list(order)
+    else:
+        log.warning(
+            "write_submission sem 'order': escrevendo em ordem ALFABÉTICA. Para submeter ao "
+            "desafio BAH, passe order= com a ordem do trial-0.txt de referência (a ordem importa)."
+        )
+        vids = sorted(video_preds)
+
     lines: list[str] = []
     if with_header:
-        lines.append("video_id, pred")
-    for vid in sorted(video_preds):
+        lines.append("video_id,p0,p1,pred" if probabilities is not None else "video_id,pred")
+    n_pos = 0
+    for vid in vids:
         pred = int(video_preds[vid])
         if pred not in (0, 1):
             raise ValueError(f"Predição inválida para {vid}: {pred} (esperado 0/1)")
-        lines.append(f"{vid}, {pred}")
+        n_pos += pred
+        if probabilities is not None:
+            # p1 arredondado a 4 casas e p0=1-p1 (também a 4 casas) → p0+p1==1 exato (o
+            # validador oficial checa igualdade de float). Sem espaços.
+            p1 = round(float(probabilities[vid]), 4)
+            p0 = round(1.0 - p1, 4)
+            lines.append(f"{vid},{p0:.4f},{p1:.4f},{pred}")
+        else:
+            lines.append(f"{vid},{pred}")
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    n_pos = sum(1 for v in video_preds.values() if int(v) == 1)
     log.info(
-        f"Submissão escrita: {out} | {len(video_preds)} vídeos "
-        f"({n_pos} positivos, {len(video_preds) - n_pos} negativos)"
+        f"Submissão escrita: {out} | {len(vids)} vídeos "
+        f"({n_pos} positivos, {len(vids) - n_pos} negativos) | "
+        f"formato={'com_prob' if probabilities is not None else 'sem_prob'}, header={with_header}"
     )
     return out
 

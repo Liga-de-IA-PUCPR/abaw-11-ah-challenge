@@ -215,6 +215,13 @@ class LightningTrainer(BaseTrainer):
         ids, proba = self._infer(data)
         return aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)
 
+    def predict_scores(self, data) -> dict[str, float]:
+        """Score contínuo (sigmoid) por vídeo: ``{video_id: p1}``. Usado p/ submissão com
+        probabilidades (formato ``video_id,p0,p1,pred``). O ``EnsembleTrainer`` herda isto
+        e devolve a MÉDIA das probas dos membros (via seu ``_infer`` sobrescrito)."""
+        ids, proba = self._infer(data)
+        return {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
+
     def video_outputs(self, data) -> dict[str, np.ndarray]:
         """Arrays a nível de vídeo p/ plots/relatórios (FASE 5): ids, y_true, y_proba, y_pred."""
         if self.threshold_ is None:

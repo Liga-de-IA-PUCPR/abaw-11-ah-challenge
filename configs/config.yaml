@@ -21,6 +21,9 @@ split: null                          # train | val | test
 out: null                            # arquivo de submissão (mode=submit)
 checkpoint: null                     # caminho do checkpoint (.joblib/.ckpt)
 ensemble: null                       # lista de run dirs p/ mediar probas (evaluate/submit, lightning)
+# Submissão (formato oficial do desafio BAH). Ver src/outputs/submission.py.
+submission_reference: null           # trial-0.txt de referência: define a ORDEM exigida (null = alfabética + aviso)
+submission_probabilities: false      # true → 'video_id,p0,p1,pred' (habilita AP); false → 'video_id,pred'
 
 # Tracking (FASE 5). W&B primário; Reporter local sempre roda como fallback.
 wandb:

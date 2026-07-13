@@ -348,8 +348,30 @@ def _run_submit(cfg: DictConfig, device) -> int:
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")
     data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
-    video_preds = trainer.predict(data)  # {video_id: 0/1}
-    write_submission(video_preds, out_path)
+
+    # Formato oficial do desafio (README §9): ordem da referência + (opcional) probabilidades.
+    # submission_reference = caminho do trial-0.txt de referência (define a ORDEM exigida).
+    # submission_probabilities = escreve 'video_id,p0,p1,pred' (habilita o AP) em vez de 'video_id,pred'.
+    order = None
+    ref = cfg.get("submission_reference")
+    if ref:
+        order = [ln.split(",")[0].strip() for ln in Path(ref).read_text().splitlines() if ln.strip()]
+        log.info(f"Ordem da submissão vinda da referência: {ref} ({len(order)} vídeos)")
+
+    want_probs = bool(cfg.get("submission_probabilities", False))
+    if hasattr(trainer, "predict_scores"):
+        # Uma inferência só: deriva os labels dos scores (evita rodar o ensemble 2x).
+        scores = trainer.predict_scores(data)  # {video_id: p1}
+        thr = float(trainer.threshold_)
+        video_preds = {v: int(p >= thr) for v, p in scores.items()}
+        probs = scores if want_probs else None
+    else:  # sklearn/RF: sem score contínuo por vídeo exposto → só labels
+        if want_probs:
+            log.warning(f"family={family} não expõe predict_scores; submissão sem probabilidades.")
+        video_preds = trainer.predict(data)
+        probs = None
+
+    write_submission(video_preds, out_path, order=order, probabilities=probs)
     log.info(f"Submissão escrita: {out_path} ({len(video_preds)} vídeos).")
     return 0
 
