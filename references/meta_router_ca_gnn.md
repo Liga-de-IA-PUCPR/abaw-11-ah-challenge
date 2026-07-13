@@ -206,21 +206,21 @@ No test: **47 swaps** em **89 discordâncias**.
 | **True 0** (sem A/H, n=207) | **149** (TN) | 58 (FP) |
 | **True 1** (com A/H, n=318) | 71 (FN) | **247** (TP) |
 
-![Matriz de confusão](figures/meta_router_ca_gnn/confusion_matrix.png)
+![Matriz de confusão — meta-router](figures/meta_router_ca_gnn/confusion_matrix.png)
 
 ### 5.3 Curvas ROC e Precision–Recall
 
-![ROC](figures/meta_router_ca_gnn/roc_curve.png)
+![Curva ROC — meta-router CA⊕GNN](figures/meta_router_ca_gnn/roc_curve.png)
 
-![PR](figures/meta_router_ca_gnn/pr_curve.png)
+![Curva Precision–Recall — meta-router](figures/meta_router_ca_gnn/pr_curve.png)
 
 ### 5.4 Barras de métricas e comparativo
 
-![Métricas](figures/meta_router_ca_gnn/metrics_bar.png)
+![Métricas no test (525 vídeos)](figures/meta_router_ca_gnn/metrics_bar.png)
 
-![Comparativo F1](figures/meta_router_ca_gnn/f1_comparison.png)
+![Comparativo F1 — baselines vs meta-router](figures/meta_router_ca_gnn/f1_comparison.png)
 
-![Pesos dos seeds](figures/meta_router_ca_gnn/ca_seed_weights.png)
+![Pesos dos 7 seeds CA](figures/meta_router_ca_gnn/ca_seed_weights.png)
 
 ### 5.5 Contexto vs baselines
 
