@@ -21,9 +21,6 @@ Ambivalence/Hesitancy Recognition”** (LIA — Artificial Intelligence Academic
 Best internal result: **Macro-F1 0.722 · AP 0.875** on the 525-video public test split —
 see [§5](#5-reproducing-the-papers-best-result-ensemble_5) to reproduce it with one command.
 
-> 📚 Design decisions and per-module details:
-> **[docs/implementation/](docs/implementation/README.md)** (7-phase plan).
-
 <details open="open">
   <summary><b>Table of contents</b></summary>
   <ol>
@@ -304,10 +301,6 @@ uv run python main.py model.n_estimators=800 text_embedder=minilm
 # 3) create a preset in configs/experiment/<name>.yaml and use +experiment=<name>
 ```
 
-> ⚠️ **Text language:** BAH transcripts are in **English**; the default is
-> `cardiffnlp/twitter-roberta-base-emotion` (RoBERTa EN). Do not use `bertimbau` (PT) on
-> the original text — only with translation. Details in [docs §8](docs/implementation/README.md).
-
 ---
 
 ## 9. How the models work
@@ -350,28 +343,8 @@ each embedding's *dimension* is fixed, defined by the embedder:
 > NLP analogy: the window is the **token**; the video is the **sentence**. Long sentences
 > have *more* tokens, not "bigger" tokens.
 
-### 9.2 Path A — RandomForest (family=sklearn, CPU)
 
-For the RF, **each window is an independent training sample**, with its own window label
-(`time_detailed_ah`). The notion of a video only enters **afterwards**, in the statistical
-aggregation of probabilities.
-
-```mermaid
-flowchart TD
-    P[("Parquet")] --> X["flattened matrix X<br/>(n_windows, 1162)<br/>[audio 320 + text 768 + support 74]<br/>1 row = 1 window = 1 sample"]
-    X --> RF["RandomForest<br/>trained with WINDOW labels"]
-    RF --> PW["P(A/H) PER WINDOW<br/>e.g. 23-window video →<br/>[0.12, 0.08, 0.71, 0.83, ...]"]
-    PW --> AG["mean_proba aggregation:<br/>average of the video's probas"]
-    AG --> S["video score = 0.38<br/>(1 score per video)"]
-    S --> TH{"score ≥ calibrated<br/>threshold (e.g. 0.63)?"}
-    TH -->|yes| Y1["pred = 1"]
-    TH -->|no| Y0["pred = 0"]
-```
-
-Characteristics: T intermediate predictions (one per window), windows→video reduction
-**outside the model** (post-processing, `src/training/aggregation.py`), 100% CPU.
-
-### 9.3 Path B — Cross-Attention (family=lightning)
+### 9.2 Cross-Attention (family=lightning)
 
 For the neural model, **the sample is the whole video**: the T windows enter *together*,
 stacked as a `(T, D)` sequence — and the model emits **1 logit per video directly**, with no
@@ -444,7 +417,7 @@ val and **0.701 on test**). Strategy is configurable via `aggregation.calibratio
 `smooth` (plateau center — best for the *ensemble*, whose averaged probabilities smooth the
 curve), `argmax` (raw peak). Details: [src/training/README.md](src/training/README.md).
 
-> ⚠️ The threshold is learned on the **calibration split**, never on test — calibrating on
+> The threshold is learned on the **calibration split**, never on test — calibrating on
 > test inflates the metric and does not generalize to the official *hidden test*.
 
 ### 9.5 Side-by-side comparison
@@ -488,17 +461,26 @@ curve), `argmax` (raw peak). Details: [src/training/README.md](src/training/READ
 
 ---
 
-## 11. Outputs & submission
+## Citation
 
-- Each run writes to `outputs/<experiment_name>/<timestamp>/` (checkpoint, metrics, plots)
-  and, if enabled, to **W&B**. The local Reporter always runs as an offline fallback.
-  Ensemble evaluations write to `outputs/cross_attention/<ensemble_name>/eval_<split>/`.
-- `make submit` (or `mode=submit`) writes the video-level prediction file in the official
-  challenge format to `OUT` (default `outputs/submission.txt`): no header, reference order
-  (`submission_reference=<trial file>`), lines `video_id,pred` or, with
-  `submission_probabilities=true`, `video_id,p0,p1,pred`.
-- Official metric: **video-level Macro-F1**; the *private test* is submitted by e-mail
-  (≤ 5 trials/week, best account).
+If you use this code or build on our results, please cite the paper
+([arXiv:2607.13345](https://arxiv.org/abs/2607.13345)):
+
+```bibtex
+@article{martins2026audiotext,
+  title   = {Audio-Text Cross-Attention with Psycholinguistic Support Features
+             for Ambivalence/Hesitancy Recognition},
+  author  = {Martins, Luiz F. B. F. and Pisaia, Rodrigo W. and Girardi, Matheus M.
+             and Berkembrock, Isabella and Almeida, Jo{\~a}o A. and Hochuli, Andr{\'e} G.
+             and Laroca, Rayson and Britto Jr., Alceu S.},
+  journal = {arXiv preprint arXiv:2607.13345},
+  year    = {2026},
+  doi     = {10.48550/arXiv.2607.13345},
+  url     = {https://arxiv.org/abs/2607.13345}
+}
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
@@ -507,8 +489,9 @@ curve), `argmax` (raw peak). Details: [src/training/README.md](src/training/READ
 - **LIA — Artificial Intelligence Academic League (PUCPR)** — contact:
   [Matheus Girardi](mailto:matheusmgirardi@gmail.com) ·
   [Luiz Fernando](mailto:lf.fonseca.0808@gmail.com)
-- Paper: *Audio-Text Cross-Attention with Psycholinguistic Support Features for
-  Ambivalence/Hesitancy Recognition* (ABAW11 @ ECCV 2026).
+- Paper: [*Audio-Text Cross-Attention with Psycholinguistic Support Features for
+  Ambivalence/Hesitancy Recognition*](https://arxiv.org/abs/2607.13345) (ABAW11 @ ECCV 2026,
+  [arXiv:2607.13345](https://arxiv.org/abs/2607.13345)).
 - License: see [LICENSE](LICENSE).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
