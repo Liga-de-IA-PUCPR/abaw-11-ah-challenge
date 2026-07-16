@@ -1,24 +1,28 @@
 # =============================================================================
 # BAH AH-Challenge (ABAW11) — Makefile
 # =============================================================================
-# Centraliza TODOS os comandos do pipeline áudio+texto (sem digitar python na mão).
-# Tudo roda dentro do ambiente gerenciado pelo `uv` (uv run ...).
+# Centralizes ALL commands of the audio+text pipeline (no hand-typed python).
+# Everything runs inside the uv-managed environment (uv run ...).
 #
-# Início rápido:
-#   make setup            # ambiente core (RF, CPU/MPS) — sem Lightning
-#   make data             # extrai áudio -> índice/janelas -> features (Parquet)
-#   make train            # baseline RandomForest (CPU)
-#   make evaluate         # Macro-F1/AP no split de validação
+# Quick start:
+#   make setup            # core environment (RF, CPU/MPS) — no Lightning
+#   make data             # extract audio -> index/windows -> features (Parquet)
+#   make train            # RandomForest baseline (CPU)
+#   make evaluate         # Macro-F1/AP on the validation split
 #   make ci               # quality gate: format-check + lint + compile
 #
-# Modelo neural (opcional, Apple Metal / MPS):
-#   make setup-neural     # adiciona Lightning + torchmetrics
-#   make train-neural     # cross-attention sobre sequência de janelas (device=mps)
+# Paper result (ensemble_5, traditional train/val/test protocol):
+#   make setup-neural
+#   make reproduce-best   # data + 5-seed ensemble + smooth calibration on val + test eval
 #
-# Parâmetros (sobrescreva na linha de comando):
-#   DEVICE=auto|cpu|mps|cuda   SPLIT=val|test   OUT=<arquivo>
-#   EXPERIMENT=<preset>        ARGS="<overrides Hydra extras>"   SWEEP="<args multirun>"
-# Exemplos:
+# Neural model (optional, Apple Metal / CUDA):
+#   make setup-neural     # adds Lightning + torchmetrics
+#   make train-neural     # cross-attention over the window sequence
+#
+# Parameters (override on the command line):
+#   DEVICE=auto|cpu|mps|cuda   SPLIT=val|test   OUT=<file>
+#   EXPERIMENT=<preset>        ARGS="<extra Hydra overrides>"   SWEEP="<multirun args>"
+# Examples:
 #   make featurize DEVICE=mps
 #   make train ARGS="model.n_estimators=800 data.window.size_s=4"
 #   make evaluate SPLIT=test
@@ -26,34 +30,36 @@
 # =============================================================================
 
 # ----------------------------------------------------------------------------
-# Configuração
+# Configuration
 # ----------------------------------------------------------------------------
 UV            := uv
 RUN           := $(UV) run
 PY            := $(RUN) python
 MAIN          := main.py
-# ruff standalone (uvx): lint/format sem precisar sincronizar o ambiente pesado.
+# standalone ruff (uvx): lint/format without syncing the heavy environment.
 RUFF          := uvx ruff
 
-# Parâmetros (?= permite sobrescrever via CLI)
+# Parameters (?= allows overriding via CLI)
 DEVICE        ?= auto
 SPLIT         ?=
 OUT           ?= outputs/submission.txt
 EXPERIMENT    ?=
 ARGS          ?=
 SWEEP         ?=
-# Ensemble de seeds (cross-attention): seeds a treinar + manifest com os run dirs.
-SEEDS             ?= 42 1 2 3 4 5 6
+# Seed ensemble (cross-attention): seeds to train + manifest with the run dirs.
+# Default = the paper's 5 seeds {42, 1, 2, 3, 4}.
+SEEDS             ?= 42 1 2 3 4
 ENSEMBLE_MANIFEST ?= outputs/cross_attention/ensemble_manifest.txt
-# Calibração usada no ensemble (a média suaviza a curva da val → smooth/argmax > base_rate).
+# Threshold calibration used for the ensemble (probability averaging smooths the
+# val curve -> smooth/argmax transfer better than base_rate; see paper §3.4).
 ENS_CALIB         ?= smooth
 
-# MPS (Apple Metal): habilita fallback p/ CPU em ops não suportadas pelo Metal.
+# MPS (Apple Metal): fall back to CPU for ops not yet supported by Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
 
-# Preset Hydra opcional (ex.: EXPERIMENT=cross_attention -> "+experiment=cross_attention")
+# Optional Hydra preset (e.g. EXPERIMENT=cross_attention -> "+experiment=cross_attention")
 _EXP          := $(if $(EXPERIMENT),+experiment=$(EXPERIMENT),)
-# Override de split opcional (vazio = usa o default do mode no main.py)
+# Optional split override (empty = mode's default in main.py)
 _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
 
 .DEFAULT_GOAL := help
@@ -61,55 +67,56 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
 .PHONY: help setup setup-neural setup-all ffmpeg-check \
         extract-audio preprocess featurize data \
         train train-rf train-neural sweep evaluate submit pipeline \
-        train-ensemble ensemble-evaluate ensemble-submit \
+        train-ensemble ensemble-evaluate ensemble-submit reproduce-best \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
 # ----------------------------------------------------------------------------
-# Ajuda (alvo default)
+# Help (default target)
 # ----------------------------------------------------------------------------
 help:
-	@echo "BAH AH-Challenge — comandos disponíveis (make <alvo>):"
+	@echo "BAH AH-Challenge — available commands (make <target>):"
 	@echo ""
-	@echo "  Ambiente:"
-	@echo "    setup            uv sync (core: RF/CPU + dev) — SEM Lightning"
-	@echo "    setup-neural     + grupo neural (Lightning, torchmetrics) p/ cross_attention"
+	@echo "  Environment:"
+	@echo "    setup            uv sync (core: RF/CPU + dev) — WITHOUT Lightning"
+	@echo "    setup-neural     + neural group (Lightning, torchmetrics) for cross_attention"
 	@echo "    setup-all        core + dev + neural"
-	@echo "    ffmpeg-check     verifica se o ffmpeg (extração de áudio) está instalado"
+	@echo "    ffmpeg-check     checks that ffmpeg (audio extraction) is installed"
 	@echo ""
-	@echo "  Dados (FASE 2/3):"
+	@echo "  Data (PHASE 2/3):"
 	@echo "    extract-audio    mp4 -> flac 16 kHz mono (src/scripts/extract_audio.py)"
-	@echo "    preprocess       índice de vídeos + janela deslizante (mode=preprocess)"
-	@echo "    featurize        janelas -> embeddings -> Parquet (mode=featurize, DEVICE=$(DEVICE))"
-	@echo "    data             preprocess (extrai áudio + janelas) + featurize (prep completo)"
+	@echo "    preprocess       video index + sliding windows (mode=preprocess)"
+	@echo "    featurize        windows -> embeddings -> Parquet (mode=featurize, DEVICE=$(DEVICE))"
+	@echo "    data             preprocess (audio + windows) + featurize (full data prep)"
 	@echo ""
-	@echo "  Treino / avaliação (FASE 4/5):"
-	@echo "    train            baseline RandomForest (CPU) [== train-rf]"
-	@echo "    train-neural     cross-attention via Lightning (Apple Metal, DEVICE=mps)"
-	@echo "    sweep            multirun Hydra (SWEEP=\"model.lr=1e-3,5e-4 ...\")"
-	@echo "    evaluate         Macro-F1/AP num split (SPLIT=val por default)"
-	@echo "    submit           gera arquivo de submissão (SPLIT=test, OUT=$(OUT))"
-	@echo "    train-ensemble   treina N seeds (SEEDS=\"42 1 2 ...\") p/ ensemble"
-	@echo "    ensemble-evaluate  Macro-F1/AP do ensemble (média das probas)"
-	@echo "    ensemble-submit    submissão a partir do ensemble"
-	@echo "    pipeline         data + train + evaluate (ponta a ponta)"
+	@echo "  Training / evaluation (PHASE 4/5):"
+	@echo "    train            RandomForest baseline (CPU) [== train-rf]"
+	@echo "    train-neural     cross-attention via Lightning (DEVICE=$(DEVICE))"
+	@echo "    sweep            Hydra multirun (SWEEP=\"model.lr=1e-3,5e-4 ...\")"
+	@echo "    evaluate         Macro-F1/AP on a split (SPLIT=val by default)"
+	@echo "    submit           writes the submission file (SPLIT=test, OUT=$(OUT))"
+	@echo "    train-ensemble   trains N seeds (SEEDS=\"$(SEEDS)\") for the ensemble"
+	@echo "    ensemble-evaluate  Macro-F1/AP of the ensemble (probability averaging)"
+	@echo "    ensemble-submit    submission from the ensemble"
+	@echo "    reproduce-best   PAPER RESULT: data + 5-seed ensemble + eval on test"
+	@echo "    pipeline         data + train + evaluate (end to end)"
 	@echo ""
-	@echo "  Qualidade (CI/CD):"
-	@echo "    ci               format-check + lint + compile (gate rápido)"
-	@echo "    check            ci + typecheck + test (gate completo)"
+	@echo "  Quality (CI/CD):"
+	@echo "    ci               format-check + lint + compile (fast gate)"
+	@echo "    check            ci + typecheck + test (full gate)"
 	@echo "    lint / format    ruff check / ruff format (+ --fix)"
 	@echo "    typecheck        mypy   |   test  pytest   |   compile  py_compile"
 	@echo ""
-	@echo "  Limpeza:"
-	@echo "    clean            remove caches (__pycache__, .ruff_cache, .pytest_cache)"
-	@echo "    clean-cache      remove artefatos derivados (data/interim, data/processed)"
-	@echo "    clean-outputs    remove outputs/ multirun/ wandb/"
+	@echo "  Cleaning:"
+	@echo "    clean            removes caches (__pycache__, .ruff_cache, .pytest_cache)"
+	@echo "    clean-cache      removes derived artifacts (data/interim, data/processed)"
+	@echo "    clean-outputs    removes outputs/ multirun/ wandb/"
 	@echo "    clean-all        clean + clean-cache + clean-outputs"
 	@echo ""
-	@echo "  Parâmetros: DEVICE=$(DEVICE)  SPLIT  OUT  EXPERIMENT  ARGS  SWEEP"
+	@echo "  Parameters: DEVICE=$(DEVICE)  SPLIT  OUT  EXPERIMENT  ARGS  SWEEP  SEEDS  ENS_CALIB"
 
 # ----------------------------------------------------------------------------
-# Ambiente
+# Environment
 # ----------------------------------------------------------------------------
 setup:
 	$(UV) sync
@@ -122,11 +129,11 @@ setup-all:
 
 ffmpeg-check:
 	@command -v ffmpeg >/dev/null 2>&1 \
-	  && echo "✓ ffmpeg encontrado: $$(ffmpeg -version | head -1)" \
-	  || (echo "✗ ffmpeg não encontrado — instale com: brew install ffmpeg"; exit 1)
+	  && echo "✓ ffmpeg found: $$(ffmpeg -version | head -1)" \
+	  || (echo "✗ ffmpeg not found — install with: brew install ffmpeg (or apt install ffmpeg)"; exit 1)
 
 # ----------------------------------------------------------------------------
-# Dados (FASE 2/3)
+# Data (PHASE 2/3)
 # ----------------------------------------------------------------------------
 extract-audio: ffmpeg-check
 	$(PY) -m src.scripts.extract_audio
@@ -138,26 +145,26 @@ featurize:
 	$(PY) $(MAIN) mode=featurize device=$(DEVICE) $(ARGS)
 
 data: preprocess featurize
-	@echo "✓ Dados prontos: áudio extraído, janelas indexadas e features em data/processed/"
+	@echo "✓ Data ready: audio extracted, windows indexed, features in data/processed/"
 
 # ----------------------------------------------------------------------------
-# Treino / avaliação (FASE 4/5)
+# Training / evaluation (PHASE 4/5)
 # ----------------------------------------------------------------------------
 train: train-rf
 
-# Baseline RandomForest — 100% CPU, NÃO importa Lightning.
+# RandomForest baseline — 100% CPU, never imports Lightning.
 train-rf:
 	$(PY) $(MAIN) mode=train model=random_forest trainer=sklearn $(ARGS)
 
-# Cross-attention (Lightning, opcional). Requer `make setup-neural`.
-# device=mps por default neste alvo (Apple Metal) + fallback p/ CPU.
+# Cross-attention (Lightning, optional). Requires `make setup-neural`.
+# device=auto resolves MPS ▸ CUDA ▸ CPU; MPS gets a CPU fallback for unsupported ops.
 train-neural:
 	$(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=cross_attention \
-	  device=$(if $(filter auto,$(DEVICE)),mps,$(DEVICE)) $(ARGS)
+	  device=$(DEVICE) $(ARGS)
 
-# Varredura de hiperparâmetros (Hydra multirun + launcher joblib).
+# Hyperparameter sweep (Hydra multirun + joblib launcher).
 sweep:
-	@test -n "$(SWEEP)" || (echo "Defina SWEEP, ex.: make sweep SWEEP=\"model.lr=1e-3,5e-4\""; exit 1)
+	@test -n "$(SWEEP)" || (echo "Set SWEEP, e.g.: make sweep SWEEP=\"model.lr=1e-3,5e-4\""; exit 1)
 	$(PY) $(MAIN) -m $(_EXP) $(SWEEP) $(ARGS)
 
 evaluate:
@@ -167,46 +174,62 @@ submit:
 	$(PY) $(MAIN) mode=submit $(_EXP) $(if $(SPLIT),split=$(SPLIT),split=test) \
 	  out=$(OUT) device=$(DEVICE) $(ARGS)
 
-# --- Ensemble de seeds (cross-attention) -----------------------------------
-# Treina N seeds (mesma arquitetura/hiperparâmetros, só a seed muda) e registra os
-# run dirs num manifest. O ensemble MÉDIA as probas por vídeo → dissolve a variância
-# entre seeds (o modelo satura em ~2 épocas na val pequena) e cruza o teto do single.
-# SEEDS="42 1 2" muda os seeds; ARGS="..." passa overrides (ex.: audio_embedder, lr).
+# --- Seed ensemble (cross-attention) ----------------------------------------
+# Trains N seeds (same architecture/hyperparameters, only the seed changes) and logs
+# the run dirs into a manifest. The ensemble AVERAGES per-video probabilities →
+# dissolves seed-to-seed variance (the model saturates within 1–3 epochs on the small
+# val set) and beats the single-model ceiling.
+# SEEDS="42 1 2" changes the seeds; ARGS="..." passes overrides (e.g. text_embedder, lr).
 train-ensemble:
 	@mkdir -p outputs/cross_attention
 	@: > $(ENSEMBLE_MANIFEST)
 	@for s in $(SEEDS); do \
-	  echo ">>> treinando seed=$$s"; \
+	  echo ">>> training seed=$$s"; \
 	  $(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=cross_attention \
-	    device=$(if $(filter auto,$(DEVICE)),mps,$(DEVICE)) seed=$$s $(ARGS) || exit 1; \
+	    device=$(DEVICE) seed=$$s $(ARGS) || exit 1; \
 	  ls -dt outputs/cross_attention/2*/ | head -1 | sed 's#/$$##' >> $(ENSEMBLE_MANIFEST); \
 	done
-	@echo "✓ Ensemble treinado ($(words $(SEEDS)) seeds). Manifest: $(ENSEMBLE_MANIFEST)"
+	@echo "✓ Ensemble trained ($(words $(SEEDS)) seeds). Manifest: $(ENSEMBLE_MANIFEST)"
 	@cat $(ENSEMBLE_MANIFEST)
 
-# Lista dos run dirs do manifest no formato Hydra (dir1,dir2,...).
+# Manifest run dirs in Hydra list format (dir1,dir2,...).
 _ENS_LIST = $(shell paste -sd, $(ENSEMBLE_MANIFEST) 2>/dev/null)
 
-# Avalia o ensemble do manifest (média das probas + recalibra na val com ENS_CALIB).
+# Evaluates the manifest ensemble (probability averaging + threshold recalibrated on
+# the calibration split — data.calib_split, default val — with ENS_CALIB).
 ensemble-evaluate:
-	@test -s $(ENSEMBLE_MANIFEST) || (echo "Manifest vazio: rode 'make train-ensemble' antes."; exit 1)
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Empty manifest: run 'make train-ensemble' first."; exit 1)
 	$(MPS_FALLBACK) $(PY) $(MAIN) mode=evaluate +experiment=cross_attention \
 	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) \
 	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_ENS_LIST)]" $(ARGS)
 
-# Escreve a submissão a partir do ensemble do manifest.
+# Writes the submission file from the manifest ensemble.
 ensemble-submit:
-	@test -s $(ENSEMBLE_MANIFEST) || (echo "Manifest vazio: rode 'make train-ensemble' antes."; exit 1)
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Empty manifest: run 'make train-ensemble' first."; exit 1)
 	$(MPS_FALLBACK) $(PY) $(MAIN) mode=submit +experiment=cross_attention \
 	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) out=$(OUT) \
 	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_ENS_LIST)]" $(ARGS)
 
-# Ponta a ponta (dados -> treino -> avaliação).
+# --- Paper reproduction ------------------------------------------------------
+# Best result of the paper (Table 2, "MIL + 74 support features, 5 seeds"):
+# Macro-F1 0.722 · AP 0.875 on the 525-video public test split, using the
+# TRADITIONAL protocol — model weights fit on train (778 videos), threshold
+# calibrated on val (124 videos, `smooth` plateau selection), metrics on test.
+# Runs end to end: data prep → 5-seed training → ensemble evaluation.
+# Prerequisites: `make setup-neural` + BAH dataset under data/raw/data/ (README §3).
+reproduce-best:
+	$(MAKE) data
+	$(MAKE) train-ensemble SEEDS="42 1 2 3 4"
+	$(MAKE) ensemble-evaluate SPLIT=test ENS_CALIB=smooth ARGS="+ensemble_name=ensemble_5 $(ARGS)"
+	@echo "✓ Done. Reference: Macro-F1 0.722 · AP 0.875 (test, threshold calibrated on val)."
+	@echo "  Reports: outputs/cross_attention/ensemble_5/eval_test/"
+
+# End to end (data -> train -> evaluate).
 pipeline: data train evaluate
-	@echo "✓ Pipeline completo executado."
+	@echo "✓ Full pipeline executed."
 
 # ----------------------------------------------------------------------------
-# Qualidade / CI-CD
+# Quality / CI-CD
 # ----------------------------------------------------------------------------
 lint:
 	$(RUFF) check src $(MAIN)
@@ -224,33 +247,33 @@ typecheck:
 test:
 	$(RUN) pytest
 
-# Compilação rápida (syntax) sem instalar deps — usa o python do sistema.
+# Fast syntax check without installing deps — uses the system python.
 compile:
 	@python3 -m py_compile $$(find src -name '*.py') $(MAIN) && echo "✓ py_compile OK"
 
-# Gate rápido (estático): roda no que é determinístico/verde sem dataset.
+# Fast (static) gate: runs whatever is deterministic/green without the dataset.
 ci: format-check lint compile
 	@echo "✓ CI OK (format-check + lint + compile)"
 
-# Gate completo (inclui type-check e testes).
+# Full gate (includes type-check and tests).
 check: ci typecheck test
-	@echo "✓ Check completo OK"
+	@echo "✓ Full check OK"
 
 # ----------------------------------------------------------------------------
-# Limpeza
+# Cleaning
 # ----------------------------------------------------------------------------
 clean:
 	find . -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
 	rm -rf .ruff_cache .pytest_cache .mypy_cache
-	@echo "✓ Caches removidos"
+	@echo "✓ Caches removed"
 
 clean-cache:
 	rm -rf data/interim data/processed
-	@echo "✓ Artefatos derivados removidos (data/interim, data/processed)"
+	@echo "✓ Derived artifacts removed (data/interim, data/processed)"
 
 clean-outputs:
 	rm -rf outputs multirun wandb
-	@echo "✓ Saídas removidas (outputs/, multirun/, wandb/)"
+	@echo "✓ Outputs removed (outputs/, multirun/, wandb/)"
 
 clean-all: clean clean-cache clean-outputs
-	@echo "✓ Limpeza completa"
+	@echo "✓ Full cleanup"

@@ -1,6 +1,8 @@
 # @package _global_
-# configs/experiment/cross_attention.yaml — competição: cross-attention temporal (Lightning) + áudio deep.
+# configs/experiment/cross_attention.yaml — competition preset: temporal cross-attention (Lightning).
+# Audio stays on the librosa prosodic descriptor (320-d) — the paper's final configuration:
+# wav2vec2/HuBERT embeddings were tried and REDUCED macro-F1 (A/H is prosodic; phonetic
+# embeddings dilute pause/pitch cues). Override with audio_embedder=wav2vec2 to experiment.
 defaults:
   - override /model: cross_attention
-  - override /audio_embedder: wav2vec2
   - override /trainer: lightning
