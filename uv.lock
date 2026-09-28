@@ -14,6 +14,7 @@ source = { editable = "." }
 dependencies = [
     { name = "audioread" },
     { name = "catboost" },
+    { name = "graphviz" },
     { name = "hydra-core" },
     { name = "hydra-joblib-launcher" },
     { name = "librosa" },
@@ -59,6 +60,7 @@ vision = [
 requires-dist = [
     { name = "audioread", specifier = ">=3.0.1" },
     { name = "catboost", specifier = ">=1.2.10" },
+    { name = "graphviz", specifier = ">=0.21" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "hydra-joblib-launcher", specifier = ">=1.2.0" },
     { name = "librosa", specifier = ">=0.10.2" },
