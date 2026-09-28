@@ -1,0 +1,21 @@
+# configs/model/text_finetune.yaml  (family=lightning — FASE 1: texto mais forte)
+# Fine-tune do RoBERTa-GoEmotions (AMF-style, "lições dos top teams" — ver
+# references/visual_signal_lessons_from_top_teams.md): embedding + 4 primeiras camadas
+# congeladas, CLS pooling, R-Drop, label smoothing, cabeça auxiliar sobre o vetor de
+# hesitação (74-d) com peso 0.3.
+name: text_finetune
+family: lightning
+model_name: SamLowe/roberta-base-go_emotions
+num_frozen_layers: 4                   # embeddings + N primeiras camadas do encoder congeladas
+max_length: 256                        # transcrição completa (README AMF-style)
+dropout: 0.1
+head_hidden: 256                       # MLP head: hidden -> head_hidden -> 1
+dim_tab: 74                            # dim do vetor de hesitação/tabular (aux head)
+aux_loss_weight: 0.3                   # peso da cabeça auxiliar (AMF-style aux supervision)
+label_smoothing: 0.1                   # epsilon do BCE com label smoothing
+rdrop_alpha: 4.0                       # peso do termo de consistência R-Drop (KL simétrico)
+pos_weight: auto                       # auto | float | null — balanceamento de classe (BCE)
+lr: 2e-5                               # lr das camadas de texto NÃO congeladas + head
+weight_decay: 1e-2
+scheduler: cosine_warmup
+warmup_epochs: 2

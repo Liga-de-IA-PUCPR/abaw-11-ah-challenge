@@ -1,0 +1,44 @@
+# @package _global_
+# FASE 1 (docs/improvement_plan.md) — fine-tune do RoBERTa-GoEmotions com R-Drop +
+# head auxiliar de hesitação (74-d). Roda em 1x RTX 3060 12GB (fp16, batch pequeno +
+# grad-accum). ATENÇÃO: este experimento treina o texto SOZINHO (sem áudio) — é um
+# passo intermediário p/ depois congelar o encoder fine-tuned e usá-lo no cache de
+# embeddings da cross_attention (substituindo roberta_emotion mean-pool frozen).
+defaults:
+  - override /model: text_finetune
+  - override /text_embedder: roberta_goemotions
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-text-goemotions-finetune
+
+data:
+  batch_size: 8
+  num_workers: 2
+  tabular:
+    use_hesitation: true
+    use_text_features: true
+
+trainer:
+  max_epochs: 30
+  patience: 5
+  monitor: val_f1_macro
+  mode: max
+  precision: 16-mixed              # fp16 — cabe em 12GB c/ backbone parcialmente frozen
+  accumulate_grad_batches: 4        # batch efetivo 8*4=32
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+
+model:
+  lr: 2e-5
+  weight_decay: 1e-2
+  num_frozen_layers: 4
+  max_length: 256
+  dropout: 0.1
+  head_hidden: 256
+  dim_tab: 74
+  aux_loss_weight: 0.3
+  label_smoothing: 0.1
+  rdrop_alpha: 4.0
+  pos_weight: auto
+  scheduler: cosine_warmup
+  warmup_epochs: 2

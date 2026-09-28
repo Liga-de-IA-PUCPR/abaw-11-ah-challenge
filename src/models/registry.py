@@ -194,3 +194,17 @@ register_lazy(
     family="lightning",
     loader=_load_face_gnn_ts,
 )
+
+
+def _load_text_finetune() -> type:
+    """Importa ``TextFinetune`` somente quando o fine-tune de texto é instanciado."""
+    from src.models.text_finetune import TextFinetune
+
+    return TextFinetune
+
+
+register_lazy(
+    "text_finetune",
+    family="lightning",
+    loader=_load_text_finetune,
+)
