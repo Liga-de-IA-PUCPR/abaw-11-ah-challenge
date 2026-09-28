@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from src.data.face_graph import NUM_FACE_LANDMARKS, distance_adjacency
+from src.data.face_roi import resolve_roi_indices
 from src.features.face_mesh import LANDMARK_DIM
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ def _build_face_gcn_ts(
     use_velocity: bool = False,
     landmark_stride: int = 1,
     max_windows: int | None = None,
+    roi: str = "full",
 ):
     import torch
     import torch.nn.functional as F
@@ -39,16 +41,31 @@ def _build_face_gcn_ts(
 
     effective_in = in_channels + (LANDMARK_DIM if use_velocity else 0)
     stride = max(1, int(landmark_stride))
+    roi_np = resolve_roi_indices(roi)
+    if roi_np is None:
+        base_n = NUM_FACE_LANDMARKS
+        roi_index: torch.Tensor | None = None
+    else:
+        base_n = int(roi_np.shape[0])
+        roi_index = torch.as_tensor(roi_np, dtype=torch.long)
+    n_landmarks = max(1, (base_n + stride - 1) // stride)
 
     def _cap_length(length: int) -> int:
         if max_windows is None or max_windows <= 0:
             return length
         return min(length, int(max_windows))
 
-    def _subsample(coords: torch.Tensor) -> torch.Tensor:
+    def _select_roi(coords: torch.Tensor) -> torch.Tensor:
+        """``coords (N, 3)`` → ROI + stride."""
+        if roi_index is not None:
+            idx = roi_index.to(device=coords.device)
+            coords = coords.index_select(0, idx)
         if stride <= 1:
             return coords
         return coords[::stride]
+
+    def _subsample(coords: torch.Tensor) -> torch.Tensor:
+        return _select_roi(coords)
 
     class DistanceGCNLayer(nn.Module):
         """Uma camada de message passing com adjacência fixada por distância."""
@@ -207,7 +224,6 @@ def _build_face_gcn_ts(
             lengths: torch.Tensor,
         ) -> torch.Tensor:
             batch_size = int(face_seq.size(0))
-            n_landmarks = max(1, (NUM_FACE_LANDMARKS + stride - 1) // stride)
             outputs: list[torch.Tensor] = []
             for b in range(batch_size):
                 t = _cap_length(int(lengths[b].item()))
@@ -218,7 +234,9 @@ def _build_face_gcn_ts(
                 for w in range(t):
                     coords, feat = self._window_features(face_seq[b], w)
                     if coords.abs().sum() < 1e-8:
-                        node_seq.append(face_seq.new_zeros(n_landmarks, self.spatial.spatial_out))
+                        node_seq.append(
+                            face_seq.new_zeros(n_landmarks, self.spatial.spatial_out)
+                        )
                     else:
                         node_seq.append(self.spatial(coords, feat))
                 stacked = torch.stack(node_seq, dim=1)

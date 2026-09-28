@@ -24,3 +24,6 @@ face:
   temporal_out: 128
   temporal_mode: gnn4ts
   use_velocity: true
+  roi: full
+  landmark_stride: 1
+  max_windows: null

@@ -49,6 +49,7 @@ def _build_face_gnn_ts_module(
     use_velocity: bool,
     landmark_stride: int = 1,
     max_windows: int | None = None,
+    roi: str = "full",
 ):
     import torch
     from torch import nn
@@ -64,6 +65,7 @@ def _build_face_gnn_ts_module(
         use_velocity=use_velocity,
         landmark_stride=landmark_stride,
         max_windows=max_windows,
+        roi=roi,
     )
 
     class _FaceGnnTsModule(nn.Module):
@@ -247,6 +249,7 @@ class FaceGnnTsFusion:
         self.temporal_mode = str(face.get("temporal_mode", "gnn4ts"))
         self.use_velocity = bool(face.get("use_velocity", True))
         self.landmark_stride = int(face.get("landmark_stride", 1))
+        self.roi = str(face.get("roi", "full"))
         mw = face.get("max_windows")
         self.max_windows = None if mw in (None, "null", "none", 0) else int(mw)
 
@@ -282,6 +285,7 @@ class FaceGnnTsFusion:
             use_velocity=self.use_velocity,
             landmark_stride=self.landmark_stride,
             max_windows=self.max_windows,
+            roi=self.roi,
         )
 
     def build_lightning_module(self):
