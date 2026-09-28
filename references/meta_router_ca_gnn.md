@@ -274,7 +274,8 @@ outputs/hetero_gnn_contrastive/20260713_162753/trainer_state.json       # thr_gn
 
 1. **~97 both_wrong** ainda limitam o teto — sinal de dataset/features (`negative` / `positive` / `resistant` / `willing`), não de roteamento.
 2. Val tem só **124** vídeos: a seleção conjunta é estável o bastante para >0.74, mas sensível a mudança de seeds.
-3. Para subir em direção ao oracle (~0.80): face landmarks, features novas, ou um terceiro membro complementar nos qtypes onde CA e GNN falham juntos — não mais miner/hard-FT no GNN atual.
+3. Face ROI ajuda em parte dos both_wrong, mas fusão/gate no router trouxe ganho irrisório — **não** entra na produção.
+4. Para subir em direção ao oracle (~0.80): features novas ou membro realmente complementar — não média cega nem rescue complexo.
 
 ---
 
