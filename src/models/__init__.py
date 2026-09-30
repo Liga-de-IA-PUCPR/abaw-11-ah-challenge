@@ -1,10 +1,9 @@
 """Modelos do desafio BAH — registry com tag de família (ver ``registry.py``).
 
 - ``random_forest``  (family="sklearn")   : classificador de janela em CPU.
-- ``catboost``       (family="sklearn")   : gradient boosting por janela (CPU).
 - ``cross_attention`` (family="lightning") : LightningModule sobre sequência de janelas.
-- GNNs (family="lightning", lazy): ``hetero_gnn*``, ``gnn_baseline``,
-  ``multimodal_hetero_{full,face}``, ``face_gnn_ts``.
+- GNNs (family="lightning", lazy): ``hetero_gnn_contrastive``, ``face_gnn_ts``,
+  ``multimodal_hetero_face``.
 
 O import do ``random_forest`` é eager (CPU, sem deps pesadas). O ``cross_attention``
 é registrado por uma **factory lazy** (ver ``registry.py``): o módulo só é importado
@@ -21,7 +20,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.models.catboost_model import CatBoostModel  # eager: catboost lazy no from_config
 from src.models.random_forest import RandomForestModel  # eager: só sklearn
 from src.models.registry import create_model, list_models, register_model
 
@@ -33,7 +31,6 @@ __all__ = [
     "create_model",
     "list_models",
     "RandomForestModel",
-    "CatBoostModel",
     "CrossAttentionFusion",
     "LitCrossAttention",
 ]

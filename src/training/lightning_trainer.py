@@ -13,9 +13,8 @@ dos métodos. Fluxo:
 
 Qualquer fachada de modelo registrada como ``family="lightning"`` serve, desde que exponha
 ``build_lightning_module()`` (opcionalmente ``build_lightning_module(trainer_cfg=...)``) e
-os atributos de dimensão ``dim_a``/``dim_b`` (e ``dim_tab``, se usar o ramo tabular). Ganchos
-opcionais do modelo: ``pos_weight`` (``auto`` = neg/pos do treino) e ``gae_init`` (encoder
-pré-treinado por ``mode=pretrain_gae``).
+os atributos de dimensão ``dim_a``/``dim_b`` (e ``dim_tab``, se usar o ramo tabular). Gancho
+opcional do modelo: ``pos_weight`` (``auto`` = neg/pos do treino).
 """
 
 from __future__ import annotations
@@ -206,7 +205,6 @@ class LightningTrainer(BaseTrainer):
             self.model.dim_tab = d_tab
             log.info(f"Ramo tabular: dim_tab={d_tab} (inferido do cache)")
         self._apply_pos_weight(train_data)
-        self._apply_gae_init()
         self._lit_module = self._build_lit_module()
         self._init_weights_from_checkpoint()
         self._trainer = self._build_trainer()
@@ -474,8 +472,7 @@ class LightningTrainer(BaseTrainer):
         elif p.suffix == ".ckpt" and p.exists():
             ckpt_path = str(p)
         if not ckpt_path:
-            if p.name != "gae_encoder.pt" and not (p / "gae_encoder.pt").exists():
-                log.warning(f"Fine-tune: checkpoint não encontrado em {ckpt_arg}")
+            log.warning(f"Fine-tune: checkpoint não encontrado em {ckpt_arg}")
             return
 
         state_dict = load_state_dict_from_ckpt(ckpt_path)
@@ -495,27 +492,6 @@ class LightningTrainer(BaseTrainer):
         pw = resolve_pos_weight(getattr(self.model, "pos_weight", None), train_loader)
         if hasattr(self.model, "_resolved_pos_weight"):
             self.model._resolved_pos_weight = pw
-
-    def _apply_gae_init(self) -> None:
-        """Aponta o encoder pré-treinado (``mode=pretrain_gae``) p/ modelos com ``gae_init``."""
-        if not hasattr(self.model, "_gae_init_path"):
-            return
-        import json
-
-        ckpt = getattr(self.config, "checkpoint", None)
-        if ckpt:
-            p = Path(str(ckpt))
-            if p.name == "gae_encoder.pt" and p.exists():
-                self.model._gae_init_path = str(p)
-            elif (p / "gae_encoder.pt").exists():
-                self.model._gae_init_path = str(p / "gae_encoder.pt")
-            elif (p / "trainer_state.json").exists():
-                enc = json.loads((p / "trainer_state.json").read_text()).get("gae_encoder")
-                if enc and Path(enc).exists():
-                    self.model._gae_init_path = enc
-        gae = getattr(self.model, "gae_init", None)
-        if gae and not self.model._gae_init_path:
-            self.model._gae_init_path = str(gae)
 
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)

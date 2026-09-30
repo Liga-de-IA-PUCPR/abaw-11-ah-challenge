@@ -119,7 +119,7 @@ def _evaluate_test(cfg: DictConfig, device, ckpt_dir: Path) -> dict:
 
 def _base_overrides(family: str, device: str) -> list[str]:
     if family == "hetero_gnn":
-        experiment = "+experiment=hetero_gnn_v2_tune"
+        experiment = "+experiment=hetero_gnn_v2_tune_wav2vec2"
         model_name = "hetero_gnn_contrastive"
     elif family == "hetero_face":
         experiment = "+experiment=multimodal_hetero_face_v2"

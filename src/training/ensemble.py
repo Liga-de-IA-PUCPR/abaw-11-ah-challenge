@@ -12,7 +12,7 @@ média) — o ``main`` chama ``recalibrate_on_val`` antes de avaliar/submeter.
 
 Membros HETEROGÊNEOS (frente "áudio + texto + vídeo"): cada membro é um trainer já
 carregado do seu próprio run dir — pode ser cross-attention, GNN heterogêneo, GNN facial
-ou um modelo sklearn (RF/CatBoost). O ``loader`` recebido define QUAIS vídeos entram; um
+ou um modelo sklearn (RF). O ``loader`` recebido define QUAIS vídeos entram; um
 membro com ``parquet_path`` próprio (ex.: GNN treinado no cache wav2vec2) lê as SUAS
 features para esses mesmos vídeos. Sem pesos, a combinação é a média simples de sempre.
 """

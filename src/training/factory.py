@@ -60,7 +60,7 @@ def create_trainer(family: str, model: Any, cfg: Any) -> BaseTrainer:
 def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
     """Recarrega um trainer treinado a partir de ``out_dir`` (checkpoint).
 
-    Reconstrói o modelo da família (RF/CatBoost via ``<Modelo>.load``; modelos
+    Reconstrói o modelo da família (RF via ``RandomForestModel.load``; modelos
     Lightning via ``create_model``) e delega ao ``BaseTrainer.load`` da
     família, cuja assinatura é ``load(out_dir, model, config)``.
 
@@ -81,13 +81,10 @@ def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
     out_dir = Path(out_dir)
 
     if family == "sklearn":
-        from src.models.catboost_model import CatBoostModel
         from src.models.random_forest import RandomForestModel
         from src.training.sklearn_trainer import SklearnTrainer
 
-        # O joblib guarda o modelo inteiro; a classe só decide o wrapper de carga.
-        model_cls = CatBoostModel if str(cfg.model.name) == "catboost" else RandomForestModel
-        model = model_cls.load(out_dir / "model.joblib")
+        model = RandomForestModel.load(out_dir / "model.joblib")
         log.info("Trainer: SklearnTrainer recarregado (CPU, sem lightning).")
         return SklearnTrainer.load(out_dir, model=model, config=cfg)
 

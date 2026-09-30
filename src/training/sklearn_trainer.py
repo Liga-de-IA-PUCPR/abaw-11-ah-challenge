@@ -2,7 +2,7 @@
 
 Contrato ``BaseTrainer`` (README §6.4): ``fit`` → ``evaluate`` → ``predict`` →
 ``save`` / ``load``. **Não importa torch**: matriz de janelas (FASE 3) -> modelo
-sklearn (RandomForest | CatBoost) -> probas de janela -> agrega janela→vídeo ->
+sklearn (RandomForest) -> probas de janela -> agrega janela→vídeo ->
 calibração opcional do score (``aggregation.score_calibration=temperature``) ->
 limiar calibrado na val -> métricas sklearn a nível de vídeo.
 
@@ -51,7 +51,7 @@ class SklearnTrainer(BaseTrainer):
     """Trainer para modelos de janela sklearn + agregação janela→vídeo (CPU).
 
     Attributes:
-        model: ``BaseModel`` de janela (ex.: ``RandomForestModel``, ``CatBoostModel``).
+        model: ``BaseModel`` de janela (ex.: ``RandomForestModel``).
         config: config com grupos ``trainer`` (sklearn), ``aggregation``, ``metrics``.
         method: método de agregação (``cfg.aggregation.method``).
         threshold_: limiar calibrado por ``fit`` na validação.

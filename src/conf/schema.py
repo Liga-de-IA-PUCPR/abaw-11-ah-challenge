@@ -343,11 +343,11 @@ class FaceEmbedderConfig:
 class ModelConfig:
     """Grupo ``model`` — registra a família (``sklearn`` | ``lightning``) + hiperparâmetros.
 
-    ``family`` decide o trainer (README §6.4): ``random_forest``/``catboost`` →
-    ``SklearnTrainer``; ``cross_attention`` e os GNNs → ``LightningTrainer`` (importado
-    *lazy*). Campos não usados por uma família são simplesmente ignorados por ela.
+    ``family`` decide o trainer (README §6.4): ``random_forest`` → ``SklearnTrainer``;
+    ``cross_attention`` e os GNNs → ``LightningTrainer`` (importado *lazy*). Campos não
+    usados por uma família são simplesmente ignorados por ela.
 
-    Os GNNs (``configs/model/hetero_gnn*.yaml``, ``multimodal_hetero_*.yaml``,
+    Os GNNs (``configs/model/hetero_gnn_contrastive.yaml``, ``multimodal_hetero_face.yaml``,
     ``face_gnn_ts.yaml``) trazem blocos próprios (``hidden_channels``, ``heads``,
     ``contrastive``, ``loss``, ``face``…) lidos direto do YAML — o schema aqui documenta
     só os campos compartilhados.
@@ -378,7 +378,6 @@ class ModelConfig:
     weight_decay: float = 1e-2
     # --- compartilhados pelos GNNs (lightning) ---
     pos_weight: float | str | None = None  # "auto" = neg/pos do treino; None = sem peso
-    gae_init: str | None = None  # encoder de mode=pretrain_gae p/ inicializar o GNN
 
 
 @dataclass
@@ -464,7 +463,6 @@ class RootConfig:
         "preprocess",
         "featurize",
         "featurize_face",
-        "pretrain_gae",
         "hard_mining",
         "evaluate",
         "submit",

@@ -11,7 +11,7 @@ Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
 | Frente | Toggle | O que roda |
 |--------|--------|------------|
 | **A — Cross-attention (Luiz)** | `+experiment=cross_attention` | modelo do artigo, inalterado (`make reproduce-best` continua dando o mesmo número) |
-| **B — Modelos do Rodrigo com o pré-processamento do Luiz** | `+experiment=hetero_gnn_v2_tune_wav2vec2`, `face_gnn_ts_roi`, `multimodal_hetero_face_v3`, `catboost_baseline`, … | GNNs heterogêneos, GNN facial (Face Mesh), CatBoost — todos lendo o **mesmo contrato de Parquet** gerado por `mode=featurize` da main (+ coluna `face_landmarks` via `mode=featurize_face`) |
+| **B — Modelos do Rodrigo com o pré-processamento do Luiz** | `+experiment=hetero_gnn_v2_tune_wav2vec2`, `face_gnn_ts_roi`, `multimodal_hetero_face_v2` | GNN heterogêneo de produção, GNN facial (Face Mesh) e GNN multimodal com vídeo — todos lendo o **mesmo contrato de Parquet** gerado por `mode=featurize` da main (+ coluna `face_landmarks` via `mode=featurize_face`) |
 | **C — Ensemble áudio + texto + vídeo** | `ensemble=[<runs CA>, <run GNN/face>]` (ou `+experiment=ensemble_*`) | média (ou média ponderada) das probabilidades por vídeo de membros **heterogêneos**; cada membro recarrega o próprio modelo e pode ler o próprio Parquet. Meta-router CA⊕GNN continua disponível como script (`scripts/meta_router_ca_gnn*.py`) |
 
 ## 2. Ponto de partida
@@ -39,7 +39,7 @@ Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
    (RF por padrão; `+experiment=cross_attention`; `ensemble=[dirs]`; calibração `base_rate`/`smooth`,
    monitor `val_ap`, formato oficial de submissão).
 2. **Tudo o que é do Rodrigo entra opt-in**: modelos por registro *lazy* no `registry`
-   (família `lightning`, ou `sklearn` p/ CatBoost), presets em `configs/experiment/`, dependências
+   (família `lightning`), presets em `configs/experiment/`, dependências
    pesadas em grupos opcionais (`gnn`, `vision`) importadas *lazy*. O caminho RF continua sem torch.
 3. **Um Parquet, várias visões.** Os modelos dele consomem o mesmo contrato de dados da main
    (`audio_emb`, `text_emb`, `tabular` por janela → `VideoSequenceDataset`); vídeo entra como coluna
@@ -55,10 +55,10 @@ Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
 
 | Arquivo | Decisão |
 |---------|---------|
-| `main.py` | main + modos `featurize_face`, `pretrain_gae`, `hard_mining`; `WeightedRandomSampler` (`data.hard_examples`); ensemble heterogêneo no `_resolve_trainer`. Os modos `ensemble_evaluate`/`ensemble_submit` dele **não** entram: o `ensemble=[...]` da main passa a aceitar membros de modelos diferentes (mesma função, uma interface só) |
+| `main.py` | main + modos `featurize_face`, `hard_mining`; `WeightedRandomSampler` (`data.hard_examples`); ensemble heterogêneo no `_resolve_trainer`. Os modos `ensemble_evaluate`/`ensemble_submit` dele **não** entram: o `ensemble=[...]` da main passa a aceitar membros de modelos diferentes (mesma função, uma interface só) |
 | `src/conf/schema.py` | main + `data.hard_examples`, `data.featurize_chunk_size`, `data.force_face`, `trainer.accumulate_grad_batches`/`swa*`, `aggregation.score_calibration`, grupo `face_embedder`, membros de ensemble (str \| dict) |
 | `src/data/datasets.py` | main + `face_seq` opcional (dataset e `collate_sequences`) |
-| `src/training/lightning_trainer.py` | main (val_ap, `recalibrate_on_val`, `predict_scores`) + dele: `accumulate_grad_batches`, SWA, `build_lightning_module(trainer_cfg)`, `pos_weight`, init GAE, fine-tune de pesos (`checkpoint=` no `mode=train`), snapshot/restauração de arquitetura (`checkpoint_compat`) |
+| `src/training/lightning_trainer.py` | main (val_ap, `recalibrate_on_val`, `predict_scores`) + dele: `accumulate_grad_batches`, SWA, `build_lightning_module(trainer_cfg)`, `pos_weight`, fine-tune de pesos (`checkpoint=` no `mode=train`), snapshot/restauração de arquitetura (`checkpoint_compat`) |
 | `src/training/ensemble.py` | generalizado: membro = run dir **ou** `{checkpoint, model, weight, parquet_path}`; famílias misturadas (lightning + sklearn); `combine=mean\|weighted` |
 | `src/training/sklearn_trainer.py` | main (guarda contra rótulo -1) + temperature scaling (`aggregation.score_calibration=temperature`) e `target_pos_rate` |
 | `src/training/aggregation.py` | main + `calibrate_threshold_from_video_scores` (scores pós-calibração) |
@@ -66,18 +66,18 @@ Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
 | `src/outputs/checkpoint.py` | main + filtro `model_name` no `resolve_latest_checkpoint` |
 | `src/outputs/reporter.py` | main + curva ROC, **`predictions.csv`** por split (insumo do meta-router e do protocolo OOF), análise de erro por `question_type` |
 | `src/features/builder.py`, `src/pipeline/featurize.py` | main + escrita do Parquet em lotes (`data.featurize_chunk_size`) — mesmo resultado, menos RAM/VRAM |
-| `src/models/registry.py`, `__init__.py`, `src/training/factory.py` | main + registro lazy de `hetero_gnn`, `gnn_baseline`, `hetero_gnn_contrastive`, `multimodal_hetero_full`, `multimodal_hetero_face`, `face_gnn_ts`, `text_finetune` + `catboost` (sklearn) |
-| `pyproject.toml` / `uv.lock` | main + grupos `gnn` (`torch-geometric`, `gnn-modalblocks` git@f42fd44) e `vision` (`mediapipe`, `opencv-python-headless`); `catboost` no core (import lazy); `optuna` no `dev` |
+| `src/models/registry.py`, `__init__.py`, `src/training/factory.py` | main + registro lazy de `hetero_gnn_contrastive`, `face_gnn_ts`, `multimodal_hetero_face` |
+| `pyproject.toml` / `uv.lock` | main + grupos `gnn` (`torch-geometric`, `gnn-modalblocks` git@f42fd44) e `vision` (`mediapipe`, `opencv-python-headless`); `optuna` no `dev` |
 | `Makefile`, `README.md` | main + seção/targets novos (`setup-gnn`, `setup-vision`, `featurize-face`, `train-gnn`, `ensemble-multimodal`, …) |
 
 ### 4.2 Módulos do Rodrigo portados (sem conflito — entram como estão, só ajustes de caminho/import)
 
-- Modelos: `src/models/{hetero_gnn,hetero_gnn_contrastive,gnn_baseline,hetero_gat_edge,hetero_gae_pretrain,multimodal_hetero_full,multimodal_hetero_face,face_gcn_ts,face_gnn_ts_model,text_finetune,tab_fusion,lightning_seq,lightning_utils,checkpoint_compat,catboost_model}.py`
+- Modelos: `src/models/{hetero_gnn_contrastive,hetero_gnn,hetero_gat_edge,tab_fusion,lightning_utils,checkpoint_compat}.py` (cadeia do modelo de produção) + `src/models/{face_gnn_ts_model,face_gcn_ts,multimodal_hetero_face,multimodal_hetero_full}.py` (vídeo; o `_full` é a base do `_face`)
 - Dados/vídeo: `src/data/{graph_builder,face_graph,face_roi}.py`, `src/features/{face_mesh,asr_timing}.py`, `src/pipeline/featurize_face.py` (mesmo índice de janelas da main, `interim/windows_index.parquet`; escrita do Parquet passou a ser atômica)
-- Treino/avaliação: `src/training/{gae_pretrain_trainer,score_calibration}.py`, `src/eval/protocol.py` (OOF agrupado por participante)
-- Configs: `configs/model/*` dele, `configs/face_embedder/mediapipe.yaml`, presets de `configs/experiment/*` de GNN/face/texto/CatBoost (com `parquet_path` apontando para os caches da main, ex. `text_audio_windows_w2v.parquet` p/ os presets wav2vec2)
+- Treino/avaliação: `src/training/score_calibration.py`, `src/eval/protocol.py` (OOF agrupado por participante)
+- Configs: `configs/model/{hetero_gnn_contrastive,face_gnn_ts,multimodal_hetero_face}.yaml`, `configs/face_embedder/mediapipe.yaml` e 4 presets: `hetero_gnn_v2_tune_wav2vec2` (produção), `face_gnn_ts_roi`, `multimodal_hetero_face_v2`, `featurize_deep` (cache wav2vec2 em `text_audio_windows_w2v.parquet`)
 - Scripts (`scripts/`): meta-routers (`meta_router_ca_gnn.py` na versão parametrizável `--ca-runs/--gnn-run`, `_face`, `_face_gate`, `_svm`), `ensemble_ap.py`, `gated_ensemble.py`, `threshold_sweep.py`, `search_face_fusion.py`, `diagnose_face_vs_router.py`, `mine_hard_from_preds.py`, `optuna_gnn_tune.py`, `gnn_seed_ensemble.py` (adaptado p/ `mode=evaluate ensemble=[...]`)
-- Testes: `tests/{test_asr_timing,test_eval_protocol,test_face_graph,test_text_finetune}.py`
+- Testes: `tests/{test_asr_timing,test_eval_protocol,test_face_graph}.py`
 - Documentação: `references/{gnn_training_procedure,meta_router_ca_gnn,improvement_plan,visual_signal_lessons_from_top_teams}.md` + figuras
 
 ### 4.3 Não entram (e por quê)
@@ -89,17 +89,17 @@ Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
 | presets `cross_attention_luiz*`, `featurize_luiz*`, `luiz_*`, `rf_luiz`, `scripts/luiz_cross_attention_repro.py` | duplicam o que a main já é por padrão (`make reproduce-best`) |
 | `scripts/{ensemble_sweep,ensemble_weight_sweep_live,export_and_sweep}.py` | dependem dos helpers `_ensemble_*` do `main.py` dele |
 | `src/{config,modeling,services}/`, `src/main.py` | stubs vazios/legados |
-| registro do `text_finetune` + preset `text_goemotions_finetune` | o modelo espera `input_ids`/`attention_mask` e nenhum dataset os produz (nem na branch dele). Módulo + teste portados; registro fica para quando existir a visão de dados de transcrição tokenizada |
+| **Enxugamento (30/09):** `gnn_baseline` + `lightning_seq`, `hetero_gae_pretrain` + `gae_pretrain_trainer` (e `mode=pretrain_gae`), `catboost_model`, `text_finetune` (+ teste, `roberta_goemotions`), registros `hetero_gnn`/`multimodal_hetero_full` e 23 presets de tuning/ablação | explorações que não alimentam nenhuma das 3 frentes (o doc dele: tunings pesados pioraram o test; CatBoost 0.7007; ensemble GNN antigo 0.6843; `text_finetune` sem dataset ligado). Continuam na branch `improve-macro-f1-beyond-router` |
 | `asr_timing` no tabular | as 16 features existem (+ teste), mas não estão ligadas ao `TabularFeaturizer` (nem na branch dele) |
 | `.specs/`, `CHANGELOG.md` | artefatos de processo da branch dele (o conteúdo relevante vai para este plano e para os `references/`) |
 
 ## 5. Fases e critérios de aceite (status em 30/09)
 
 - [x] **F0** Branch + este plano.
-- [x] **F1** Dependências: grupos `gnn`/`vision`, `uv lock` (único efeito colateral: protobuf 7.35 → 6.33, exigência do mediapipe/mlflow), ambiente sobe com `uv sync --group neural --group gnn --group vision --group dev`.
+- [x] **F1** Dependências: grupos `gnn`/`vision`, `uv lock` (efeito colateral: protobuf 7.35 → 6.33, exigência do mediapipe/mlflow), ambiente sobe com `uv sync --group neural --group gnn --group vision --group dev`.
 - [x] **F2** Núcleo fundido (§4.1). **Gate ✅:** `ensemble_5` do artigo (manifest `20260713_211*`) **bit a bit idêntico** à main — test F1 0.722590 / AP 0.874997 / mesma matriz de confusão / limiar 0.500; RF idêntico (F1 0.6753 / AP 0.8374, mesmo checkpoint avaliado pelo código da main e da branch).
-- [x] **F3** Módulos portados (§4.2) + registry. **Gate ✅:** 42 testes verdes (4 dele + 2 novos: caminho facial e ensemble); caminho RF não importa torch/lightning.
-- [x] **F4** Frente B. **Gate ✅:** checkpoint GNN `20260713_162753` avaliado pelo pipeline da main sobre `text_audio_windows_w2v.parquet`: test F1 **0.7109** (= reportado por ele), AP 0.8529 (ele: 0.8537); mediana |Δp| ≈ 0, 94% dos vídeos com |Δp| < 1e-3, Spearman 0.999 — o resíduo é diferença do cache wav2vec2 (featurizado em 10/07 nesta máquina). Smoke-train de 1 época OK: `hetero_gnn_contrastive`, `gnn_baseline`, `multimodal_hetero_full`, `hetero_gnn_v2_tune` (CA-edges), `hetero_gnn_v2_tuned` (3 camadas), `face_gnn_ts`, `multimodal_hetero_face`, `pretrain_gae`, GNN com `gae_init`, `hard_mining` → treino com `WeightedRandomSampler`, CatBoost train/evaluate/submit.
+- [x] **F3** Módulos portados (§4.2) + registry. **Gate ✅:** 33 testes verdes (3 dele + 2 novos: caminho facial e ensemble); caminho RF não importa torch/lightning.
+- [x] **F4** Frente B. **Gate ✅:** checkpoint GNN `20260713_162753` avaliado pelo pipeline da main sobre `text_audio_windows_w2v.parquet`: test F1 **0.7109** (= reportado por ele), AP 0.8529 (ele: 0.8537); mediana |Δp| ≈ 0, 94% dos vídeos com |Δp| < 1e-3, Spearman 0.999 — o resíduo é diferença do cache wav2vec2 (featurizado em 10/07 nesta máquina). Smoke-train de 1 época OK dos 3 presets mantidos (`hetero_gnn_v2_tune_wav2vec2`, `face_gnn_ts_roi`, `multimodal_hetero_face_v2`) + recarregar/avaliar, `hard_mining` → treino com `WeightedRandomSampler`, ensemble misto GNN + face + multimodal + RF com pesos e submissão oficial com probabilidades.
 - [x] **F5** Frente C. **Gate ✅:** `ensemble=[5×CA, GNN]` (cada membro no seu cache) roda em evaluate/submit e gera relatório + `predictions.csv`; meta-router roda sobre os `predictions.csv` gerados pela main. Números na §7.
 - [~] **F6** Vídeo ponta a ponta. Coberto por teste com extrator falso (join, zeros, escrita atômica, cache) + smoke com coluna facial sintética. **Falta:** rodar o `featurize_face` real — exige extrair `data/raw/data.zip` (mp4) e baixar o `face_landmarker.task` do MediaPipe (1ª execução).
 - [x] **F7** Makefile + README + este plano.

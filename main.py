@@ -9,7 +9,6 @@ por ``cfg.mode``:
     train          treina o modelo escolhido em ``model=`` (FASE 4)
     evaluate       avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
     submit         escreve o arquivo de submissão (video_id, pred) (FASE 5)
-    pretrain_gae   (GNN) pré-treino não supervisionado do encoder HeteroGAE
     hard_mining    (lightning) pesos de amostragem {video_id: peso} a partir de um checkpoint
 
 Reusa a estrutura do ``main.py`` da branch ``matheus`` (Hydra + WandbLogger +
@@ -17,10 +16,10 @@ L.Trainer), **generalizada para todos os modelos do registry**: o modelo e o
 trainer vêm das *factories* da FASE 4 (``create_model`` + ``create_trainer``),
 de modo que o caminho ``random_forest`` **nunca importa Lightning**.
 
-Modelos (``model=`` / presets ``+experiment=``): ``random_forest``/``catboost`` (sklearn),
-``cross_attention`` (áudio+texto, artigo) e os GNNs do Rodrigo — ``hetero_gnn*``,
-``multimodal_hetero_full`` (áudio+texto+tabular em grafo), ``face_gnn_ts`` e
-``multimodal_hetero_face`` (+ vídeo). ``ensemble=[...]`` combina run dirs de QUALQUER
+Modelos (``model=`` / presets ``+experiment=``): ``random_forest`` (sklearn),
+``cross_attention`` (áudio+texto, artigo) e os GNNs do Rodrigo — ``hetero_gnn_contrastive``
+(áudio+texto+tabular em grafo; preset ``hetero_gnn_v2_tune_wav2vec2``), ``face_gnn_ts`` e
+``multimodal_hetero_face`` (+ vídeo; presets ``face_gnn_ts_roi``, ``multimodal_hetero_face_v2``). ``ensemble=[...]`` combina run dirs de QUALQUER
 um deles (evaluate/submit).
 
 Exemplos::
@@ -575,31 +574,6 @@ def _run_featurize_face(cfg: DictConfig) -> int:
     return 0
 
 
-def _run_pretrain_gae(cfg: DictConfig, device) -> int:
-    """``mode=pretrain_gae`` — pré-treino HeteroGAE (reconstrução, sem rótulos).
-
-    O ``gae_encoder.pt`` resultante inicializa um GNN via ``model.gae_init=<caminho>``
-    (ou ``checkpoint=<run dir do GAE>`` no ``mode=train``).
-    """
-    from src.data.datasets import load_train_val
-    from src.models.hetero_gae_pretrain import HeteroGaePretrain
-    from src.outputs.checkpoint import resolve_output_dir
-    from src.training.gae_pretrain_trainer import GaePretrainTrainer
-
-    model = HeteroGaePretrain.from_config(cfg.model)
-    trainer = GaePretrainTrainer(model=model, config=cfg)
-    train_data, val_data = load_train_val(cfg, family="lightning")
-    train_data = _as_loader(cfg, train_data, "lightning", "train")
-    val_data = _as_loader(cfg, val_data, "lightning", "val")
-
-    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
-    trainer.output_dir = str(out_dir)
-    trainer.fit(train_data, val_data)
-    trainer.save(out_dir)
-    log.info(f"Pré-treino GAE concluído. Encoder: {out_dir / 'gae_encoder.pt'}")
-    return 0
-
-
 def _run_hard_mining(cfg: DictConfig, device) -> int:
     """``mode=hard_mining`` — pontua um split (default train) e grava pesos de amostragem.
 
@@ -690,7 +664,6 @@ _DISPATCH = {
     "train": _run_train,
     "evaluate": _run_evaluate,
     "submit": _run_submit,
-    "pretrain_gae": _run_pretrain_gae,
     "hard_mining": _run_hard_mining,
 }
 

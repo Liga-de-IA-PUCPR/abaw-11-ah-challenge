@@ -452,11 +452,13 @@ lazily in the same model registry (`family=lightning`) and read the **same Parqu
 
 | Model (`model=`) | Inputs | Preset (`+experiment=`) |
 |---|---|---|
-| `hetero_gnn_contrastive` | audio + text + support (per-video HeteroGAT + SupCon) | `hetero_gnn_v2_tune_wav2vec2`, `hetero_gnn_v2_*` |
-| `gnn_baseline`, `hetero_gnn`, `multimodal_hetero_full` | audio + text + support | `hetero_gnn`, `multimodal_hetero_full` |
-| `face_gnn_ts` | **video** (Face Mesh GCN over time) + support | `face_gnn_ts_roi`, `face_gnn_ts_*` |
-| `multimodal_hetero_face` | audio + text + support + **video** | `multimodal_hetero_face_v3`, … |
-| `catboost` (`family=sklearn`) | same window matrix as the RF | `catboost_baseline` |
+| `hetero_gnn_contrastive` | audio + text + support (per-video HeteroGAT + SupCon) — the member of Rodrigo's production meta-router | `hetero_gnn_v2_tune_wav2vec2` |
+| `face_gnn_ts` | **video** (Face Mesh GCN over time, anatomical ROI) + support | `face_gnn_ts_roi` |
+| `multimodal_hetero_face` | audio + text + support + **video** | `multimodal_hetero_face_v2` |
+
+Only the models that feed the three fronts were kept; Rodrigo's other explorations
+(earlier GNN baselines, GAE pre-training, CatBoost, text fine-tuning and the tuning/ablation
+presets) remain in his `improve-macro-f1-beyond-router` branch.
 
 ```bash
 make setup-vision              # neural + gnn (torch-geometric, gnn-modalblocks) + vision (MediaPipe)
@@ -501,7 +503,7 @@ now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-route
     ├── base/                   # ABCs: BaseEmbedder, BaseModel, BaseTrainer
     ├── data/                   # indexing, audio_io, windowing, datasets, schema, graph_builder, face_*
     ├── features/               # text_embedder, audio_embedder, hesitation, text_features, tabular, builder, face_mesh
-    ├── models/                 # registry, random_forest, catboost, cross_attention, hetero_gnn*, multimodal_hetero_*, face_gnn_ts
+    ├── models/                 # registry, random_forest, cross_attention, hetero_gnn(_contrastive), multimodal_hetero_*, face_gnn_ts
     ├── eval/                   # protocol (grouped OOF CV + paired bootstrap)
     ├── training/               # factory, sklearn_trainer, lightning_trainer, ensemble, aggregation, metrics, splits
     ├── outputs/                # wandb_logger, checkpoint, reporter, submission

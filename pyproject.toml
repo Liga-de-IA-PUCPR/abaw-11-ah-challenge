@@ -56,7 +56,6 @@ dependencies = [
     "praat-parselmouth>=0.4.3",  # Praat via Python: F0/jitter/shimmer/formantes p/ features de hesitação
     # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
     "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
-    "catboost>=1.2.10",          # CatBoostClassifier — gradient boosting (import lazy no modelo)
     "numpy>=1.26.0",             # matrizes de features
     "scipy>=1.13.0",             # utilidades numéricas (estatísticas, sinais)
     # --- Serialização / utilidades ---

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Ensemble de seeds do HeteroGAT (hetero_gnn_v2_tune) + calibração smooth.
+"""Ensemble de seeds do HeteroGAT (hetero_gnn_v2_tune_wav2vec2) + calibração smooth.
 
 Uso::
 
     uv run python scripts/gnn_seed_ensemble.py all --device cuda
-    uv run python scripts/gnn_seed_ensemble.py all --experiment hetero_gnn_v2_luiz_mil --device cuda
+    uv run python scripts/gnn_seed_ensemble.py all --experiment <preset> --device cuda
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     def add_common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--experiment", default="hetero_gnn_v2_tune")
+        p.add_argument("--experiment", default="hetero_gnn_v2_tune_wav2vec2")
         p.add_argument("--device", default="cuda")
 
     p_train = sub.add_parser("train")
