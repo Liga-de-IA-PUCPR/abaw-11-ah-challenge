@@ -275,15 +275,25 @@ def _member_spec(item) -> dict:
     return spec
 
 
-def _cfg_for_model(cfg: DictConfig, model_name: str) -> DictConfig:
-    """Cópia do ``cfg`` com o grupo ``model`` trocado por ``configs/model/<model_name>.yaml``.
+def _cfg_for_model(cfg: DictConfig, model_name: str, experiment: str | None = None) -> DictConfig:
+    """``cfg`` do membro: o do run, com o grupo ``model`` do modelo do membro.
 
-    Membros do MESMO modelo do run reusam o ``cfg`` intacto (reprodutibilidade do
-    ensemble homogêneo); membros de outro modelo partem do YAML do seu grupo — a
-    arquitetura exata é restaurada do ``trainer_state.json`` no ``load``.
+    - ``experiment`` dado (runs antigos treinados por preset): o ``model`` vem do preset
+      composto (``+experiment=<experiment>``) — mesma arquitetura do treino.
+    - Mesmo modelo do run: ``cfg`` intacto (reprodutibilidade do ensemble homogêneo).
+    - Outro modelo: ``configs/model/<model_name>.yaml``.
+    Em todos os casos, se o run gravou ``model_config`` (runs novos), o ``load_trainer``
+    recria o modelo a partir dele — o que é escolhido aqui só vale para runs antigos.
     """
     from pathlib import Path
 
+    if experiment:
+        from hydra import compose
+
+        composed = compose(config_name="config", overrides=[f"+experiment={experiment}"])
+        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        member_cfg.model = composed.model
+        return member_cfg
     if model_name == str(cfg.model.name):
         return cfg
     model_yaml = Path(__file__).resolve().parent / "configs" / "model" / f"{model_name}.yaml"
@@ -300,7 +310,9 @@ def _load_ensemble(cfg: DictConfig):
     Cada membro é um run dir de QUALQUER modelo do registry. O nome do modelo vem, nesta
     ordem, de ``model`` no dict do membro → ``model_name`` do ``trainer_state.json`` →
     pasta-pai do run (``outputs/<modelo>/<timestamp>``). ``parquet_path`` no dict faz o
-    membro ler as SUAS features (ex.: GNN no cache wav2vec2) para os mesmos vídeos.
+    membro ler as SUAS features (ex.: GNN no cache wav2vec2) para os mesmos vídeos;
+    ``experiment`` recompõe o ``model`` do preset do treino (runs antigos, sem
+    ``model_config`` no ``trainer_state.json``).
     Retorna ``(trainer, report_dir)``.
     """
     import json
@@ -323,7 +335,8 @@ def _load_ensemble(cfg: DictConfig):
         state = json.loads(state_file.read_text()) if state_file.exists() else {}
         model_name = str(spec.get("model") or state.get("model_name") or Path(ckpt).parent.name)
         family = get_family(model_name)
-        trainer = load_trainer(family, ckpt, cfg=_cfg_for_model(cfg, model_name))
+        member_cfg = _cfg_for_model(cfg, model_name, spec.get("experiment"))
+        trainer = load_trainer(family, ckpt, cfg=member_cfg)
         weight = spec.get("weight", weights[i] if weights is not None else 1.0)
         members.append(
             EnsembleMember(

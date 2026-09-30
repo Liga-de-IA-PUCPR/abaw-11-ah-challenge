@@ -476,7 +476,7 @@ class RootConfig:
     out: str | None = None
     checkpoint: str | None = None
     # Ensemble (evaluate/submit): lista de membros cujas probas por vídeo são MEDIADAS.
-    # Membro = run dir (str) OU {checkpoint, model?, weight?, parquet_path?,
+    # Membro = run dir (str) OU {checkpoint, model?, experiment?, weight?, parquet_path?,
     # calib_parquet_path?} — modelos diferentes (CA + GNN + face, e até sklearn) convivem.
     # Ex.: ensemble=[outputs/cross_attention/A,outputs/hetero_gnn_contrastive/B].
     # O limiar é recalibrado nas probas médias da val. None = checkpoint único.

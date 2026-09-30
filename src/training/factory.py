@@ -96,8 +96,32 @@ def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
         from src.models.registry import create_model
         from src.training.lightning_trainer import LightningTrainer
 
-        model, _ = create_model(cfg.model.name, cfg.model)
+        model_cfg = _saved_model_config(out_dir, cfg) or cfg.model
+        model, _ = create_model(model_cfg.name, model_cfg)
         log.info("Trainer: LightningTrainer recarregado (import lazy de lightning).")
         return LightningTrainer.load(out_dir, model=model, config=cfg)
 
     raise ValueError(f"Família de trainer desconhecida: '{family}'")
+
+
+def _saved_model_config(out_dir: Any, cfg: Any):
+    """Bloco ``model`` gravado no ``trainer_state.json`` do run (``None`` se ausente/outro modelo).
+
+    Runs treinados a partir desta integração guardam o ``model`` completo do treino
+    (``model_config``). Recriar o modelo a partir dele garante a MESMA arquitetura do
+    checkpoint mesmo sem repetir o preset (``+experiment=...``) na avaliação. Runs antigos
+    (sem o campo) seguem com ``cfg.model`` + restauração de ``model_cfg``/shapes no load.
+    """
+    import json
+    from pathlib import Path
+
+    from omegaconf import OmegaConf
+
+    state_file = Path(out_dir) / "trainer_state.json"
+    if not state_file.exists():
+        return None
+    saved = json.loads(state_file.read_text()).get("model_config")
+    if not saved or str(saved.get("name")) != str(cfg.model.name):
+        return None
+    log.info(f"Modelo recriado a partir do model_config salvo em {state_file}.")
+    return OmegaConf.create(saved)

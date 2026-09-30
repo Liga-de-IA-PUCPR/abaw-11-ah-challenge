@@ -301,8 +301,9 @@ class LightningTrainer(BaseTrainer):
         """Salva o caminho do checkpoint + limiar (o peso fica no ckpt do Lightning).
 
         O ``trainer_state.json`` é autodescritivo: além do limiar e das dims, grava o
-        ``model_name``, a arquitetura (``model_cfg``) e o Parquet de treino — o run dir
-        pode então entrar num ensemble heterogêneo sem config extra.
+        ``model_name``, a arquitetura (``model_cfg``), o bloco ``model`` completo
+        (``model_config``) e o Parquet de treino — o run dir pode então ser avaliado ou
+        entrar num ensemble heterogêneo sem repetir o preset do treino.
         """
         import json
 
@@ -323,6 +324,9 @@ class LightningTrainer(BaseTrainer):
                     "tab_fusion": str(getattr(self.model, "tab_fusion", "late")),
                     "model_name": self._model_name(),
                     "model_cfg": snapshot_model_cfg(self.model),
+                    # bloco `model` COMPLETO do treino (inclui sub-blocos como face/loss):
+                    # load_trainer recria o modelo idêntico mesmo sem o preset na CLI.
+                    "model_config": self._model_config(),
                     "parquet_path": self._parquet_path(),
                 },
                 indent=2,
@@ -420,6 +424,15 @@ class LightningTrainer(BaseTrainer):
             return str(self.config.model.name)
         except Exception:  # noqa: BLE001
             return type(self.model).__name__
+
+    def _model_config(self) -> dict[str, Any] | None:
+        try:
+            from omegaconf import OmegaConf
+
+            model = self.config.model
+            return OmegaConf.to_container(model, resolve=True) if OmegaConf.is_config(model) else dict(model)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _parquet_path(self) -> str | None:
         try:
