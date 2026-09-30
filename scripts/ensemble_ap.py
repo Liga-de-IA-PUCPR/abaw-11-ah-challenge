@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ensemble por média ponderada de AP + re-score honesto do meta-router.
 
-Dois modos (FASE 0 do plano `docs/improvement_plan.md`):
+Dois modos (FASE 0 do plano `references/improvement_plan.md`):
 
 ``ap-weighted`` (default)
     Carrega as ``predictions.csv`` de vários membros (mesmo formato usado

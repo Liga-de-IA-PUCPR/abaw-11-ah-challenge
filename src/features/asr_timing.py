@@ -1,6 +1,6 @@
 """ASR-erased time — 16 features determinísticas dos timestamps do Whisper.
 
-Motivação (README/`docs/improvement_plan.md` Fase 2a; `references/
+Motivação (README/`references/improvement_plan.md` Fase 2a; `references/
 visual_signal_lessons_from_top_teams.md`): o achado mais forte do 1º lugar do BAH
 (IISERB) não veio do rosto, veio do **tempo apagado pelo ASR** — os *gaps* entre
 chunks da transcrição Whisper (silêncio/pausa que o ASR não transcreve). Eles
