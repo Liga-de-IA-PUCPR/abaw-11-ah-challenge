@@ -253,7 +253,11 @@ def resolve_output_dir(
     return Path(output_root) / model_name / ts
 
 
-def resolve_latest_checkpoint(output_root: str | Path, family: str | None = None) -> Path:
+def resolve_latest_checkpoint(
+    output_root: str | Path,
+    family: str | None = None,
+    model_name: str | None = None,
+) -> Path:
     """Localiza o artefato treinado mais recente sob ``output_root``.
 
     Reconhece as duas famílias: ``*/*/model.joblib`` (RF) e
@@ -265,6 +269,7 @@ def resolve_latest_checkpoint(output_root: str | Path, family: str | None = None
     Args:
         output_root: Raiz dos outputs (ex.: "outputs").
         family: ``"sklearn"`` | ``"lightning"`` p/ filtrar; ``None`` = qualquer uma.
+        model_name: Se dado, restringe a ``output_root/{model_name}/...``.
 
     Returns:
         ``Path`` do **diretório do run** mais recente (o que ``load_trainer`` espera como
@@ -274,18 +279,31 @@ def resolve_latest_checkpoint(output_root: str | Path, family: str | None = None
         FileNotFoundError: Se nenhum artefato (da família pedida) existir sob ``output_root``.
     """
     root = Path(output_root)
+    search_root = root
+    if model_name:
+        search_root = root / model_name
     want_rf = family in (None, "sklearn")
     want_neural = family in (None, "lightning")
     # (mtime, run_dir) por artefato reconhecido — run_dir é o passado a load_trainer.
     found: list[tuple[float, Path]] = []
     if want_rf:
-        for f in root.glob("*/*/model.joblib"):  # RF (SklearnTrainer.save)
+        pattern = "*/*/model.joblib" if not model_name else "*/model.joblib"
+        for f in search_root.glob(pattern):
             found.append((f.stat().st_mtime, f.parent))
     if want_neural:
-        for f in root.glob("*/*/*.ckpt"):  # Lightning (ckpt na raiz do run)
-            found.append((f.stat().st_mtime, f.parent))
-        for f in root.glob("*/*/checkpoints/*.ckpt"):  # Lightning (subpasta checkpoints/)
-            found.append((f.stat().st_mtime, f.parent.parent))
+        ckpt_patterns = (
+            ("*/*/*.ckpt", "parent"),
+            ("*/*/checkpoints/*.ckpt", "grandparent"),
+        )
+        if model_name:
+            ckpt_patterns = (
+                ("*/*.ckpt", "parent"),
+                ("*/checkpoints/*.ckpt", "grandparent"),
+            )
+        for pattern, mode in ckpt_patterns:
+            for f in search_root.glob(pattern):
+                run_dir = f.parent.parent if mode == "grandparent" else f.parent
+                found.append((f.stat().st_mtime, run_dir))
     if not found:
         raise FileNotFoundError(
             f"Nenhum checkpoint (family={family or 'qualquer'}: model.joblib | *.ckpt) "
