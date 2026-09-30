@@ -42,8 +42,11 @@ Exemplos::
     python main.py mode=featurize_face +face_embedder=mediapipe
     python main.py +experiment=face_gnn_ts_roi
 
-    # ensemble heterogêneo (5 seeds CA + GNN que lê o próprio Parquet)
-    python main.py mode=evaluate split=test +experiment=ensemble_ca5_gnn
+    # ensemble heterogêneo: seeds CA (cache librosa) + GNN que lê o próprio cache wav2vec2
+    python main.py mode=evaluate split=test +experiment=cross_attention \
+        "ensemble=[outputs/cross_attention/A,outputs/cross_attention/B,\
+    {checkpoint:outputs/hetero_gnn_contrastive/C,parquet_path:data/processed/text_audio_windows_w2v.parquet}]"
+    # (atalho: make ensemble-multimodal GNN_RUN=... FACE_RUN=...)
 
     # MULTIRUN (sweep paralelo via joblib launcher)
     python main.py -m model.lr=1e-3,5e-4 model.num_heads=4,8 data.window.size_s=4,5,6
