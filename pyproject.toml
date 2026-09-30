@@ -1,8 +1,9 @@
 # =============================================================================
 # pyproject.toml — projeto gerenciado por uv (https://docs.astral.sh/uv/)
 #
-# Pipeline AUDIO + TEXTO (sem vídeo) para o BAH AH-Challenge (ABAW11 @ ECCV 2026).
-# NUNCA usamos frames / cropped-aligned-faces.
+# Pipeline AUDIO + TEXTO (+ VÍDEO opcional) para o BAH AH-Challenge (ABAW11 @ ECCV 2026).
+# O caminho padrão (RF / cross_attention) não usa frames; o vídeo (Face Mesh) só entra
+# nos modelos GNN do grupo opcional `vision` (mode=featurize_face).
 #
 # Filosofia de dependências (síntese):
 #   - CORE: tudo o que o caminho `random_forest` precisa → roda 100% em CPU, SEM Lightning.
@@ -15,6 +16,8 @@
 #   brew install ffmpeg                # dependência de SISTEMA (mp4 -> flac)
 #   uv sync                            # ambiente CORE (RF, CPU) — SEM Lightning
 #   uv sync --group neural             # adiciona Lightning p/ o modelo neural (cross_attention)
+#   uv sync --group neural --group gnn # + GNNs heterogêneos (torch-geometric + gnn-modalblocks)
+#   uv sync --group vision             # + Face Mesh (mediapipe/opencv) p/ mode=featurize_face
 #   uv add <pacote>                    # adiciona dependência CORE
 #   uv add --group neural <pacote>     # adiciona dependência ao grupo neural
 #   uv run python main.py ...          # roda dentro do ambiente gerenciado
@@ -53,6 +56,7 @@ dependencies = [
     "praat-parselmouth>=0.4.3",  # Praat via Python: F0/jitter/shimmer/formantes p/ features de hesitação
     # --- Modelagem clássica + métricas do caminho RF (CPU, sem torch) ---
     "scikit-learn>=1.5.0",       # RandomForest + f1_score(macro)/average_precision_score + scaler
+    "catboost>=1.2.10",          # CatBoostClassifier — gradient boosting (import lazy no modelo)
     "numpy>=1.26.0",             # matrizes de features
     "scipy>=1.13.0",             # utilidades numéricas (estatísticas, sinais)
     # --- Serialização / utilidades ---
@@ -67,7 +71,10 @@ dependencies = [
 # Grupos de dependências (uv / PEP 735).
 #   - `neural` : OPCIONAL — só p/ treinar o cross_attention (Lightning).
 #                `uv sync --group neural`. Importado LAZY pelo LightningTrainer.
-#   - `dev`    : lint / type-check / testes / notebooks.
+#   - `gnn`    : OPCIONAL — GNNs heterogêneos do Rodrigo (hetero_gnn*, multimodal_hetero_*,
+#                face_gnn_ts). Exige `neural`. Importado LAZY pelos modelos.
+#   - `vision` : OPCIONAL — Face Mesh (MediaPipe Tasks) p/ `mode=featurize_face`.
+#   - `dev`    : lint / type-check / testes / notebooks / HPO.
 # -----------------------------------------------------------------------------
 [dependency-groups]
 neural = [
@@ -75,12 +82,26 @@ neural = [
     "torchmetrics>=1.4.0",       # Macro-F1 / AP no caminho Lightning (reusa evaluation/metrics.py)
     "accelerate>=1.0.0",         # utilidades de device/dispatch p/ HF + Lightning
 ]
+gnn = [
+    "torch-geometric>=2.5.0",    # HeteroData/Batch + GATConv/HeteroConv
+    "gnn-modalblocks",           # encoders hetero + fusão + perdas contrastivas (fonte git abaixo)
+]
+vision = [
+    "mediapipe>=0.10.14",        # Face Landmarker (478 landmarks x,y,z por janela)
+    "opencv-python-headless>=4.10.0",  # leitura dos frames dos .mp4
+]
 dev = [
     "ruff>=0.6.0",               # lint + format
     "mypy>=1.11.0",              # type checking
     "pytest>=8.3.0",             # testes (fora dos docs de implementação)
     "ipykernel>=6.29.0",         # exploração em notebooks
+    "optuna>=4.0.0",             # HPO (scripts/optuna_gnn_tune.py)
 ]
+
+# gnn-modalblocks (Rodrigo Watanabe, MIT) não está no PyPI: fonte git FIXADA no commit
+# (reprodutível; atualize o `rev` conscientemente).
+[tool.uv.sources]
+gnn-modalblocks = { git = "https://github.com/watasabi/gnn-modalblocks", rev = "f42fd44" }
 
 [project.scripts]
 # CLI entrypoint da FASE 6 (@hydra.main). Substitui o stub src/main.py.
