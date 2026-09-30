@@ -1,4 +1,5 @@
 # @package _global_
+# [integração] cache wav2vec2 da main: data/processed/text_audio_windows_w2v.parquet (make featurize-w2v).
 # Preset competição: multimodal completo + Face Mesh GCN temporal (468 pts)
 defaults:
   - /face_embedder: mediapipe
@@ -13,6 +14,8 @@ text_embedder:
   batch_size: 32
 
 data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_w2v.parquet
   num_workers: 6
   batch_size: 16
 

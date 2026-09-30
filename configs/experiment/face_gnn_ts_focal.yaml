@@ -1,7 +1,26 @@
 # @package _global_
 # GNN4TS + focal loss (classe 0 é o gargalo no modelo face multimodal)
+# [integração] base = face_gnn_ts expandido aqui: um experiment não pode incluir
+# outro via '- /experiment: ...' (Hydra: 'Multiple values for experiment').
 defaults:
-  - /experiment: face_gnn_ts
+  - /face_embedder: mediapipe
+  - override /model: face_gnn_ts
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_w2v.parquet
+  num_workers: 6
+  batch_size: 16
+
+trainer:
+  max_epochs: 2500
+  patience: 100
+  monitor: val_f1_macro
+  mode: max
+  accumulate_grad_batches: 4
 
 experiment_name: abaw-ah-face-gnn4ts-focal
 

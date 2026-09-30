@@ -1,4 +1,5 @@
 # @package _global_
+# [integração] cache wav2vec2 da main: data/processed/text_audio_windows_w2v.parquet (make featurize-w2v).
 # HeteroGAT contrastive no parquet com blocos Luiz (d_tab=74).
 # Pré-requisito: +experiment=featurize_deep mode=featurize (+data.force=true se cache antigo).
 defaults:
@@ -14,6 +15,8 @@ model:
   gat_num_layers: 2
 
 data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_w2v.parquet
   num_workers: 4
   batch_size: 32
   tabular:
