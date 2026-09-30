@@ -162,7 +162,56 @@ def calibrate_threshold(
 
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
+    return _calibrate_arrays(
+        y_true, s, grid, selection, smooth_window, target_pos_rate, f"method='{method}'"
+    )
 
+
+def calibrate_threshold_from_video_scores(
+    video_scores_arr: np.ndarray,
+    video_labels: np.ndarray,
+    metric: str = "macro_f1",
+    grid: np.ndarray | None = None,
+    selection: str = "smooth",
+    smooth_window: float = 0.10,
+    target_pos_rate: float | None = None,
+) -> tuple[float, float]:
+    """Como :func:`calibrate_threshold`, mas sobre scores **já agregados** por vídeo.
+
+    Usado quando há uma etapa entre a agregação e o limiar (ex.: temperature scaling
+    do ``SklearnTrainer`` com ``aggregation.score_calibration=temperature``).
+
+    Args:
+        video_scores_arr: score por vídeo, alinhado a ``video_labels``.
+        video_labels: rótulo 0/1 por vídeo.
+
+    Returns:
+        ``(melhor_limiar, macro_f1_no_limiar)``.
+    """
+    if metric != "macro_f1":
+        raise ValueError(f"Métrica de calibração não suportada: '{metric}'")
+    if grid is None:
+        grid = np.linspace(0.0, 1.0, 101)
+    y_true = np.asarray(video_labels, dtype=np.int64)
+    s = np.asarray(video_scores_arr, dtype=np.float32)
+    if len(s) == 0:
+        log.warning("Sem scores para calibrar; usando limiar 0.5")
+        return 0.5, 0.0
+    return _calibrate_arrays(
+        y_true, s, grid, selection, smooth_window, target_pos_rate, "scores pré-agregados"
+    )
+
+
+def _calibrate_arrays(
+    y_true: np.ndarray,
+    s: np.ndarray,
+    grid: np.ndarray,
+    selection: str,
+    smooth_window: float,
+    target_pos_rate: float | None,
+    label: str,
+) -> tuple[float, float]:
+    """Núcleo da calibração sobre arrays por vídeo (compartilhado pelas duas entradas)."""
     if len(np.unique(y_true)) < 2:
         log.warning(
             "Conjunto de calibração tem UMA ÚNICA classe (%d vídeos) — o limiar resultante "
@@ -181,7 +230,7 @@ def calibrate_threshold(
         best_thr = float(np.quantile(s, 1.0 - p_plus))
         best_score = _f1_at(best_thr)
         log.info(
-            f"Limiar calibrado (method='{method}', selection='base_rate', "
+            f"Limiar calibrado ({label}, selection='base_rate', "
             f"p+={p_plus:.3f}): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
         )
         return best_thr, best_score
@@ -191,7 +240,7 @@ def calibrate_threshold(
     best_thr, best_score = float(grid[best_idx]), float(f1s[best_idx])
 
     log.info(
-        f"Limiar calibrado (method='{method}', selection='{selection}'): "
+        f"Limiar calibrado ({label}, selection='{selection}'): "
         f"thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
     )
     return best_thr, best_score

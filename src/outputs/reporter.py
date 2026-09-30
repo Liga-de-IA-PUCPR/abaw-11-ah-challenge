@@ -511,8 +511,12 @@ def load_video_metadata_for_eval(
 
     ids = {str(v) for v in video_ids}
     parquet_path = Path(cfg.data.paths.parquet_path)
-    raw_root = Path(cfg.data.paths.data_root)
-    ann_path = raw_root / "video_annotation_transcript.yaml"
+    # Anotações (duração/certeza de A/H) são opcionais: sem o YAML (dataset não extraído)
+    # o CSV sai só com os metadados do Parquet (load_annotation_yaml devolve {}).
+    ann_path = Path(
+        cfg.data.paths.get("annotation_yaml")
+        or Path(cfg.data.paths.data_root) / "video_annotation_transcript.yaml"
+    )
     annotations = load_annotation_yaml(ann_path)
 
     df = pl.read_parquet(parquet_path)

@@ -81,7 +81,10 @@ def run_featurize(cfg: DictConfig, *, device: torch.device) -> dict[str, Any]:
     )
 
     # --- 3. FeatureBuilder → Parquet único (README §6.2; carrega os waveforms) --
-    builder.build(windows, out_path=parquet_path)
+    # Lotes opcionais (data.featurize_chunk_size, alinhados por vídeo) p/ limitar RAM/VRAM
+    # com embedders deep; null = lote único (comportamento original).
+    chunk = data.get("featurize_chunk_size")
+    builder.build(windows, out_path=parquet_path, chunk_size=int(chunk) if chunk else None)
     log.info(f"Parquet de features escrito: {parquet_path}.")
 
     return {

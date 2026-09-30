@@ -1,13 +1,16 @@
 """Datasets do BAH a partir do cache Parquet de janelas (README §6.2).
 
 WindowMatrixView      — matriz achatada por janela p/ sklearn (random_forest, CPU, sem torch).
-VideoSequenceDataset  — sequência de janelas por vídeo (T>1) p/ a cross-attention (Lightning).
+VideoSequenceDataset  — sequência de janelas por vídeo (T>1) p/ os modelos Lightning
+                        (cross-attention, GNNs heterogêneos, GNN facial).
 collate_sequences     — padding até T_max + key_padding_mask p/ T variável.
 
 Colunas esperadas no Parquet (1 linha por janela):
     id, window_idx, t0, t1, participant_id, question_type,
     audio_emb (list<f32>), text_emb (list<f32>), tabular (list<f32>),
     label (i8, -1 se desconhecido), video_label (i8, -1 se test)
+Coluna OPCIONAL (``mode=featurize_face``):
+    face_landmarks (list<f32>, 478×3 achatado) → ``face_seq`` (T, 478, 3) no batch
 """
 
 from __future__ import annotations
@@ -87,6 +90,7 @@ class WindowMatrixView:
         text = np.vstack(df["text_emb"].to_numpy()).astype(np.float32)
         tab = np.vstack(df["tabular"].to_numpy()).astype(np.float32)
 
+        self.parquet_path: Path = Path(parquet_path)  # fonte (ensemble: dado por membro)
         self.X: np.ndarray = np.concatenate([audio, text, tab], axis=1)
         self.y: np.ndarray = df["label"].to_numpy().astype(np.int64)
         self.groups: np.ndarray = df["participant_id"].to_numpy()
@@ -128,7 +132,8 @@ class VideoSequenceDataset(Dataset):
     Item (antes do collate):
         {
           "audio_seq": (T, d_a), "text_seq": (T, d_b), "tab_seq": (T, d_tab),
-          "length": int, "label": int (0/1; -1 no test), "video_id": str
+          "length": int, "label": int (0/1; -1 no test), "video_id": str,
+          "face_seq": (T, 478, 3)   # só se o Parquet tiver a coluna face_landmarks
         }
     """
 
@@ -140,14 +145,22 @@ class VideoSequenceDataset(Dataset):
         import torch  # lazy: caminho neural
 
         self._torch = torch
+        self.parquet_path: Path = Path(parquet_path)  # fonte (ensemble: dado por membro)
         df = _read_window_parquet(parquet_path, split_video_ids)
         df = df.sort(["id", "window_idx"])
+        # Vídeo (opcional): landmarks do Face Mesh gravados por mode=featurize_face.
+        self._has_face = "face_landmarks" in df.columns
+        if self._has_face:
+            from src.features.face_mesh import LANDMARK_DIM, NUM_FACE_LANDMARKS
+
+            face_shape = (NUM_FACE_LANDMARKS, LANDMARK_DIM)
 
         # Agrupa janelas por vídeo preservando a ordem temporal.
         self.video_ids: list[str] = []
         self._audio: list[np.ndarray] = []
         self._text: list[np.ndarray] = []
         self._tab: list[np.ndarray] = []
+        self._face: list[np.ndarray] = []
         self._labels: list[int] = []
 
         for vid, g in df.group_by("id", maintain_order=True):
@@ -156,6 +169,9 @@ class VideoSequenceDataset(Dataset):
             self._audio.append(np.vstack(g["audio_emb"].to_numpy()).astype(np.float32))
             self._text.append(np.vstack(g["text_emb"].to_numpy()).astype(np.float32))
             self._tab.append(np.vstack(g["tabular"].to_numpy()).astype(np.float32))
+            if self._has_face:
+                face_flat = np.vstack(g["face_landmarks"].to_numpy()).astype(np.float32)
+                self._face.append(face_flat.reshape(-1, *face_shape))
             self._labels.append(int(g["video_label"][0]))
 
         self.lengths: list[int] = [a.shape[0] for a in self._audio]
@@ -164,6 +180,8 @@ class VideoSequenceDataset(Dataset):
         self.dim_audio: int = int(self._audio[0].shape[1]) if self._audio else 0
         self.dim_text: int = int(self._text[0].shape[1]) if self._text else 0
         self.dim_tab: int = int(self._tab[0].shape[1]) if self._tab else 0
+        self.has_face: bool = self._has_face
+        self.dim_face: tuple[int, int] = face_shape if self._has_face else (0, 0)
         # Acessor público alinhado com WindowMatrixView (FASE_4 depende deste contrato):
         # {video_id: global_ah} (rótulo a nível de vídeo; -1 = test).
         self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels, strict=False))
@@ -178,7 +196,7 @@ class VideoSequenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         torch = self._torch
-        return {
+        item = {
             "audio_seq": torch.tensor(self._audio[idx], dtype=torch.float32),  # (T, d_a)
             "text_seq": torch.tensor(self._text[idx], dtype=torch.float32),  # (T, d_b)
             "tab_seq": torch.tensor(self._tab[idx], dtype=torch.float32),  # (T, d_tab)
@@ -186,6 +204,9 @@ class VideoSequenceDataset(Dataset):
             "label": self._labels[idx],
             "video_id": self.video_ids[idx],
         }
+        if self._has_face:
+            item["face_seq"] = torch.tensor(self._face[idx], dtype=torch.float32)  # (T, 478, 3)
+        return item
 
 
 def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -201,7 +222,8 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
           "audio_seq": (B, T_max, d_a), "text_seq": (B, T_max, d_b),
           "tab_seq": (B, T_max, d_tab), "lengths": (B,),
           "key_padding_mask": (B, T_max) bool, "label": (B, 1) float,
-          "video_id": list[str]
+          "video_id": list[str],
+          "face_seq": (B, T_max, 478, 3)   # só se os itens tiverem face_seq
         }
     """
     import torch
@@ -221,7 +243,7 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
         1
     )  # (B, 1) p/ BCEWithLogits
 
-    return {
+    out: dict[str, Any] = {
         "audio_seq": audio,
         "text_seq": text,
         "tab_seq": tab,
@@ -230,6 +252,9 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "label": labels,
         "video_id": [b["video_id"] for b in batch],
     }
+    if "face_seq" in batch[0]:
+        out["face_seq"] = pad_sequence([b["face_seq"] for b in batch], batch_first=True)
+    return out
 
 
 # ==============================================================================

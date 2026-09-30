@@ -8,4 +8,5 @@ calibration: base_rate
 smooth_window: 0.10                    # largura da média móvel (unidades de limiar) p/ 'smooth'
 target_pos_rate: null                  # base_rate: prevalência-alvo (null = a observada na val)
 recalibrate: false                     # evaluate/submit: recalibra na val (ignora limiar salvo)
+score_calibration: none                # sklearn: none | temperature (NLL na val, antes do limiar)
 metric: macro_f1

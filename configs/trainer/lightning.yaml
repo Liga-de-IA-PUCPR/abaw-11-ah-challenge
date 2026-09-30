@@ -10,3 +10,7 @@ patience: 20
 # sub-treinada. Alternativas: val_f1_macro (mode=max) | val_loss (mode=min).
 monitor: val_ap
 mode: max
+# Opcionais (usados pelos presets dos GNNs; defaults = comportamento original):
+accumulate_grad_batches: 1             # >1: batch efetivo = data.batch_size × N (pouca VRAM)
+# precision: 16-mixed                  # precisão mista (ex.: fine-tune de texto em CUDA)
+# swa: true                            # Stochastic Weight Averaging (swa_lrs, swa_epoch_start)

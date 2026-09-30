@@ -2,10 +2,18 @@
 
 Dois mecanismos de registro:
   - ``@register_model(name, family)``  : registro EAGER de uma classe ``BaseModel``
-    (usado pelo ``random_forest``, que é leve e roda em CPU).
+    (usado pelo ``random_forest`` e pelo ``catboost``, leves e em CPU).
   - ``register_lazy(name, family, loader)`` : registro LAZY — guarda apenas uma
     função ``loader()`` que importa+devolve a classe na primeira chamada (usado
-    pela ``cross_attention``, para não importar torch/lightning no caminho sklearn).
+    pela ``cross_attention`` e pelos GNNs, para não importar torch/lightning/
+    torch-geometric no caminho sklearn).
+
+Modelos registrados (``configs/model/<nome>.yaml``):
+  - sklearn   : ``random_forest``, ``catboost``
+  - lightning : ``cross_attention`` (Luiz) · ``hetero_gnn``, ``hetero_gnn_contrastive``,
+    ``gnn_baseline``, ``multimodal_hetero_full`` (áudio+texto+tabular em grafo) ·
+    ``multimodal_hetero_face``, ``face_gnn_ts`` (+ vídeo: Face Mesh) — os GNNs exigem o
+    grupo opcional ``gnn`` (``uv sync --group neural --group gnn``).
 
 ``create_model(name, cfg)`` devolve **(objeto, family)**. A ``family`` ("sklearn"|
 "lightning") é consumida por ``src/training/factory.py`` para escolher o trainer.
@@ -123,3 +131,31 @@ def _load_cross_attention() -> type:
 
 
 register_lazy("cross_attention", family="lightning", loader=_load_cross_attention)
+
+
+# ---------------------------------------------------------------------------
+# Registro LAZY dos GNNs (Rodrigo) — importam torch-geometric/gnn-modalblocks só aqui
+# ---------------------------------------------------------------------------
+def _lazy(module: str, cls_name: str) -> Callable[[], type]:
+    """Loader lazy genérico: importa ``module`` e devolve ``cls_name`` na criação."""
+
+    def _loader() -> type:
+        import importlib
+
+        return getattr(importlib.import_module(module), cls_name)
+
+    return _loader
+
+
+_LAZY_LIGHTNING = {
+    # áudio + texto + tabular (grafo heterogêneo por vídeo)
+    "hetero_gnn": ("src.models.hetero_gnn", "HeteroGnnFusion"),
+    "hetero_gnn_contrastive": ("src.models.hetero_gnn_contrastive", "HeteroGnnContrastiveFusion"),
+    "gnn_baseline": ("src.models.gnn_baseline", "GnnBaselineFusion"),
+    "multimodal_hetero_full": ("src.models.multimodal_hetero_full", "MultimodalHeteroFullFusion"),
+    # + vídeo (Face Mesh 478 landmarks → face_seq; exige mode=featurize_face)
+    "multimodal_hetero_face": ("src.models.multimodal_hetero_face", "MultimodalHeteroFaceFusion"),
+    "face_gnn_ts": ("src.models.face_gnn_ts_model", "FaceGnnTsFusion"),
+}
+for _name, (_module, _cls) in _LAZY_LIGHTNING.items():
+    register_lazy(_name, family="lightning", loader=_lazy(_module, _cls))

@@ -2,8 +2,12 @@
 
 Contrato ``BaseTrainer`` (README §6.4): ``fit`` → ``evaluate`` → ``predict`` →
 ``save`` / ``load``. **Não importa torch**: matriz de janelas (FASE 3) -> modelo
-sklearn -> probas de janela -> agrega janela→vídeo -> calibração opcional ->
+sklearn (RandomForest | CatBoost) -> probas de janela -> agrega janela→vídeo ->
+calibração opcional do score (``aggregation.score_calibration=temperature``) ->
 limiar calibrado na val -> métricas sklearn a nível de vídeo.
+
+Os splits chegam como ``FeatureSplit`` (visão do cache Parquet §6.2), passados aos
+métodos (o ``__init__`` segue ``BaseTrainer(model, cfg)``).
 """
 
 from __future__ import annotations
@@ -44,7 +48,15 @@ class FeatureSplit:
 
 
 class SklearnTrainer(BaseTrainer):
-    """Trainer para modelos de janela sklearn + agregação janela→vídeo (CPU)."""
+    """Trainer para modelos de janela sklearn + agregação janela→vídeo (CPU).
+
+    Attributes:
+        model: ``BaseModel`` de janela (ex.: ``RandomForestModel``, ``CatBoostModel``).
+        config: config com grupos ``trainer`` (sklearn), ``aggregation``, ``metrics``.
+        method: método de agregação (``cfg.aggregation.method``).
+        threshold_: limiar calibrado por ``fit`` na validação.
+        _calibrator: calibrador de score serializado (``None`` = identidade).
+    """
 
     family: str = "sklearn"
 
@@ -74,6 +86,15 @@ class SklearnTrainer(BaseTrainer):
     def fit(self, train_data: FeatureSplit, val_data: FeatureSplit) -> dict[str, Any]:
         if train_data.y is None:
             raise ValueError("Split de treino sem rótulos (y is None).")
+        # Guarda: janelas de 'test' têm rótulo -1 (sem label de janela). Se 'test' entrar
+        # em data.train_splits, o RF treinaria numa classe espúria -1 sem erro. Falha claro.
+        y_arr = np.asarray(train_data.y)
+        if (y_arr < 0).any():
+            raise ValueError(
+                f"{int((y_arr < 0).sum())} janelas de treino têm rótulo -1 (desconhecido). "
+                "Provável causa: 'test' está em data.train_splits — o split de test não tem "
+                "rótulo de janela. Use 'test' apenas como data.calib_split, nunca em train_splits."
+            )
 
         log.info("=== Treino do modelo de janela (sklearn, CPU) ===")
         self.model.fit(train_data.X, train_data.y, sample_weight=None)
@@ -141,6 +162,16 @@ class SklearnTrainer(BaseTrainer):
         proba = self.model.predict_proba(data.X)
         scores = self._calibrated_scores_dict(video_scores(proba, data.video_ids, self.method))
         return {vid: int(score >= self.threshold_) for vid, score in scores.items()}
+
+    def predict_scores(self, data: FeatureSplit) -> dict[str, float]:
+        """Score contínuo por vídeo (agregado + calibrado): ``{video_id: p1}``.
+
+        Mesmo contrato do ``LightningTrainer.predict_scores``: habilita a submissão com
+        probabilidades e a entrada deste modelo como membro de ensemble heterogêneo.
+        """
+        proba = self.model.predict_proba(data.X)
+        raw = video_scores(proba, data.video_ids, self.method)
+        return {str(v): float(p) for v, p in self._calibrated_scores_dict(raw).items()}
 
     def video_outputs(self, data: FeatureSplit) -> dict[str, np.ndarray]:
         if self.threshold_ is None:
