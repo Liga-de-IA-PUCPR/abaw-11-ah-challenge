@@ -34,9 +34,8 @@ def _build_fusion_module(
     use_tabular: bool = True,
 ):
     import torch
-    from torch import nn
-
     from gnn_modalblocks import ENCODERS, MultimodalBlock
+    from torch import nn
 
     class _GnnBaselineModule(nn.Module):
         """Fusão multimodal por janela + GCN temporal + readout mascarado."""
@@ -60,9 +59,7 @@ def _build_fusion_module(
             self.dropout = nn.Dropout(dropout)
             tab_dim = min(common_dim // 4, max(dim_tab, 1)) if use_tabular else 0
             self.use_tabular = use_tabular and dim_tab > 0
-            self.tab_proj = (
-                nn.Linear(dim_tab, tab_dim) if self.use_tabular else None
-            )
+            self.tab_proj = nn.Linear(dim_tab, tab_dim) if self.use_tabular else None
             clf_in = gcn_out_dim + (tab_dim if self.use_tabular else 0)
             self.classifier = nn.Sequential(
                 nn.Linear(clf_in, common_dim),
@@ -173,9 +170,7 @@ class GnnBaselineFusion:
         state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
         module = self.build_module()
         prefix = "model."
-        fusion_state = {
-            k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)
-        }
+        fusion_state = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
         module.load_state_dict(fusion_state or state_dict)
         module.eval()
         return module

@@ -234,9 +234,7 @@ def _build_face_gcn_ts(
                 for w in range(t):
                     coords, feat = self._window_features(face_seq[b], w)
                     if coords.abs().sum() < 1e-8:
-                        node_seq.append(
-                            face_seq.new_zeros(n_landmarks, self.spatial.spatial_out)
-                        )
+                        node_seq.append(face_seq.new_zeros(n_landmarks, self.spatial.spatial_out))
                     else:
                         node_seq.append(self.spatial(coords, feat))
                 stacked = torch.stack(node_seq, dim=1)

@@ -180,11 +180,7 @@ def build_face_lit_module(
             else:
                 loss = bce_with_logits(logit, label, self._pos_weight)
 
-            if (
-                self._use_contrastive
-                and self.supcon_fn is not None
-                and self._lambda_supcon > 0
-            ):
+            if self._use_contrastive and self.supcon_fn is not None and self._lambda_supcon > 0:
                 supcon = self.supcon_fn(video_emb, label.squeeze(-1).long())
                 loss = loss + self._lambda_supcon * supcon
                 if log_aux:

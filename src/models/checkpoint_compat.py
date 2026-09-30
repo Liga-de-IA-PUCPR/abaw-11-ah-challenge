@@ -80,9 +80,10 @@ def infer_model_cfg_from_state_dict(state_dict: dict[str, Any]) -> dict[str, Any
             in_dim = int(refine_w.shape[1])
             out_dim = int(refine_w.shape[0])
             cfg["out_channels"] = out_dim
-            if state_dict.get("model.tab_encoder.proj_tab.weight") is not None:
-                cfg["use_tab_enhanced"] = True
-            elif in_dim == out_dim * 2:
+            if (
+                state_dict.get("model.tab_encoder.proj_tab.weight") is not None
+                or in_dim == out_dim * 2
+            ):
                 cfg["use_tab_enhanced"] = True
             else:
                 cfg["use_tab_enhanced"] = False
@@ -106,7 +107,9 @@ def infer_model_cfg_from_state_dict(state_dict: dict[str, Any]) -> dict[str, Any
             cfg["gcn_out_dim"] = int(gcn_w.shape[0])
         clf_w = state_dict.get("model.classifier.0.weight")
         if clf_w is not None:
-            cfg["gcn_out_dim"] = int(clf_w.shape[1]) if "gcn_out_dim" not in cfg else cfg["gcn_out_dim"]
+            cfg["gcn_out_dim"] = (
+                int(clf_w.shape[1]) if "gcn_out_dim" not in cfg else cfg["gcn_out_dim"]
+            )
         log.info(f"Arquitetura inferida do ckpt (baseline): {cfg}")
         return cfg
 

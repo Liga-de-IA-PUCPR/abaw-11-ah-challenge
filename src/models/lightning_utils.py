@@ -137,9 +137,7 @@ def configure_adamw_scheduler(
             warmup = optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=0.1, total_iters=warmup_epochs
             )
-            cosine = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=t_max, eta_min=min_lr
-            )
+            cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=min_lr)
             sched = optim.lr_scheduler.SequentialLR(
                 optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
             )
@@ -152,9 +150,7 @@ def configure_adamw_scheduler(
             "lr_scheduler": {"scheduler": sched, "interval": "epoch"},
         }
 
-    sched = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode=mode, factor=0.5, patience=10
-    )
+    sched = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode=mode, factor=0.5, patience=10)
     return {
         "optimizer": optimizer,
         "lr_scheduler": {"scheduler": sched, "monitor": monitor},

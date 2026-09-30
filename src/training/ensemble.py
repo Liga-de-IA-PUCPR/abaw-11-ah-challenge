@@ -98,7 +98,10 @@ class EnsembleTrainer(LightningTrainer):
             ids_sorted, proba_sorted = ids[order], proba[order].astype(np.float64)
             w = float(m.weight) if self._weighted else 1.0
             if ref_ids is None:
-                ref_ids, acc = ids_sorted, w * proba_sorted if self._weighted else proba_sorted.copy()
+                ref_ids, acc = (
+                    ids_sorted,
+                    w * proba_sorted if self._weighted else proba_sorted.copy(),
+                )
             else:
                 if not np.array_equal(ref_ids, ids_sorted):
                     raise ValueError(

@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
-    from torch import nn
 
 
 def build_tab_support_encoder(

@@ -13,12 +13,12 @@ if TYPE_CHECKING:
 log = get_logger("models.hetero_gae_pretrain")
 
 
-def _build_gae_module(dim_a: int, dim_b: int, dim_tab: int, hidden_channels: int, out_channels: int):
-    import torch
+def _build_gae_module(
+    dim_a: int, dim_b: int, dim_tab: int, hidden_channels: int, out_channels: int
+):
+    from gnn_modalblocks import ENCODERS
     from torch import nn
     from torch_geometric.data import Batch
-
-    from gnn_modalblocks import ENCODERS
 
     in_channels = {
         "audio": dim_a,
@@ -134,8 +134,6 @@ def _build_gae_lit_module(gae, lr: float, weight_decay: float):
             self.log("val_recon_loss", loss, on_epoch=True, prog_bar=True)
 
         def configure_optimizers(self):
-            return optim.AdamW(
-                self.parameters(), lr=self._lr, weight_decay=self._weight_decay
-            )
+            return optim.AdamW(self.parameters(), lr=self._lr, weight_decay=self._weight_decay)
 
     return LitHeteroGAE()

@@ -149,7 +149,9 @@ class LightningTrainer(BaseTrainer):
         accumulate = int(tcfg.get("accumulate_grad_batches", 1) or 1)
         if accumulate > 1:
             extra["accumulate_grad_batches"] = accumulate
-            log.info(f"Gradient accumulation: {accumulate} (batch efetivo = batch_size × {accumulate})")
+            log.info(
+                f"Gradient accumulation: {accumulate} (batch efetivo = batch_size × {accumulate})"
+            )
         for key in ("precision", "log_every_n_steps"):
             if tcfg.get(key) is not None:
                 extra[key] = tcfg[key]
@@ -430,7 +432,11 @@ class LightningTrainer(BaseTrainer):
             from omegaconf import OmegaConf
 
             model = self.config.model
-            return OmegaConf.to_container(model, resolve=True) if OmegaConf.is_config(model) else dict(model)
+            return (
+                OmegaConf.to_container(model, resolve=True)
+                if OmegaConf.is_config(model)
+                else dict(model)
+            )
         except Exception:  # noqa: BLE001
             return None
 

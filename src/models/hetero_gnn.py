@@ -42,7 +42,6 @@ def _build_gnn_module(
     from torch import nn
     from torch_geometric.data import Batch
 
-
     from src.models.hetero_gat_edge import (
         HeteroGATEdgeAttr,
         build_ca_edge_scorer,
@@ -205,9 +204,7 @@ def _build_gnn_module(
             lengths: torch.Tensor,
             key_padding_mask: torch.Tensor | None = None,
         ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-            video_emb = self._video_embedding(
-                feat_a, feat_b, tab_seq, lengths, key_padding_mask
-            )
+            video_emb = self._video_embedding(feat_a, feat_b, tab_seq, lengths, key_padding_mask)
             logit = self.refine(self.dropout(video_emb))
             if self._return_embedding:
                 return logit, video_emb
@@ -314,9 +311,7 @@ class HeteroGnnFusion:
         state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
         module = self.build_module()
         prefix = "model."
-        fusion_state = {
-            k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)
-        }
+        fusion_state = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
         module.load_state_dict(fusion_state or state_dict)
         module.eval()
         return module

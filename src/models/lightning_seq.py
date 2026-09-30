@@ -79,8 +79,6 @@ def build_sequence_lit_module(
             return {"video_ids": batch["video_id"], "proba": proba.squeeze(-1)}
 
         def configure_optimizers(self):
-            return configure_adamw_scheduler(
-                self.parameters(), self._lr, self._weight_decay
-            )
+            return configure_adamw_scheduler(self.parameters(), self._lr, self._weight_decay)
 
     return LitSequenceModel()

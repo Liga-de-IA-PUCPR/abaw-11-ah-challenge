@@ -163,13 +163,20 @@ def calibrate_threshold(
     y_true = np.array([val_video_labels[v] for v in ids], dtype=np.int64)
     s = np.array([scores[v] for v in ids], dtype=np.float32)
     return _calibrate_arrays(
-        y_true, s, grid, selection, smooth_window, target_pos_rate, f"method='{method}'"
+        y_true,
+        s,
+        grid=grid,
+        selection=selection,
+        smooth_window=smooth_window,
+        target_pos_rate=target_pos_rate,
+        label=f"method='{method}'",
     )
 
 
 def calibrate_threshold_from_video_scores(
     video_scores_arr: np.ndarray,
     video_labels: np.ndarray,
+    *,
     metric: str = "macro_f1",
     grid: np.ndarray | None = None,
     selection: str = "smooth",
@@ -198,13 +205,20 @@ def calibrate_threshold_from_video_scores(
         log.warning("Sem scores para calibrar; usando limiar 0.5")
         return 0.5, 0.0
     return _calibrate_arrays(
-        y_true, s, grid, selection, smooth_window, target_pos_rate, "scores pré-agregados"
+        y_true,
+        s,
+        grid=grid,
+        selection=selection,
+        smooth_window=smooth_window,
+        target_pos_rate=target_pos_rate,
+        label="scores pré-agregados",
     )
 
 
 def _calibrate_arrays(
     y_true: np.ndarray,
     s: np.ndarray,
+    *,
     grid: np.ndarray,
     selection: str,
     smooth_window: float,

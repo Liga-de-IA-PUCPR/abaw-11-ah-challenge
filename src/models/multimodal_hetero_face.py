@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 from src.logger import get_logger
 from src.models.multimodal_hetero_full import (
     MultimodalHeteroFullFusion,
-    build_full_lit_module,
     _build_full_module,
+    build_full_lit_module,
 )
 
 if TYPE_CHECKING:

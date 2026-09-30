@@ -33,10 +33,9 @@ def _build_full_module(
     lstm_num_layers: int = 2,
 ):
     import torch
+    from gnn_modalblocks import ENCODERS, MultimodalBlock
     from torch import nn
     from torch_geometric.data import Batch
-
-    from gnn_modalblocks import ENCODERS, MultimodalBlock
 
     from src.models.hetero_gat_edge import build_hetero_gat
 
@@ -307,9 +306,7 @@ class MultimodalHeteroFullFusion:
         state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
         module = self.build_module()
         prefix = "model."
-        fusion_state = {
-            k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)
-        }
+        fusion_state = {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}
         module.load_state_dict(fusion_state or state_dict)
         module.eval()
         return module
@@ -407,22 +404,14 @@ def build_full_lit_module(
                 if log_aux:
                     self.log("train_supcon" if self.training else "val_supcon", supcon)
 
-            if (
-                self._lambda_triplet > 0
-                and self.triplet_fn is not None
-                and self.miner is not None
-            ):
+            if self._lambda_triplet > 0 and self.triplet_fn is not None and self.miner is not None:
                 a, p, n = self.miner(video_emb, label.squeeze(-1).long())
                 trip = self.triplet_fn(a, p, n)
                 extra = extra + self._lambda_triplet * trip
                 if log_aux:
                     self.log("train_triplet" if self.training else "val_triplet", trip)
 
-            if (
-                self._lambda_ntxent > 0
-                and self.ntxent_fn is not None
-                and align_a.size(0) >= 2
-            ):
+            if self._lambda_ntxent > 0 and self.ntxent_fn is not None and align_a.size(0) >= 2:
                 ntx = self.ntxent_fn(align_a, align_b)
                 extra = extra + self._lambda_ntxent * ntx
                 if log_aux:
@@ -443,9 +432,7 @@ def build_full_lit_module(
                 )
             else:
                 loss = bce_with_logits(logit, label, self._pos_weight)
-            loss = loss + self._contrastive_losses(
-                video_emb, align_a, align_b, label, log_aux
-            )
+            loss = loss + self._contrastive_losses(video_emb, align_a, align_b, label, log_aux)
             proba = torch.sigmoid(logit)
             return loss, proba, label.int()
 

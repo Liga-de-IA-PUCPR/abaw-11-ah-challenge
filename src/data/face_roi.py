@@ -96,9 +96,7 @@ _RIGHT_BROW = (276, 282, 283, 285, 293, 295, 296, 300, 334, 336)
 # Face Landmarker Tasks: iris / pupil refinements (468–477).
 _IRIS = tuple(range(468, 478))
 
-_AH_INDICES = tuple(
-    sorted(set(_LIPS + _LEFT_EYE + _RIGHT_EYE + _LEFT_BROW + _RIGHT_BROW + _IRIS))
-)
+_AH_INDICES = tuple(sorted(set(_LIPS + _LEFT_EYE + _RIGHT_EYE + _LEFT_BROW + _RIGHT_BROW + _IRIS)))
 
 ROI_INDICES: dict[str, tuple[int, ...] | None] = {
     "full": None,

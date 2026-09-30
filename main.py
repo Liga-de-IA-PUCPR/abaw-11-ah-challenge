@@ -557,7 +557,10 @@ def _run_featurize_face(cfg: DictConfig) -> int:
 
     summary = run_featurize_face(cfg)
     if summary.get("cached"):
-        log.info(f"Featurize face pulado (cache): {summary['parquet_path']} (data.force_face=true).")
+        log.info(
+            f"Featurize face pulado (cache): {summary['parquet_path']} "
+            "(use data.force_face=true p/ recomputar)."
+        )
     else:
         log.info(
             f"Featurize face concluído: {summary.get('n_windows', '?')} janelas → "

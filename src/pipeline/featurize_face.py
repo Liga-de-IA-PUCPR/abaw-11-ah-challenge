@@ -28,16 +28,11 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     force = bool(data.get("force_face", False))
     parquet_path = Path(data.paths.parquet_path)
     if not parquet_path.exists():
-        raise FileNotFoundError(
-            f"Parquet ausente: {parquet_path}. Rode 'mode=featurize' antes."
-        )
+        raise FileNotFoundError(f"Parquet ausente: {parquet_path}. Rode 'mode=featurize' antes.")
 
     df = pl.read_parquet(parquet_path)
     if "face_landmarks" in df.columns and not force:
-        log.info(
-            f"Coluna face_landmarks já presente em {parquet_path} "
-            "(use data.force_face=true)."
-        )
+        log.info(f"Coluna face_landmarks já presente em {parquet_path} (use data.force_face=true).")
         return {"parquet_path": str(parquet_path), "cached": True}
 
     interim_dir = Path(data.paths.interim_dir)
@@ -62,7 +57,7 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     try:
         from tqdm import tqdm
 
-        for video_id, batch in tqdm(
+        for _video_id, batch in tqdm(
             by_video.items(), desc="face_mesh", unit="video", total=len(by_video)
         ):
             lm = extractor.extract(batch, video_root)
@@ -83,9 +78,7 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     merged = df.join(face_df, on=["id", "t0", "t1"], how="left")
     if merged.filter(pl.col("face_landmarks").is_null()).height:
         n_miss = merged.filter(pl.col("face_landmarks").is_null()).height
-        log.warning(
-            f"{n_miss} janelas sem face_landmarks após join — preenchendo com zeros."
-        )
+        log.warning(f"{n_miss} janelas sem face_landmarks após join — preenchendo com zeros.")
         merged = merged.with_columns(
             pl.when(pl.col("face_landmarks").is_null())
             .then(pl.lit([0.0] * extractor.dim))

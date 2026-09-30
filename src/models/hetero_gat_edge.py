@@ -6,14 +6,13 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-from torch_geometric.data import HeteroData
-from torch_geometric.nn import GATConv, HeteroConv
-
 from gnn_modalblocks.architectures.hetero_utils import (
     add_reverse_edge_types,
     augment_edge_index_dict,
 )
+from torch import Tensor, nn
+from torch_geometric.data import HeteroData
+from torch_geometric.nn import GATConv, HeteroConv
 
 
 def _make_hetero_conv(
