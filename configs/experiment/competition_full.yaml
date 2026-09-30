@@ -1,0 +1,19 @@
+# @package _global_
+# Pipeline completa competição: featurize deep → CatBoost + GNN + ensemble híbrido.
+defaults:
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+
+aggregation:
+  score_calibration: none
+  calibration: smooth   # ensemble GNN; use base_rate p/ CatBoost isolado
+
+experiment_name: abaw-ah-competition
+
+text_embedder:
+  batch_size: 16
+
+data:
+  num_workers: 4
+  batch_size: 32
+  featurize_chunk_size: 256

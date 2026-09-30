@@ -1,0 +1,14 @@
+# @package _global_
+# GNN4TS + focal loss (classe 0 é o gargalo no modelo face multimodal)
+defaults:
+  - /experiment: face_gnn_ts
+
+experiment_name: abaw-ah-face-gnn4ts-focal
+
+model:
+  lr: 5e-4
+  dropout: 0.15
+  loss:
+    type: focal
+    gamma: 2.0
+    alpha: 0.25

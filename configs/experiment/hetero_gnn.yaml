@@ -1,0 +1,12 @@
+# @package _global_
+# Preset: GNN heterogêneo (gnn-modalblocks) + wav2vec2 + RoBERTa-emotion
+defaults:
+  - override /model: gnn_baseline
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-hetero-gnn
+
+text_embedder:
+  batch_size: 8

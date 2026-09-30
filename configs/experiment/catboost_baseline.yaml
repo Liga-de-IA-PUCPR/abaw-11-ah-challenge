@@ -1,0 +1,10 @@
+# @package _global_
+# configs/experiment/catboost_baseline.yaml — CatBoost + sklearn (CPU).
+defaults:
+  - override /model: catboost
+  - override /audio_embedder: librosa
+  - override /trainer: sklearn
+
+aggregation:
+  score_calibration: none
+  calibration: base_rate

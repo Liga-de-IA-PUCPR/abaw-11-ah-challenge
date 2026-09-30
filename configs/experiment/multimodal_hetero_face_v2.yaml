@@ -1,0 +1,37 @@
+# @package _global_
+# Multimodal hetero + Face Mesh landmarks (d_tab=74) — preset Optuna / retreino.
+defaults:
+  - override /model: multimodal_hetero_face
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: multimodal-hetero-face-v2
+
+model:
+  dim_tab: 74
+  gat_num_layers: 2
+  face:
+    enabled: true
+    temporal_mode: gnn4ts
+    use_velocity: false
+    top_k: 8
+    spatial_out: 128
+    temporal_out: 128
+    landmark_stride: 1
+
+aggregation:
+  calibration: smooth
+
+text_embedder:
+  batch_size: 16
+
+data:
+  num_workers: 4
+  batch_size: 8
+
+trainer:
+  max_epochs: 500
+  patience: 30
+  monitor: val_f1_macro
+  mode: max

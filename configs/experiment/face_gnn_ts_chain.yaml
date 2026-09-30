@@ -1,0 +1,11 @@
+# @package _global_
+# Ablação: mesmo modelo isolado, temporal chain (baseline anterior)
+defaults:
+  - /experiment: face_gnn_ts
+
+experiment_name: abaw-ah-face-chain
+
+model:
+  face:
+    temporal_mode: chain
+    use_velocity: false

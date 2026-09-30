@@ -42,9 +42,12 @@ def _build_gnn_module(
     from torch import nn
     from torch_geometric.data import Batch
 
-    from gnn_modalblocks import ENCODERS
 
-    from src.models.hetero_gat_edge import HeteroGATEdgeAttr, build_ca_edge_scorer
+    from src.models.hetero_gat_edge import (
+        HeteroGATEdgeAttr,
+        build_ca_edge_scorer,
+        build_hetero_gat,
+    )
     from src.models.tab_fusion import build_tab_support_encoder
 
     gat_dim_a, gat_dim_b = dim_a, dim_b
@@ -73,8 +76,7 @@ def _build_gnn_module(
             edge_dim=1,
         )
     else:
-        gat = ENCODERS.build(
-            "hetero_gat",
+        gat = build_hetero_gat(
             metadata=BAH_GRAPH_METADATA,
             in_channels_dict=in_channels,
             hidden_channels=hidden_channels,

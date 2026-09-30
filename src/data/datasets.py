@@ -142,9 +142,8 @@ class VideoSequenceDataset(Dataset):
         parquet_path: str | Path,
         split_video_ids: set[str] | None = None,
     ):
-        import torch  # lazy: caminho neural
+        import torch  # noqa: F401 — lazy: falha cedo se o grupo `neural` não estiver instalado
 
-        self._torch = torch
         self.parquet_path: Path = Path(parquet_path)  # fonte (ensemble: dado por membro)
         df = _read_window_parquet(parquet_path, split_video_ids)
         df = df.sort(["id", "window_idx"])
@@ -195,7 +194,10 @@ class VideoSequenceDataset(Dataset):
         return len(self.video_ids)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        torch = self._torch
+        # Import local (não um atributo): o dataset precisa ser picklável p/ DataLoader com
+        # num_workers>0 no macOS/Windows (start method "spawn" serializa o dataset).
+        import torch
+
         item = {
             "audio_seq": torch.tensor(self._audio[idx], dtype=torch.float32),  # (T, d_a)
             "text_seq": torch.tensor(self._text[idx], dtype=torch.float32),  # (T, d_b)

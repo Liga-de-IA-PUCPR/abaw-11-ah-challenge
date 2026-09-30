@@ -1,0 +1,36 @@
+# @package _global_
+# Preset leve: menos RAM/CPU — subsample landmarks, cap janelas, batch pequeno
+defaults:
+  - /face_embedder: mediapipe
+  - override /model: face_gnn_ts
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-face-gnn4ts-light
+
+data:
+  batch_size: 4
+  num_workers: 0
+
+trainer:
+  max_epochs: 500
+  patience: 40
+  monitor: val_f1_macro
+  mode: max
+  accumulate_grad_batches: 2
+  log_every_n_steps: 10
+
+model:
+  lr: 5e-4
+  dropout: 0.15
+  face:
+    temporal_mode: gnn4ts
+    spatial_hidden: 32
+    spatial_out: 32
+    temporal_hidden: 32
+    temporal_out: 64
+    top_k: 4
+    use_velocity: false
+    landmark_stride: 2
+    max_windows: 24

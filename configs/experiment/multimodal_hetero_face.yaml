@@ -1,0 +1,24 @@
+# @package _global_
+# Preset competição: multimodal completo + Face Mesh GCN temporal (468 pts)
+defaults:
+  - /face_embedder: mediapipe
+  - override /model: multimodal_hetero_face
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-multimodal-face
+
+text_embedder:
+  batch_size: 32
+
+data:
+  num_workers: 6
+  batch_size: 16
+
+trainer:
+  max_epochs: 2500
+  patience: 100
+  monitor: val_f1_macro
+  mode: max
+  accumulate_grad_batches: 4              # 16 × 4 = batch efetivo 64 (menos VRAM/RAM)

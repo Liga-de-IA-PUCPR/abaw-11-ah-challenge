@@ -38,6 +38,8 @@ def _build_full_module(
 
     from gnn_modalblocks import ENCODERS, MultimodalBlock
 
+    from src.models.hetero_gat_edge import build_hetero_gat
+
     in_channels = {
         "audio": dim_a,
         "text": dim_b,
@@ -45,8 +47,7 @@ def _build_full_module(
         "video": max(dim_tab, 1),
     }
 
-    gat = ENCODERS.build(
-        "hetero_gat",
+    gat = build_hetero_gat(
         metadata=BAH_FULL_GRAPH_METADATA,
         in_channels_dict=in_channels,
         hidden_channels=hidden_channels,

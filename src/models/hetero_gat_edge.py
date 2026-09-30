@@ -146,6 +146,27 @@ class HeteroGATEdgeAttr(nn.Module):
         return scores, z_dict
 
 
+def build_hetero_gat(**kwargs: Any) -> nn.Module:
+    """HeteroGAT com ``num_layers`` no layout ``convs.<i>`` (o dos checkpoints do Rodrigo).
+
+    Os checkpoints foram treinados com uma versão local do ``gnn-modalblocks`` cujo
+    ``HeteroGAT`` aceita ``num_layers`` e guarda as camadas em ``convs`` (ModuleList). A
+    versão pública fixada no ``pyproject`` (``f42fd44``) ainda tem 2 camadas fixas
+    (``conv1``/``conv2``) e não aceita ``num_layers``. Se a versão instalada aceitar,
+    usa a do pacote; senão usa :class:`HeteroGATEdgeAttr` sem ``edge_attr`` — mesma rede
+    (projeções → GATConv×N com ELU entre camadas → classificador) e mesmas chaves.
+    """
+    import inspect
+
+    from gnn_modalblocks.architectures.hetero_gat import build_hetero_gat as _upstream
+
+    if "num_layers" in inspect.signature(_upstream).parameters:
+        from gnn_modalblocks import ENCODERS
+
+        return ENCODERS.build("hetero_gat", **kwargs)
+    return HeteroGATEdgeAttr(**kwargs, edge_dim=None)
+
+
 def build_ca_edge_scorer(
     dim_a: int,
     dim_b: int,
