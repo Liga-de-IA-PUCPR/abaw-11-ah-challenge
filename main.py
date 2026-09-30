@@ -386,8 +386,11 @@ def _resolve_trainer(cfg: DictConfig, family: str):
     if cfg.get("ensemble"):
         return _load_ensemble(cfg)
 
+    # Sem checkpoint explícito: o run mais recente DO MODELO atual (outputs/<model.name>/…) —
+    # com vários modelos lightning convivendo (CA + GNNs), filtrar só pela família poderia
+    # carregar o run de outro modelo.
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
+        cfg.data.paths.output_root, family=family, model_name=str(cfg.model.name)
     )
     return load_trainer(family, ckpt_dir, cfg=cfg), ckpt_dir
 
