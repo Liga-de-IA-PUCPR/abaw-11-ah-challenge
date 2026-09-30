@@ -1,12 +1,13 @@
 # Plano de integração — pipeline do Luiz (main) + modelos do Rodrigo
 
-Branch: `integrate-rodrigo-multimodal` (criada a partir de `main@c0c2755`).
+Branch: `integrate-rodrigo-multimodal` (criada a partir de `main@c0c2755`), com PR para a **`develop`**.
+A `develop` é a cópia da `main` onde a pesquisa avança; a `main` fica congelada no estado do artigo.
 Origem dos módulos do Rodrigo: `origin/improve-macro-f1-beyond-router@bfdf856` (28/09),
 que contém toda a `origin/GNN+CA-meta-router@39df581` (13/07) + 7 commits.
 
 ## 1. Objetivo
 
-Uma única base (a `main`) em que os modelos convivem e se escolhem por config:
+Uma única base (a `develop`, que parte da `main` do artigo) em que os modelos convivem e se escolhem por config:
 
 | Frente | Toggle | O que roda |
 |--------|--------|------------|
