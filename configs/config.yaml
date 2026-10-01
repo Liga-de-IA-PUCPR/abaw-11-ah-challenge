@@ -12,7 +12,8 @@ defaults:
 
 seed: 42
 device: "mps"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
-mode: "train"                        # train | preprocess | featurize | evaluate | submit
+mode: "train"                        # train | preprocess | featurize | featurize_face | evaluate | submit
+                                     # | hard_mining (lightning)
 experiment_name: "abaw-ah"
 
 # Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler
@@ -20,7 +21,9 @@ experiment_name: "abaw-ah"
 split: null                          # train | val | test
 out: null                            # arquivo de submissão (mode=submit)
 checkpoint: null                     # caminho do checkpoint (.joblib/.ckpt)
-ensemble: null                       # lista de run dirs p/ mediar probas (evaluate/submit, lightning)
+ensemble: null                       # membros p/ mediar probas (evaluate/submit): run dirs ou
+                                     # {checkpoint, model, weight, parquet_path} (CA + GNN + face)
+ensemble_weights: null               # pesos alinhados a `ensemble` (null = média simples)
 # Submissão (formato oficial do desafio BAH). Ver src/outputs/submission.py.
 submission_reference: null           # trial-0.txt de referência: define a ORDEM exigida (null = alfabética + aviso)
 submission_probabilities: false      # true → 'video_id,p0,p1,pred' (habilita AP); false → 'video_id,pred'

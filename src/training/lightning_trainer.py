@@ -4,10 +4,17 @@ Contrato ``BaseTrainer`` (README §6.4). Todo torch/lightning é importado DENTR
 dos métodos. Fluxo:
   1. Mapeia ``resolve_device(cfg.device)`` -> accelerator (cpu→"cpu", mps→"mps",
      cuda→"gpu", devices=1) e exporta ``PYTORCH_ENABLE_MPS_FALLBACK=1``.
-  2. Monta ``L.Trainer`` (WandbLogger, EarlyStopping, ModelCheckpoint).
-  3. ``fit``: treina o ``LitCrossAttention`` sobre ``VideoSequenceDataset`` (FASE 2).
+  2. Monta ``L.Trainer`` (WandbLogger, EarlyStopping, ModelCheckpoint; opcionais:
+     ``accumulate_grad_batches``, SWA, ``precision``).
+  3. ``fit``: treina o LightningModule do modelo (cross-attention, GNNs heterogêneos,
+     GNN facial) sobre ``VideoSequenceDataset`` (FASE 2).
   4. Calibra o limiar do sigmoid na val (max Macro-F1) e avalia a nível de vídeo
      (torchmetrics no LightningModule; agregação ``identity`` p/ relatório sklearn).
+
+Qualquer fachada de modelo registrada como ``family="lightning"`` serve, desde que exponha
+``build_lightning_module()`` (opcionalmente ``build_lightning_module(trainer_cfg=...)``) e
+os atributos de dimensão ``dim_a``/``dim_b`` (e ``dim_tab``, se usar o ramo tabular). Gancho
+opcional do modelo: ``pos_weight`` (``auto`` = neg/pos do treino).
 """
 
 from __future__ import annotations
@@ -30,10 +37,11 @@ _ACCELERATOR = {"cpu": "cpu", "mps": "mps", "cuda": "gpu"}
 
 
 class LightningTrainer(BaseTrainer):
-    """Trainer neural para a cross-attention (Lightning, opcional).
+    """Trainer neural dos modelos da família ``lightning`` (opcional).
 
     Attributes:
-        model: ``CrossAttentionFusion`` (fachada; constrói o ``LitCrossAttention``).
+        model: fachada do modelo (ex.: ``CrossAttentionFusion``, ``HeteroGnnFusion``);
+            constrói o ``LightningModule``.
         config: config com grupos ``trainer`` (lightning), ``aggregation``, ``wandb``.
         threshold_: limiar do sigmoid calibrado na validação.
     """
@@ -69,7 +77,11 @@ class LightningTrainer(BaseTrainer):
     def _build_trainer(self):
         """Monta o ``L.Trainer`` com accelerator derivado do device + callbacks W&B."""
         import lightning as L
-        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+        from lightning.pytorch.callbacks import (
+            EarlyStopping,
+            ModelCheckpoint,
+            StochasticWeightAveraging,
+        )
         from lightning.pytorch.loggers import WandbLogger
 
         from src.conf import resolve_device  # FASE 1
@@ -112,24 +124,66 @@ class LightningTrainer(BaseTrainer):
         self._ckpt_cb = ckpt
         log.info(f"Seleção de checkpoint/early-stop: monitor='{monitor}' (mode='{mode}')")
 
+        callbacks: list[Any] = [
+            EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
+            ckpt,
+        ]
+        # SWA opcional (trainer.swa=true): média de pesos no fim do treino.
+        if tcfg.get("swa"):
+            max_ep = int(tcfg.get("max_epochs", 200))
+            swa_start = tcfg.get("swa_epoch_start")
+            swa_start = max(1, int(0.75 * max_ep)) if swa_start is None else int(swa_start)
+            callbacks.append(
+                StochasticWeightAveraging(
+                    swa_lrs=float(tcfg.get("swa_lrs", 1e-5)),
+                    swa_epoch_start=swa_start,
+                    annealing_epochs=int(tcfg.get("swa_annealing_epochs", 5)),
+                )
+            )
+            log.info(f"SWA ativo: início época {swa_start}, lr={tcfg.get('swa_lrs', 1e-5)}")
+
+        # Opcionais (só repassados se definidos): batch efetivo maior com pouca VRAM
+        # (accumulate_grad_batches), precisão mista (precision) e frequência de log.
+        extra: dict[str, Any] = {}
+        accumulate = int(tcfg.get("accumulate_grad_batches", 1) or 1)
+        if accumulate > 1:
+            extra["accumulate_grad_batches"] = accumulate
+            log.info(
+                f"Gradient accumulation: {accumulate} (batch efetivo = batch_size × {accumulate})"
+            )
+        for key in ("precision", "log_every_n_steps"):
+            if tcfg.get(key) is not None:
+                extra[key] = tcfg[key]
+
         return L.Trainer(
             max_epochs=tcfg.get("max_epochs", 200),
             accelerator=accelerator,
             devices=tcfg.get("devices", 1),
             gradient_clip_val=tcfg.get("gradient_clip_val", 1.0),
             logger=wandb_logger,
-            callbacks=[
-                EarlyStopping(monitor=monitor, mode=mode, patience=tcfg.get("patience", 20)),
-                ckpt,
-            ],
+            callbacks=callbacks,
+            **extra,
         )
 
     # ==========================================================================
     # Contrato BaseTrainer (README §6.4)
     # ==========================================================================
 
+    def _build_lit_module(self):
+        """Instancia o LightningModule; passa ``trainer_cfg`` só se o modelo aceitar.
+
+        Os GNNs usam ``trainer_cfg`` (ex.: monitor/max_epochs no scheduler); a
+        cross-attention não recebe nada (assinatura original preservada).
+        """
+        import inspect
+
+        sig = inspect.signature(self.model.build_lightning_module)
+        if "trainer_cfg" in sig.parameters:
+            return self.model.build_lightning_module(trainer_cfg=self._cfg_block("trainer"))
+        return self.model.build_lightning_module()
+
     def fit(self, train_data, val_data) -> dict[str, Any]:
-        """Treina o ``LitCrossAttention`` e calibra o limiar do sigmoid na val.
+        """Treina o LightningModule do modelo e calibra o limiar do sigmoid na val.
 
         ``train_data``/``val_data`` são ``DataLoader`` sobre ``VideoSequenceDataset``
         (FASE 2): batches com ``audio_seq``/``text_seq`` (B,T,D), ``key_padding_mask``
@@ -138,20 +192,24 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         L.seed_everything(getattr(self.config, "seed", 42))
+        _set_cuda_matmul_precision()
         # Infere as dims dos embeddings do CACHE (librosa 320 / wav2vec2 768) em vez de
         # confiar no hardcode da config — assim o modelo casa com o Parquet existente.
         d_a, d_b, d_tab = self._dims_from_loader(train_data)
-        if d_a and d_b:
+        if d_a and d_b and hasattr(self.model, "dim_a"):
             self.model.dim_a, self.model.dim_b = d_a, d_b
             log.info(f"Dims inferidas do cache: dim_a={d_a}, dim_b={d_b}")
-        # dim_tab só importa quando o ramo tabular está ligado (model.use_tabular).
-        if getattr(self.model, "use_tabular", False) and d_tab:
+        # dim_tab: na cross-attention só importa com o ramo tabular ligado (use_tabular);
+        # modelos sem esse flag (GNNs: tabular no nó "video") sempre o consomem.
+        if d_tab and hasattr(self.model, "dim_tab") and getattr(self.model, "use_tabular", True):
             self.model.dim_tab = d_tab
-            log.info(f"Ramo tabular ligado: dim_tab={d_tab} (funde tab_seq na cross-attention)")
-        self._lit_module = self.model.build_lightning_module()
+            log.info(f"Ramo tabular: dim_tab={d_tab} (inferido do cache)")
+        self._apply_pos_weight(train_data)
+        self._lit_module = self._build_lit_module()
+        self._init_weights_from_checkpoint()
         self._trainer = self._build_trainer()
 
-        log.info("=== Treino da cross-attention (Lightning) ===")
+        log.info(f"=== Treino de '{self._model_name()}' (Lightning) ===")
         self._trainer.fit(self._lit_module, train_dataloaders=train_data, val_dataloaders=val_data)
         self._ckpt_path = getattr(self._ckpt_cb, "best_model_path", None) or "best"
 
@@ -182,7 +240,7 @@ class LightningTrainer(BaseTrainer):
             metric=self._cfg_block("metrics").get("primary", "macro_f1"),
             selection=agg.get("calibration", "base_rate"),
             smooth_window=float(agg.get("smooth_window", 0.10)),
-            target_pos_rate=agg.get("target_pos_rate"),
+            target_pos_rate=_opt_float(agg.get("target_pos_rate")),
         )
 
     def recalibrate_on_val(self, val_loader) -> float:
@@ -240,8 +298,16 @@ class LightningTrainer(BaseTrainer):
         }
 
     def save(self, out_dir) -> None:
-        """Salva o caminho do checkpoint + limiar (o peso fica no ckpt do Lightning)."""
+        """Salva o caminho do checkpoint + limiar (o peso fica no ckpt do Lightning).
+
+        O ``trainer_state.json`` é autodescritivo: além do limiar e das dims, grava o
+        ``model_name``, a arquitetura (``model_cfg``), o bloco ``model`` completo
+        (``model_config``) e o Parquet de treino — o run dir pode então ser avaliado ou
+        entrar num ensemble heterogêneo sem repetir o preset do treino.
+        """
         import json
+
+        from src.models.checkpoint_compat import snapshot_model_cfg
 
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -250,12 +316,18 @@ class LightningTrainer(BaseTrainer):
                 {
                     "threshold": self.threshold_,
                     "ckpt_path": self._ckpt_path,
-                    "dim_a": int(self.model.dim_a),  # dims treinadas → load reconstrói igual
-                    "dim_b": int(self.model.dim_b),
-                    "dim_tab": int(getattr(self.model, "dim_tab", 0)),
+                    "dim_a": int(getattr(self.model, "dim_a", 0) or 0),  # dims treinadas
+                    "dim_b": int(getattr(self.model, "dim_b", 0) or 0),
+                    "dim_tab": int(getattr(self.model, "dim_tab", 0) or 0),
                     "use_tabular": bool(getattr(self.model, "use_tabular", False)),
                     "pool": str(getattr(self.model, "pool", "mean")),
                     "tab_fusion": str(getattr(self.model, "tab_fusion", "late")),
+                    "model_name": self._model_name(),
+                    "model_cfg": snapshot_model_cfg(self.model),
+                    # bloco `model` COMPLETO do treino (inclui sub-blocos como face/loss):
+                    # load_trainer recria o modelo idêntico mesmo sem o preset na CLI.
+                    "model_config": self._model_config(),
+                    "parquet_path": self._parquet_path(),
                 },
                 indent=2,
             )
@@ -270,6 +342,7 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         from src.conf import resolve_device
+        from src.models.checkpoint_compat import resolve_model_cfg_for_load
 
         state = json.loads((Path(out_dir) / "trainer_state.json").read_text())
         trainer = cls(model=model, config=config)
@@ -284,19 +357,25 @@ class LightningTrainer(BaseTrainer):
             )
             ckpt_path = str(cands[-1]) if cands else ckpt_path
         trainer._ckpt_path = ckpt_path
+        # Restaura a arquitetura treinada (hidden_channels, heads, … do model_cfg salvo;
+        # runs antigos sem model_cfg: inferida dos shapes do state_dict) p/ casar c/ o ckpt.
+        resolve_model_cfg_for_load(model, state, ckpt_path)
         # Restaura as dims treinadas p/ o módulo casar com os pesos do ckpt, e monta
         # um L.Trainer leve (sem logger/callbacks) p/ inferência (evaluate/predict).
-        if state.get("dim_a") and state.get("dim_b"):
+        if state.get("dim_a") and state.get("dim_b") and hasattr(model, "dim_a"):
             model.dim_a, model.dim_b = int(state["dim_a"]), int(state["dim_b"])
         # Restaura o ramo tabular exatamente como no treino (senão o state_dict não casa).
-        if "use_tabular" in state:
+        if "use_tabular" in state and hasattr(model, "use_tabular"):
             model.use_tabular = bool(state["use_tabular"])
-        if state.get("dim_tab"):
+        if state.get("dim_tab") and hasattr(model, "dim_tab"):
             model.dim_tab = int(state["dim_tab"])
-        # Restaura pooling/fusão tabular (default = legado, p/ checkpoints antigos sem estes campos).
-        model.pool = str(state.get("pool", "mean"))
-        model.tab_fusion = str(state.get("tab_fusion", "late"))
-        trainer._lit_module = model.build_lightning_module()
+        # Restaura pooling/fusão tabular da cross-attention (default = legado, p/
+        # checkpoints antigos sem estes campos). Modelos sem esses atributos não são tocados.
+        if hasattr(model, "pool"):
+            model.pool = str(state.get("pool", "mean"))
+        if hasattr(model, "tab_fusion"):
+            model.tab_fusion = str(state.get("tab_fusion", "late"))
+        trainer._lit_module = trainer._build_lit_module()
         device = resolve_device(getattr(config, "device", "auto"))
         accelerator = _ACCELERATOR.get(device.type, "cpu")
         if accelerator == "mps":
@@ -340,7 +419,99 @@ class LightningTrainer(BaseTrainer):
             int(getattr(ds, "dim_tab", 0)),
         )
 
+    def _model_name(self) -> str:
+        try:
+            return str(self.config.model.name)
+        except Exception:  # noqa: BLE001
+            return type(self.model).__name__
+
+    def _model_config(self) -> dict[str, Any] | None:
+        try:
+            from omegaconf import OmegaConf
+
+            model = self.config.model
+            return (
+                OmegaConf.to_container(model, resolve=True)
+                if OmegaConf.is_config(model)
+                else dict(model)
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _parquet_path(self) -> str | None:
+        try:
+            return str(self.config.data.paths.parquet_path)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _init_weights_from_checkpoint(self) -> None:
+        """Fine-tune: carrega pesos de ``checkpoint=<run_dir|.ckpt>`` no ``mode=train``.
+
+        Só o ``state_dict`` (sem otimizador), ``strict=False`` — chaves ausentes/extras
+        são logadas e ignoradas. Em evaluate/submit ``checkpoint`` continua sendo o run
+        dir a avaliar (lido pelo ``main``); aqui só vale para o treino.
+        """
+        ckpt_arg = getattr(self.config, "checkpoint", None)
+        if not ckpt_arg:
+            return
+        import json
+
+        from src.models.checkpoint_compat import load_state_dict_from_ckpt
+
+        p = Path(str(ckpt_arg))
+        ckpt_path: str | None = None
+        if p.is_dir():
+            state_file = p / "trainer_state.json"
+            if state_file.exists():
+                cand = json.loads(state_file.read_text(encoding="utf-8")).get("ckpt_path")
+                if cand and Path(cand).exists():
+                    ckpt_path = str(cand)
+            if ckpt_path is None:
+                cands = sorted(p.glob("checkpoints/*.ckpt")) + sorted(p.glob("*.ckpt"))
+                ckpt_path = str(cands[-1]) if cands else None
+        elif p.suffix == ".ckpt" and p.exists():
+            ckpt_path = str(p)
+        if not ckpt_path:
+            log.warning(f"Fine-tune: checkpoint não encontrado em {ckpt_arg}")
+            return
+
+        state_dict = load_state_dict_from_ckpt(ckpt_path)
+        missing, unexpected = self._lit_module.load_state_dict(state_dict, strict=False)
+        if missing:
+            log.warning(f"Fine-tune: {len(missing)} chaves ausentes no ckpt (ignoradas).")
+        if unexpected:
+            log.warning(f"Fine-tune: {len(unexpected)} chaves extras no ckpt (ignoradas).")
+        log.info(f"Fine-tune: pesos carregados de {ckpt_path}")
+
+    def _apply_pos_weight(self, train_loader) -> None:
+        """Resolve ``model.pos_weight`` (``auto`` = neg/pos do treino) p/ modelos que o usam."""
+        if not hasattr(self.model, "pos_weight"):
+            return
+        from src.models.lightning_utils import resolve_pos_weight
+
+        pw = resolve_pos_weight(getattr(self.model, "pos_weight", None), train_loader)
+        if hasattr(self.model, "_resolved_pos_weight"):
+            self.model._resolved_pos_weight = pw
+
     def _evaluate(self, ids, proba, labels) -> dict[str, Any]:
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)
         scores = {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
         return evaluate_video_predictions(video_labels=labels, video_pred=preds, video_score=scores)
+
+
+def _opt_float(value: Any) -> float | None:
+    """``None``/``"null"``/``"none"`` → ``None``; senão ``float`` (tolera string da CLI)."""
+    if value is None or (isinstance(value, str) and value.lower() in ("null", "none", "")):
+        return None
+    return float(value)
+
+
+def _set_cuda_matmul_precision() -> None:
+    """TF32 nas matmuls em CUDA (ganho de velocidade sem efeito em CPU/MPS)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.set_float32_matmul_precision("high")
+    except Exception:  # noqa: BLE001
+        pass

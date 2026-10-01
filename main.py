@@ -3,16 +3,24 @@
 `@hydra.main` compõe a config a partir dos grupos (README §7) e faz *dispatch*
 por ``cfg.mode``:
 
-    preprocess   índice (FASE 2) + extração de áudio (mp4→flac 16 kHz) + janelas → cache
-    featurize    janelas → embedders (texto+áudio) + tabular → Parquet (FASE 3)
-    train        treina o modelo (RF sklearn/CPU OU cross_attention Lightning/MPS) (FASE 4)
-    evaluate     avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
-    submit       escreve o arquivo de submissão (video_id, pred) (FASE 5)
+    preprocess     índice (FASE 2) + extração de áudio (mp4→flac 16 kHz) + janelas → cache
+    featurize      janelas → embedders (texto+áudio) + tabular → Parquet (FASE 3)
+    featurize_face (opcional, vídeo) Face Mesh por janela → coluna face_landmarks no Parquet
+    train          treina o modelo escolhido em ``model=`` (FASE 4)
+    evaluate       avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
+    submit         escreve o arquivo de submissão (video_id, pred) (FASE 5)
+    hard_mining    (lightning) pesos de amostragem {video_id: peso} a partir de um checkpoint
 
 Reusa a estrutura do ``main.py`` da branch ``matheus`` (Hydra + WandbLogger +
-L.Trainer), mas **generalizada para os 2 modelos e os 5 modos**: o modelo e o
+L.Trainer), **generalizada para todos os modelos do registry**: o modelo e o
 trainer vêm das *factories* da FASE 4 (``create_model`` + ``create_trainer``),
 de modo que o caminho ``random_forest`` **nunca importa Lightning**.
+
+Modelos (``model=`` / presets ``+experiment=``): ``random_forest`` (sklearn),
+``cross_attention`` (áudio+texto, artigo) e os GNNs do Rodrigo — ``hetero_gnn_contrastive``
+(áudio+texto+tabular em grafo; preset ``hetero_gnn_v2_tune_wav2vec2``), ``face_gnn_ts`` e
+``multimodal_hetero_face`` (+ vídeo; presets ``face_gnn_ts_roi``, ``multimodal_hetero_face_v2``). ``ensemble=[...]`` combina run dirs de QUALQUER
+um deles (evaluate/submit).
 
 Exemplos::
 
@@ -25,6 +33,19 @@ Exemplos::
 
     # modelo de competição (preset cross_attention) em MPS
     PYTORCH_ENABLE_MPS_FALLBACK=1 python main.py +experiment=cross_attention device=mps
+
+    # GNN heterogêneo do Rodrigo com o pré-processamento da main (cache wav2vec2)
+    python main.py +experiment=hetero_gnn_v2_tune_wav2vec2 device=cuda
+
+    # vídeo: landmarks no Parquet → GNN facial
+    python main.py mode=featurize_face +face_embedder=mediapipe
+    python main.py +experiment=face_gnn_ts_roi
+
+    # ensemble heterogêneo: seeds CA (cache librosa) + GNN que lê o próprio cache wav2vec2
+    python main.py mode=evaluate split=test +experiment=cross_attention \
+        "ensemble=[outputs/cross_attention/A,outputs/cross_attention/B,\
+    {checkpoint:outputs/hetero_gnn_contrastive/C,parquet_path:data/processed/text_audio_windows_w2v.parquet}]"
+    # (atalho: make ensemble-multimodal GNN_RUN=... FACE_RUN=...)
 
     # MULTIRUN (sweep paralelo via joblib launcher)
     python main.py -m model.lr=1e-3,5e-4 model.num_heads=4,8 data.window.size_s=4,5,6
@@ -97,13 +118,47 @@ def _as_loader(cfg: DictConfig, data, family: str, split: str):
 
     from src.data.datasets import collate_sequences
 
+    # Hard mining (opcional): data.hard_examples=<json de mode=hard_mining> troca o
+    # shuffle uniforme do treino por um WeightedRandomSampler (mutuamente exclusivos).
+    sampler = None
+    hard_path = cfg.data.get("hard_examples")
+    if split == "train" and hard_path:
+        sampler = _build_weighted_sampler(hard_path, data)
+
     return DataLoader(
         data,
         batch_size=cfg.data.batch_size,
-        shuffle=(split == "train"),
+        shuffle=(split == "train") and sampler is None,
+        sampler=sampler,
         num_workers=cfg.data.num_workers,
         collate_fn=collate_sequences,
     )
+
+
+def _build_weighted_sampler(hard_path: str, dataset):
+    """``WeightedRandomSampler`` alinhado à ordem de ``dataset.video_ids`` (hard mining)."""
+    import json
+    from pathlib import Path
+
+    p = Path(hard_path)
+    if not p.exists():
+        log.warning(f"hard_examples ausente ({p}); amostragem uniforme.")
+        return None
+
+    from torch.utils.data import WeightedRandomSampler
+
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    weights_map = payload.get("weights", payload)
+    video_ids = getattr(dataset, "video_ids", None)
+    if not video_ids:
+        log.warning("Dataset sem video_ids; amostragem uniforme.")
+        return None
+    weights = [float(weights_map.get(str(vid), 1.0)) for vid in video_ids]
+    log.info(
+        f"WeightedRandomSampler: {len(weights)} amostras, "
+        f"peso∈[{min(weights):.2f}, {max(weights):.2f}] de {p}"
+    )
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
 def _build_trainer(cfg: DictConfig, device):
@@ -212,41 +267,129 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
     trainer.recalibrate_on_val(calib_loader)
 
 
-def _resolve_trainer(cfg: DictConfig, family: str):
-    """Carrega UM checkpoint ou um ENSEMBLE (média de probas). Retorna ``(trainer, report_dir)``.
+def _member_spec(item) -> dict:
+    """Normaliza um membro de ``ensemble``: run dir (str) ou dict com ``checkpoint``."""
+    if isinstance(item, str):
+        return {"checkpoint": item}
+    spec = OmegaConf.to_container(item, resolve=True) if not isinstance(item, dict) else dict(item)
+    if not spec.get("checkpoint"):
+        raise ValueError(f"Membro de ensemble sem 'checkpoint': {spec}")
+    return spec
 
-    ``ensemble=[dirA,dirB,...]`` (só lightning) monta um :class:`EnsembleTrainer` que média
-    as probas por vídeo dos membros; senão resolve 1 checkpoint (``cfg.checkpoint`` ou o
-    mais recente da família). O ``report_dir`` é onde ``_write_eval_report`` grava.
+
+def _cfg_for_model(cfg: DictConfig, model_name: str, experiment: str | None = None) -> DictConfig:
+    """``cfg`` do membro: o do run, com o grupo ``model`` do modelo do membro.
+
+    - ``experiment`` dado (runs antigos treinados por preset): o ``model`` vem do preset
+      composto (``+experiment=<experiment>``) — mesma arquitetura do treino.
+    - Mesmo modelo do run: ``cfg`` intacto (reprodutibilidade do ensemble homogêneo).
+    - Outro modelo: ``configs/model/<model_name>.yaml``.
+    Em todos os casos, se o run gravou ``model_config`` (runs novos), o ``load_trainer``
+    recria o modelo a partir dele — o que é escolhido aqui só vale para runs antigos.
     """
     from pathlib import Path
 
+    if experiment:
+        from hydra import compose
+
+        composed = compose(config_name="config", overrides=[f"+experiment={experiment}"])
+        member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        member_cfg.model = composed.model
+        return member_cfg
+    if model_name == str(cfg.model.name):
+        return cfg
+    model_yaml = Path(__file__).resolve().parent / "configs" / "model" / f"{model_name}.yaml"
+    if not model_yaml.exists():
+        raise FileNotFoundError(f"Membro '{model_name}': YAML ausente em {model_yaml}")
+    member_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    member_cfg.model = OmegaConf.load(model_yaml)
+    return member_cfg
+
+
+def _load_ensemble(cfg: DictConfig):
+    """Monta o :class:`EnsembleTrainer` a partir de ``cfg.ensemble`` (membros heterogêneos).
+
+    Cada membro é um run dir de QUALQUER modelo do registry. O nome do modelo vem, nesta
+    ordem, de ``model`` no dict do membro → ``model_name`` do ``trainer_state.json`` →
+    pasta-pai do run (``outputs/<modelo>/<timestamp>``). ``parquet_path`` no dict faz o
+    membro ler as SUAS features (ex.: GNN no cache wav2vec2) para os mesmos vídeos;
+    ``experiment`` recompõe o ``model`` do preset do treino (runs antigos, sem
+    ``model_config`` no ``trainer_state.json``).
+    Retorna ``(trainer, report_dir)``.
+    """
+    import json
+    from pathlib import Path
+
+    import src.models  # noqa: F401  — registra os modelos (famílias p/ get_family)
+    from src.models.registry import get_family
+    from src.training.ensemble import EnsembleMember, EnsembleTrainer
+    from src.training.factory import load_trainer
+
+    specs = [_member_spec(x) for x in cfg.ensemble]
+    weights = cfg.get("ensemble_weights")
+    if weights is not None and len(weights) != len(specs):
+        raise ValueError(f"ensemble_weights tem {len(weights)} pesos p/ {len(specs)} membros.")
+
+    members: list[EnsembleMember] = []
+    for i, spec in enumerate(specs):
+        ckpt = str(spec["checkpoint"])
+        state_file = Path(ckpt) / "trainer_state.json"
+        state = json.loads(state_file.read_text()) if state_file.exists() else {}
+        model_name = str(spec.get("model") or state.get("model_name") or Path(ckpt).parent.name)
+        family = get_family(model_name)
+        member_cfg = _cfg_for_model(cfg, model_name, spec.get("experiment"))
+        trainer = load_trainer(family, ckpt, cfg=member_cfg)
+        weight = spec.get("weight", weights[i] if weights is not None else 1.0)
+        members.append(
+            EnsembleMember(
+                trainer=trainer,
+                name=ckpt,
+                family=family,
+                parquet_path=spec.get("parquet_path"),
+                calib_parquet_path=spec.get("calib_parquet_path"),
+                weight=float(weight),
+            )
+        )
+
+    # Relatórios: outputs/<modelo>/<nome> se todos os membros são do mesmo modelo (layout
+    # original, ex.: cross_attention/ensemble_5); senão outputs/ensemble/<nome>.
+    names = {Path(m.name).parent.name for m in members}
+    group = names.pop() if len(names) == 1 else "ensemble"
+    # +ensemble_name=<nome> isola os relatórios de ensembles distintos com o mesmo nº
+    # de membros (ex.: ensemble_5 vs ensemble_5_all); default mantém ensemble_<N>.
+    ens_name = cfg.get("ensemble_name") or f"ensemble_{len(members)}"
+    report_dir = Path(cfg.data.paths.output_root) / group / str(ens_name)
+    # Loga QUAIS checkpoints entram (auditabilidade: confirma o ensemble usado) +
+    # o limiar individual de cada membro (calibrado no treino).
+    member_info = "\n".join(
+        f"    [{i}] {m.name}  (family={m.family}, thr_membro={m.trainer.threshold_}"
+        + (f", peso={m.weight:g}" if m.weight != 1.0 else "")
+        + (f", parquet={m.parquet_path}" if m.parquet_path else "")
+        + ")"
+        for i, m in enumerate(members)
+    )
+    log.info(f"Ensemble de {len(members)} checkpoints → relatórios em {report_dir}:\n{member_info}")
+    return EnsembleTrainer(members, cfg), str(report_dir)
+
+
+def _resolve_trainer(cfg: DictConfig, family: str):
+    """Carrega UM checkpoint ou um ENSEMBLE (média de probas). Retorna ``(trainer, report_dir)``.
+
+    ``ensemble=[...]`` monta um :class:`EnsembleTrainer` que média as probas por vídeo dos
+    membros (ver :func:`_load_ensemble`); senão resolve 1 checkpoint (``cfg.checkpoint`` ou
+    o mais recente da família). O ``report_dir`` é onde ``_write_eval_report`` grava.
+    """
     from src.outputs.checkpoint import resolve_latest_checkpoint
     from src.training.factory import load_trainer
 
-    ens = cfg.get("ensemble")
-    if ens:
-        if family != "lightning":
-            raise ValueError("ensemble só é suportado para a família lightning (cross_attention).")
-        from src.training.ensemble import EnsembleTrainer
+    if cfg.get("ensemble"):
+        return _load_ensemble(cfg)
 
-        dirs = [str(d) for d in ens]
-        members = [load_trainer(family, d, cfg=cfg) for d in dirs]
-        # +ensemble_name=<nome> isola os relatórios de ensembles distintos com o mesmo nº
-        # de membros (ex.: ensemble_5 vs ensemble_5_all); default mantém ensemble_<N>.
-        ens_name = cfg.get("ensemble_name") or f"ensemble_{len(dirs)}"
-        report_dir = Path(cfg.data.paths.output_root) / cfg.model.name / str(ens_name)
-        # Loga QUAIS checkpoints entram (auditabilidade: confirma o ensemble usado) +
-        # o limiar individual de cada membro (calibrado no treino).
-        member_info = "\n".join(
-            f"    [{i}] {d}  (thr_membro={getattr(m, 'threshold_', None)})"
-            for i, (d, m) in enumerate(zip(dirs, members, strict=False))
-        )
-        log.info(f"Ensemble de {len(dirs)} checkpoints → relatórios em {report_dir}:\n{member_info}")
-        return EnsembleTrainer(members, cfg), str(report_dir)
-
+    # Sem checkpoint explícito: o run mais recente DO MODELO atual (outputs/<model.name>/…) —
+    # com vários modelos lightning convivendo (CA + GNNs), filtrar só pela família poderia
+    # carregar o run de outro modelo.
     ckpt_dir = cfg.get("checkpoint") or resolve_latest_checkpoint(
-        cfg.data.paths.output_root, family=family
+        cfg.data.paths.output_root, family=family, model_name=str(cfg.model.name)
     )
     return load_trainer(family, ckpt_dir, cfg=cfg), ckpt_dir
 
@@ -262,7 +405,7 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
 
     import numpy as np
 
-    from src.outputs.reporter import Reporter
+    from src.outputs.reporter import Reporter, load_video_metadata_for_eval
     from src.training.aggregation import threshold_curve
 
     out_dir = Path(ckpt_dir) / f"eval_{split}"
@@ -273,16 +416,28 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
     rep.save_metrics_json(report, cfg_dict, threshold=threshold, aggregation_method=method)
     rep.save_results_txt({**report, "threshold": threshold, "aggregation_method": method})
 
-    # Plots a nível de vídeo (confusão, PR, curva de limiar) — exige video_outputs.
+    # Plots a nível de vídeo (confusão, ROC, PR, curva de limiar) + predictions.csv por
+    # vídeo (insumo do meta-router CA⊕GNN e do protocolo OOF) — exige video_outputs.
     if hasattr(trainer, "video_outputs"):
+        o = None
         try:
             o = trainer.video_outputs(data)
             rep.plot_confusion_matrix(o["y_true"], o["y_pred"])
+            rep.plot_roc_curve(o["y_true"], o["y_proba"])
             rep.plot_precision_recall(o["y_true"], o["y_proba"])
             grid, f1s = threshold_curve(o["y_true"], o["y_proba"])
             rep.plot_threshold_curve(grid, f1s, threshold)
         except Exception as exc:  # noqa: BLE001 — plots nunca derrubam o evaluate
             log.warning(f"Plots a nível de vídeo pulados: {exc}")
+        if o is not None:
+            try:
+                meta = load_video_metadata_for_eval(cfg, o["video_ids"])
+                rep.save_predictions_csv(
+                    o["video_ids"], o["y_true"], o["y_proba"], o["y_pred"], threshold, metadata=meta
+                )
+                rep.save_error_analysis(o["video_ids"], o["y_true"], o["y_pred"], metadata=meta)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(f"predictions.csv / análise de erro pulados: {exc}")
 
     # Importâncias de features (RandomForest): individual + AGRUPADO (texto/áudio como
     # 1 feature cada vs tabulares). Nomes/grupos vêm do sidecar do Parquet (FASE 3).
@@ -322,7 +477,7 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
 
     from src.data.datasets import load_split
 
-    _, family = _build_trainer(cfg, device)
+    family = _data_family(cfg, device)
     # Resolve 1 checkpoint (mais recente da família) OU um ensemble (ensemble=[...]).
     trainer, ckpt_dir = _resolve_trainer(cfg, family)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
@@ -348,7 +503,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
     from src.data.datasets import load_split
     from src.outputs.submission import write_submission
 
-    _, family = _build_trainer(cfg, device)
+    family = _data_family(cfg, device)
     # Resolve 1 checkpoint OU um ensemble (ensemble=[...]) — média de probas por vídeo.
     trainer, _ = _resolve_trainer(cfg, family)
     _apply_threshold_override(cfg, trainer)  # aggregation.threshold=<float> sobrepõe o salvo
@@ -374,7 +529,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
         thr = float(trainer.threshold_)
         video_preds = {v: int(p >= thr) for v, p in scores.items()}
         probs = scores if want_probs else None
-    else:  # sklearn/RF: sem score contínuo por vídeo exposto → só labels
+    else:  # trainer sem score contínuo por vídeo exposto → só labels
         if want_probs:
             log.warning(f"family={family} não expõe predict_scores; submissão sem probabilidades.")
         video_preds = trainer.predict(data)
@@ -385,12 +540,131 @@ def _run_submit(cfg: DictConfig, device) -> int:
     return 0
 
 
+def _data_family(cfg: DictConfig, device) -> str:
+    """Família da VISÃO de dados do evaluate/submit.
+
+    Ensemble → sempre ``lightning`` (sequência por vídeo; membros sklearn montam a própria
+    matriz de janelas dentro do ``EnsembleTrainer``). Senão, a família do ``model=``.
+    """
+    if cfg.get("ensemble"):
+        return "lightning"
+    _, family = _build_trainer(cfg, device)
+    return family
+
+
+def _run_featurize_face(cfg: DictConfig) -> int:
+    """``mode=featurize_face`` — MediaPipe Face Mesh → coluna ``face_landmarks`` no Parquet.
+
+    Requer o Parquet base (``mode=featurize``), os ``.mp4`` sob ``data.paths.data_root`` e o
+    grupo opcional ``vision`` (``uv sync --group vision``).
+    """
+    from src.pipeline.featurize_face import run_featurize_face
+
+    summary = run_featurize_face(cfg)
+    if summary.get("cached"):
+        log.info(
+            f"Featurize face pulado (cache): {summary['parquet_path']} "
+            "(use data.force_face=true p/ recomputar)."
+        )
+    else:
+        log.info(
+            f"Featurize face concluído: {summary.get('n_windows', '?')} janelas → "
+            f"{summary['parquet_path']} (d_face={summary.get('d_face', '?')})."
+        )
+    return 0
+
+
+def _run_hard_mining(cfg: DictConfig, device) -> int:
+    """``mode=hard_mining`` — pontua um split (default train) e grava pesos de amostragem.
+
+    Roda o checkpoint sobre o split, marca *hard positives* (rótulo 1, proba baixa),
+    *hard negatives* (rótulo 0, proba alta), casos limítrofes (perto do limiar) e tipos
+    de pergunta raros, e grava ``{video_id: peso}`` em JSON. O treino consome via
+    ``data.hard_examples=<json>`` (``WeightedRandomSampler``). Parâmetros opcionais por
+    CLI: ``+hard_hi``, ``+hard_lo``, ``+hard_weight``, ``+hard_border``,
+    ``+hard_border_weight``, ``+hard_rare_types``, ``+hard_rare_mult``.
+    """
+    import json
+    from pathlib import Path
+
+    from src.data.datasets import load_split
+    from src.outputs.reporter import load_video_metadata_for_eval
+
+    family = _data_family(cfg, device)
+    if family != "lightning":
+        raise ValueError("mode=hard_mining requer um modelo da família lightning.")
+    trainer, ckpt_dir = _resolve_trainer(cfg, family)
+    log.info(f"Hard mining: checkpoint {ckpt_dir}")
+
+    split = cfg.get("split") or "train"
+    data = _as_loader(cfg, load_split(cfg, split, family=family), family, "eval")
+    o = trainer.video_outputs(data)
+
+    hard_hi = float(cfg.get("hard_hi", 0.7))
+    hard_lo = float(cfg.get("hard_lo", 0.3))
+    hard_weight = float(cfg.get("hard_weight", 3.0))
+    border_margin = float(cfg.get("hard_border", 0.1))
+    border_weight = float(cfg.get("hard_border_weight", 2.0))
+    rare_types = set(cfg.get("hard_rare_types", ["neutral", "willing"]))
+    rare_mult = float(cfg.get("hard_rare_mult", 1.5))
+
+    meta = load_video_metadata_for_eval(cfg, o["video_ids"])
+    threshold = float(getattr(trainer, "threshold_", 0.5) or 0.5)
+
+    weights: dict[str, float] = {}
+    n_hard = n_border = n_rare = 0
+    for i, vid in enumerate(o["video_ids"]):
+        vid = str(vid)
+        yt, p = int(o["y_true"][i]), float(o["y_proba"][i])
+        w = 1.0
+        if (yt == 1 and p < hard_lo) or (yt == 0 and p > hard_hi):
+            w *= hard_weight
+            n_hard += 1
+        elif abs(p - threshold) < border_margin:
+            w *= border_weight
+            n_border += 1
+        if (meta.get(vid, {}) or {}).get("question_type") in rare_types:
+            w *= rare_mult
+            n_rare += 1
+        weights[vid] = round(w, 4)
+
+    out_path = Path(cfg.get("out") or "data/interim/hard_examples.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "split": split,
+        "checkpoint": str(ckpt_dir),
+        "threshold": threshold,
+        "params": {
+            "hard_hi": hard_hi,
+            "hard_lo": hard_lo,
+            "hard_weight": hard_weight,
+            "border_margin": border_margin,
+            "border_weight": border_weight,
+            "rare_types": sorted(rare_types),
+            "rare_mult": rare_mult,
+        },
+        "n_videos": len(weights),
+        "n_hard": n_hard,
+        "n_border": n_border,
+        "n_rare": n_rare,
+        "weights": weights,
+    }
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    log.info(
+        f"Hard mining: {len(weights)} vídeos → {out_path} "
+        f"(hard={n_hard}, borderline={n_border}, raros={n_rare})."
+    )
+    return 0
+
+
 _DISPATCH = {
     "preprocess": lambda cfg, dev: _run_preprocess(cfg),
     "featurize": _run_featurize,
+    "featurize_face": lambda cfg, dev: _run_featurize_face(cfg),
     "train": _run_train,
     "evaluate": _run_evaluate,
     "submit": _run_submit,
+    "hard_mining": _run_hard_mining,
 }
 
 

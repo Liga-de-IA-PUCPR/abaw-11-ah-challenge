@@ -268,6 +268,14 @@ class DataConfig:
     # Ex. metodologia (avaliação real é externa): train_splits=[train,val], calib_split=test.
     train_splits: list[str] = field(default_factory=lambda: ["train"])
     calib_split: str = "val"
+    # mode=featurize: processa em lotes de ~N janelas alinhados por vídeo (RAM/VRAM).
+    # None = lote único (comportamento original).
+    featurize_chunk_size: int | None = None
+    # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir.
+    force_face: bool = False
+    # mode=train (lightning): JSON {video_id: peso} gerado por mode=hard_mining →
+    # WeightedRandomSampler no treino. None = amostragem uniforme.
+    hard_examples: str | None = None
 
 
 @dataclass
@@ -316,12 +324,33 @@ class AudioEmbedderConfig:
 
 
 @dataclass
+class FaceEmbedderConfig:
+    """Grupo opcional ``face_embedder`` — MediaPipe Face Landmarker (``mode=featurize_face``).
+
+    Grava 478 landmarks (x, y, z) por janela na coluna ``face_landmarks`` do Parquet;
+    consumido pelos modelos com vídeo (``face_gnn_ts``, ``multimodal_hetero_face``).
+    Selecionado pelos presets com vídeo (``- /face_embedder: mediapipe`` no defaults).
+    """
+
+    enabled: bool = True
+    max_frames: int = 2  # frames amostrados por janela (média dos landmarks)
+    min_detection_confidence: float = 0.5
+    min_tracking_confidence: float = 0.5
+    refine_landmarks: bool = True
+
+
+@dataclass
 class ModelConfig:
     """Grupo ``model`` — registra a família (``sklearn`` | ``lightning``) + hiperparâmetros.
 
     ``family`` decide o trainer (README §6.4): ``random_forest`` → ``SklearnTrainer``;
-    ``cross_attention`` → ``LightningTrainer`` (importado *lazy*). Campos não usados por
-    uma família são simplesmente ignorados por ela.
+    ``cross_attention`` e os GNNs → ``LightningTrainer`` (importado *lazy*). Campos não
+    usados por uma família são simplesmente ignorados por ela.
+
+    Os GNNs (``configs/model/hetero_gnn_contrastive.yaml``, ``multimodal_hetero_face.yaml``,
+    ``face_gnn_ts.yaml``) trazem blocos próprios (``hidden_channels``, ``heads``,
+    ``contrastive``, ``loss``, ``face``…) lidos direto do YAML — o schema aqui documenta
+    só os campos compartilhados.
     """
 
     name: str = "random_forest"
@@ -346,6 +375,9 @@ class ModelConfig:
     num_classes: int = 1
     dropout: float = 0.1
     lr: float = 1e-3
+    weight_decay: float = 1e-2
+    # --- compartilhados pelos GNNs (lightning) ---
+    pos_weight: float | str | None = None  # "auto" = neg/pos do treino; None = sem peso
 
 
 @dataclass
@@ -368,6 +400,14 @@ class TrainerConfig:
     patience: int = 20
     monitor: str = "val_ap"  # AP (livre de limiar) — ver configs/trainer/lightning.yaml
     mode: str = "max"
+    # Opcionais (repassados ao L.Trainer só se definidos / diferentes do default)
+    accumulate_grad_batches: int = 1  # >1: batch efetivo = batch_size × N (pouca VRAM)
+    precision: str | None = None  # ex.: "16-mixed" (fine-tune de texto)
+    log_every_n_steps: int | None = None
+    swa: bool = False  # Stochastic Weight Averaging no fim do treino
+    swa_lrs: float = 1e-5
+    swa_epoch_start: int | None = None  # None = 75% de max_epochs
+    swa_annealing_epochs: int = 5
 
 
 @dataclass
@@ -380,6 +420,8 @@ class AggregationConfig:
     smooth_window: float = 0.10  # largura da média móvel (unidades de limiar) p/ 'smooth'
     target_pos_rate: float | None = None  # 'base_rate': prevalência-alvo (None = a da val)
     recalibrate: bool = False  # evaluate/submit: recalibra na val (ignora o limiar salvo)
+    # sklearn: calibração do score por vídeo ANTES do limiar (temperature = NLL na val).
+    score_calibration: Literal["none", "temperature"] = "none"
     metric: str = "macro_f1"
 
 
@@ -416,17 +458,30 @@ class RootConfig:
 
     seed: int = 42
     device: Literal["auto", "cpu", "mps", "cuda"] = "auto"
-    mode: Literal["train", "preprocess", "featurize", "evaluate", "submit"] = "train"
+    mode: Literal[
+        "train",
+        "preprocess",
+        "featurize",
+        "featurize_face",
+        "hard_mining",
+        "evaluate",
+        "submit",
+    ] = "train"
     experiment_name: str = "abaw-ah"
 
     # Overrides opcionais por modo (evaluate/submit). None = default do handler.
     split: str | None = None
     out: str | None = None
     checkpoint: str | None = None
-    # Ensemble (evaluate/submit, só lightning): lista de run dirs cujas probas por vídeo
-    # são MEDIADAS. Ex.: ensemble=[outputs/cross_attention/A,outputs/cross_attention/B].
+    # Ensemble (evaluate/submit): lista de membros cujas probas por vídeo são MEDIADAS.
+    # Membro = run dir (str) OU {checkpoint, model?, experiment?, weight?, parquet_path?,
+    # calib_parquet_path?} — modelos diferentes (CA + GNN + face, e até sklearn) convivem.
+    # Ex.: ensemble=[outputs/cross_attention/A,outputs/hetero_gnn_contrastive/B].
     # O limiar é recalibrado nas probas médias da val. None = checkpoint único.
-    ensemble: list[str] | None = None
+    ensemble: list[Any] | None = None
+    # Pesos alinhados à lista `ensemble` (None = média simples). Um `weight` no dict do
+    # membro tem precedência.
+    ensemble_weights: list[float] | None = None
     # Submissão (mode=submit, formato oficial do desafio). submission_reference: caminho do
     # trial-0.txt de referência que define a ORDEM exigida (None = ordem alfabética + aviso).
     # submission_probabilities: escreve 'video_id,p0,p1,pred' (habilita AP) em vez de 'video_id,pred'.

@@ -21,6 +21,12 @@ Ambivalence/Hesitancy Recognition”** (LIA — Artificial Intelligence Academic
 Best internal result: **Macro-F1 0.722 · AP 0.875** on the 525-video public test split —
 see [§5](#5-reproducing-the-papers-best-result-ensemble_5) to reproduce it with one command.
 
+The repository also hosts, as an **optional extension**, Rodrigo Watanabe's heterogeneous
+GNNs (audio + text + support features as a graph, plus a Face Mesh branch for **video**),
+running on the same preprocessing and combinable with the cross-attention in a heterogeneous
+ensemble — see [§9.6](#96-extension-heterogeneous-gnns--video-optional). The paper pipeline is
+unchanged and never reads video frames.
+
 <details open="open">
   <summary><b>Table of contents</b></summary>
   <ol>
@@ -433,6 +439,48 @@ curve), `argmax` (raw peak). Details: [src/training/README.md](src/training/READ
 | hardware | CPU | MPS/CUDA (Lightning, optional) |
 | final metric | Macro-F1 over **all** videos in the split (there is no "per-video F1") | same |
 
+### 9.6 Extension: heterogeneous GNNs + video (optional)
+
+Rodrigo Watanabe's models, ported from `improve-macro-f1-beyond-router`
+(integration plan, gates and measured numbers: [`references/integration_plan.md`](references/integration_plan.md);
+model docs: [`references/gnn_training_procedure.md`](references/gnn_training_procedure.md),
+[`references/meta_router_ca_gnn.md`](references/meta_router_ca_gnn.md)). They are registered
+lazily in the same model registry (`family=lightning`) and read the **same Parquet contract**
+(`audio_emb`, `text_emb`, `tabular` per window); video enters as an optional
+`face_landmarks` column (MediaPipe Face Mesh, 478×3 per window) written by
+`mode=featurize_face`.
+
+| Model (`model=`) | Inputs | Preset (`+experiment=`) |
+|---|---|---|
+| `hetero_gnn_contrastive` | audio + text + support (per-video HeteroGAT + SupCon) — the member of Rodrigo's production meta-router | `hetero_gnn_v2_tune_wav2vec2` |
+| `face_gnn_ts` | **video** (Face Mesh GCN over time, anatomical ROI) + support | `face_gnn_ts_roi` |
+| `multimodal_hetero_face` | audio + text + support + **video** | `multimodal_hetero_face_v2` |
+
+Only the models that feed the three fronts were kept; Rodrigo's other explorations
+(earlier GNN baselines, GAE pre-training, CatBoost, text fine-tuning and the tuning/ablation
+presets) remain in his `improve-macro-f1-beyond-router` branch.
+
+```bash
+make setup-vision              # neural + gnn (torch-geometric, gnn-modalblocks) + vision (MediaPipe)
+make featurize-w2v             # wav2vec2 cache used by the GNN presets
+make train-gnn                 # GNN_EXPERIMENT=hetero_gnn_v2_tune_wav2vec2
+make featurize-face            # adds face_landmarks (needs the .mp4 files)
+make train-face                # FACE_EXPERIMENT=face_gnn_ts_roi
+make ensemble-multimodal GNN_RUN=outputs/hetero_gnn_contrastive/<run> [FACE_RUN=...]
+```
+
+`ensemble=[...]` accepts members of **any** model: a run dir, or
+`{checkpoint, model, experiment, weight, parquet_path, calib_parquet_path}` — each member can
+read its own feature cache for the same videos, and `trainer_state.json` stores the full
+`model` block so any run dir reloads with its training architecture. Every `mode=evaluate`
+now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-router,
+`make meta-router`, and of the grouped OOF protocol in `src/eval/protocol.py`).
+
+> Measured on the public test (threshold on val): 5 cross-attention seeds **0.7226** → +GNN
+> **0.7337** Macro-F1, but with the same number of predicted positives the F1 is identical
+> (0.7226) and AP does not improve — the gain is a threshold shift toward the test prevalence,
+> not better ranking. Details in the integration plan §7.
+
 ---
 
 ## 10. Project structure
@@ -441,21 +489,25 @@ curve), `argmax` (raw peak). Details: [src/training/README.md](src/training/READ
 .
 ├── main.py                     # Hydra entrypoint (@hydra.main) — dispatch by cfg.mode
 ├── Makefile                    # centralized commands (pipeline + CI/CD)
-├── pyproject.toml              # deps (uv) — core + `neural`/`dev` groups
+├── pyproject.toml              # deps (uv) — core + `neural`/`gnn`/`vision`/`dev` groups
 ├── configs/                    # Hydra groups (see §8)
 ├── docs/implementation/        # implementation plan (7 phases)
 ├── notebooks/                  # incl. ensemble5_pipeline.ipynb (self-contained best model)
+├── references/                 # integration plan + GNN / meta-router / improvement-plan docs
+├── scripts/                    # meta-routers CA⊕GNN(+face), OOF ensemble, Optuna, hard mining
+├── tests/                      # pytest (face path, ensemble, OOF protocol, ASR timing, …)
 ├── data/                       # raw/ (dataset) · interim/ (audio, windows) · processed/ (features)
 └── src/
     ├── conf/                   # typed schemas + resolve_device + seed_everything
     ├── logger.py
     ├── base/                   # ABCs: BaseEmbedder, BaseModel, BaseTrainer
-    ├── data/                   # indexing, audio_io, windowing, datasets, schema
-    ├── features/               # text_embedder, audio_embedder, hesitation, text_features, tabular, builder
-    ├── models/                 # registry, random_forest, cross_attention
+    ├── data/                   # indexing, audio_io, windowing, datasets, schema, graph_builder, face_*
+    ├── features/               # text_embedder, audio_embedder, hesitation, text_features, tabular, builder, face_mesh
+    ├── models/                 # registry, random_forest, cross_attention, hetero_gnn(_contrastive), multimodal_hetero_*, face_gnn_ts
+    ├── eval/                   # protocol (grouped OOF CV + paired bootstrap)
     ├── training/               # factory, sklearn_trainer, lightning_trainer, ensemble, aggregation, metrics, splits
     ├── outputs/                # wandb_logger, checkpoint, reporter, submission
-    ├── pipeline/               # preprocess, featurize (orchestration)
+    ├── pipeline/               # preprocess, featurize, featurize_face (orchestration)
     └── scripts/                # extract_audio (mp4 → flac 16 kHz)
 ```
 

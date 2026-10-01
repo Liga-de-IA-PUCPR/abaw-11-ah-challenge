@@ -1,7 +1,9 @@
-"""Modelos do desafio BAH — dois na registry com tag de família.
+"""Modelos do desafio BAH — registry com tag de família (ver ``registry.py``).
 
 - ``random_forest``  (family="sklearn")   : classificador de janela em CPU.
 - ``cross_attention`` (family="lightning") : LightningModule sobre sequência de janelas.
+- GNNs (family="lightning", lazy): ``hetero_gnn_contrastive``, ``face_gnn_ts``,
+  ``multimodal_hetero_face``.
 
 O import do ``random_forest`` é eager (CPU, sem deps pesadas). O ``cross_attention``
 é registrado por uma **factory lazy** (ver ``registry.py``): o módulo só é importado

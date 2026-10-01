@@ -86,3 +86,11 @@ num_workers: 0
 # rótulo -1 (sem label de janela) e o RF treinaria numa classe espúria.
 train_splits: [train]
 calib_split: val
+
+# mode=featurize: lotes de ~N janelas (alinhados por vídeo) p/ limitar RAM/VRAM com
+# embedders deep (wav2vec2/hubert). null = lote único (comportamento original).
+featurize_chunk_size: null
+# mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir no Parquet.
+force_face: false
+# mode=train (lightning): JSON {video_id: peso} de mode=hard_mining → WeightedRandomSampler.
+hard_examples: null

@@ -1,0 +1,43 @@
+# @package _global_
+# [integração] cache wav2vec2 da main: data/processed/text_audio_windows_w2v.parquet (make featurize-w2v).
+# Face-only ROI (boca/olhos/sobrancelha/íris) + velocity + gnn4ts
+defaults:
+  - /face_embedder: mediapipe
+  - override /model: face_gnn_ts
+  - override /audio_embedder: wav2vec2
+  - override /text_embedder: roberta_emotion
+  - override /trainer: lightning
+
+experiment_name: abaw-ah-face-gnn4ts-roi
+
+data:
+  paths:
+    parquet_path: data/processed/text_audio_windows_w2v.parquet
+  batch_size: 4
+  num_workers: 2
+
+trainer:
+  max_epochs: 600
+  patience: 50
+  monitor: val_f1_macro
+  mode: max
+  accumulate_grad_batches: 4
+  log_every_n_steps: 10
+
+model:
+  lr: 5e-4
+  weight_decay: 1e-2
+  dropout: 0.15
+  dim_tab: 74
+  use_tabular: true
+  face:
+    temporal_mode: gnn4ts
+    roi: ah
+    use_velocity: true
+    landmark_stride: 1
+    spatial_hidden: 32
+    spatial_out: 64
+    temporal_hidden: 64
+    temporal_out: 128
+    top_k: 6
+    max_windows: 28

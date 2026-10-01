@@ -121,6 +121,7 @@ class FeatureBuilder:
         windows: list[WindowSample],
         out_path: str | Path,
         records: list[VideoRecord] | None = None,
+        chunk_size: int | None = None,
     ) -> pl.DataFrame:
         """Constrói o Parquet único de features (todas as janelas, todos os splits).
 
@@ -133,6 +134,10 @@ class FeatureBuilder:
             windows: ``WindowSample`` (FASE 2), na ordem das janelas.
             out_path: destino do Parquet (``cfg.data.paths.parquet_path``).
             records: opcional — fallback de ``video_label`` (``global_ah``) por vídeo.
+            chunk_size: se dado, processa ~``chunk_size`` janelas por vez (limita RAM/VRAM
+                com embedders deep) e grava o Parquet incrementalmente. Os lotes só quebram
+                na FRONTEIRA entre vídeos — as features de nível de resposta (texto A1/A3,
+                agrupadas por vídeo) saem idênticas às do lote único. ``None`` = lote único.
 
         Returns:
             ``polars.DataFrame`` escrito em ``out_path``.
@@ -141,8 +146,60 @@ class FeatureBuilder:
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         n = len(windows)
-        log.info(f"Construindo features para {n} janelas → {out_path.name}...")
+        spans = _video_aligned_spans(windows, chunk_size)
+        log.info(
+            f"Construindo features para {n} janelas → {out_path.name}"
+            + (f" ({len(spans)} lotes de ~{chunk_size} janelas)..." if len(spans) > 1 else "...")
+        )
 
+        # --- video_label: do WindowSample; fallback nos VideoRecord ------------
+        rec_labels: dict[str, int] = {
+            r.video_id: int(r.global_ah) for r in (records or []) if r.global_ah is not None
+        }
+
+        def _vlabel(w: WindowSample) -> int:
+            if w.video_label is not None:
+                return int(w.video_label)
+            return rec_labels.get(w.video_id, -1)
+
+        if len(spans) <= 1:  # lote único (comportamento original)
+            df = self._build_frame(windows, 0, _vlabel)
+            df.write_parquet(out_path)
+        else:
+            import gc
+
+            import pyarrow.parquet as pq
+            from tqdm import tqdm
+
+            writer: pq.ParquetWriter | None = None
+            try:
+                for a, b in tqdm(spans, desc="featurize", unit="lote"):
+                    table = self._build_frame(windows[a:b], a, _vlabel).to_arrow()
+                    if writer is None:
+                        writer = pq.ParquetWriter(out_path, table.schema)
+                    writer.write_table(table)
+                    del table
+                    gc.collect()
+                    _empty_cuda_cache()
+            finally:
+                if writer is not None:
+                    writer.close()
+            df = pl.read_parquet(out_path)
+
+        self._save_sidecar(out_path)
+        log.info(
+            f"Parquet salvo: {out_path.name} | {n} janelas, "
+            f"d_text={self._text_dim()}, d_audio={self.audio_embedder.dim}, "
+            f"d_tab={len(self.tabular.feature_names())}"
+        )
+        return df
+
+    def _build_frame(self, windows: list[WindowSample], offset: int, vlabel) -> pl.DataFrame:
+        """Extrai embeddings + tabular de um lote de janelas → DataFrame (colunas §6.2).
+
+        ``offset`` = índice global da 1ª janela do lote (``window_idx`` é global).
+        """
+        n = len(windows)
         # --- waveforms (cortados em [t0, t1] do .flac do vídeo) ----------------
         waveforms = self._load_waveforms(windows)
 
@@ -157,20 +214,10 @@ class FeatureBuilder:
         audio_emb = self.audio_embedder.extract(waveforms)  # (n, d_audio)
         tab = self.tabular.transform(windows, waveforms)  # (n, d_tab)
 
-        # --- video_label: do WindowSample; fallback nos VideoRecord ------------
-        rec_labels: dict[str, int] = {
-            r.video_id: int(r.global_ah) for r in (records or []) if r.global_ah is not None
-        }
-
-        def _vlabel(w: WindowSample) -> int:
-            if w.video_label is not None:
-                return int(w.video_label)
-            return rec_labels.get(w.video_id, -1)
-
-        df = pl.DataFrame(
+        return pl.DataFrame(
             {
                 "id": [w.video_id for w in windows],
-                "window_idx": np.arange(n, dtype=np.int32) if n else [],
+                "window_idx": np.arange(offset, offset + n, dtype=np.int32) if n else [],
                 "t0": [float(w.t0) for w in windows],
                 "t1": [float(w.t1) for w in windows],
                 "participant_id": [w.participant_id for w in windows],
@@ -179,7 +226,7 @@ class FeatureBuilder:
                 "text_emb": [row.tolist() for row in text_emb],
                 "tabular": [row.tolist() for row in tab],
                 "label": [int(w.label) if w.label is not None else -1 for w in windows],
-                "video_label": [_vlabel(w) for w in windows],
+                "video_label": [vlabel(w) for w in windows],
                 "split": [w.split for w in windows],
             },
             schema_overrides={
@@ -190,15 +237,6 @@ class FeatureBuilder:
                 "video_label": pl.Int8,
             },
         ).select(PARQUET_COLUMNS)
-
-        df.write_parquet(out_path)
-        self._save_sidecar(out_path)
-        log.info(
-            f"Parquet salvo: {out_path.name} | {n} janelas, "
-            f"d_text={self._text_dim()}, d_audio={self.audio_embedder.dim}, "
-            f"d_tab={len(self.tabular.feature_names())}"
-        )
-        return df
 
     # =========================================================================
     # Áudio por janela
@@ -394,3 +432,34 @@ def build_feature_components(
         sample_rate=cfg.data.audio.sample_rate,
         text_featurizer=text_featurizer,
     )
+
+
+def _video_aligned_spans(
+    windows: list[WindowSample], chunk_size: int | None
+) -> list[tuple[int, int]]:
+    """Fatias ``[a, b)`` de ~``chunk_size`` janelas que só quebram entre vídeos.
+
+    ``chunk_size`` ``None``/``<=0``/``>= len(windows)`` → uma fatia só (lote único).
+    """
+    n = len(windows)
+    if not chunk_size or chunk_size <= 0 or chunk_size >= n:
+        return [(0, n)]
+    spans: list[tuple[int, int]] = []
+    a = 0
+    for i in range(1, n + 1):
+        boundary = i == n or windows[i].video_id != windows[i - 1].video_id
+        if boundary and (i - a >= chunk_size or i == n):
+            spans.append((a, i))
+            a = i
+    return spans
+
+
+def _empty_cuda_cache() -> None:
+    """Libera o cache do allocator CUDA entre lotes (no-op sem CUDA/torch)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass

@@ -19,6 +19,12 @@
 #   make setup-neural     # adds Lightning + torchmetrics
 #   make train-neural     # cross-attention over the window sequence
 #
+# Multimodal (Rodrigo's GNNs + video; see references/integration_plan.md):
+#   make setup-gnn        # + torch-geometric + gnn-modalblocks (setup-vision adds MediaPipe)
+#   make featurize-w2v    # wav2vec2 cache used by the GNN presets
+#   make train-gnn        # heterogeneous GNN (GNN_EXPERIMENT=hetero_gnn_v2_tune_wav2vec2)
+#   make ensemble-multimodal   # cross-attention seeds + GNN (+ face) run dirs, prob. averaging
+#
 # Parameters (override on the command line):
 #   DEVICE=auto|cpu|mps|cuda   SPLIT=val|test   OUT=<file>
 #   EXPERIMENT=<preset>        ARGS="<extra Hydra overrides>"   SWEEP="<multirun args>"
@@ -53,6 +59,15 @@ ENSEMBLE_MANIFEST ?= outputs/cross_attention/ensemble_manifest.txt
 # Threshold calibration used for the ensemble (probability averaging smooths the
 # val curve -> smooth/argmax transfer better than base_rate; see paper §3.4).
 ENS_CALIB         ?= smooth
+# Multimodal (Rodrigo's GNNs + video). The cross-attention reads the default (librosa)
+# cache; the GNN/face presets read the wav2vec2 cache (W2V_PARQUET). Each ensemble member
+# loads its own cache for the same videos.
+GNN_EXPERIMENT    ?= hetero_gnn_v2_tune_wav2vec2
+FACE_EXPERIMENT   ?= face_gnn_ts_roi
+W2V_PARQUET       ?= data/processed/text_audio_windows_w2v.parquet
+GNN_RUN           ?= outputs/hetero_gnn_contrastive/20260713_162753
+FACE_RUN          ?=
+MM_ENS_NAME       ?= ensemble_multimodal
 
 # MPS (Apple Metal): fall back to CPU for ops not yet supported by Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
@@ -68,6 +83,9 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         extract-audio preprocess featurize data \
         train train-rf train-neural sweep evaluate submit pipeline \
         train-ensemble ensemble-evaluate ensemble-submit reproduce-best \
+        setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
+        eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
+        meta-router \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -101,6 +119,19 @@ help:
 	@echo "    reproduce-best   PAPER RESULT: data + 5-seed ensemble + eval on test"
 	@echo "    pipeline         data + train + evaluate (end to end)"
 	@echo ""
+	@echo "  Multimodal — Rodrigo's GNNs + video (references/integration_plan.md):"
+	@echo "    setup-gnn        + gnn group (torch-geometric, gnn-modalblocks)"
+	@echo "    setup-vision     + vision group (MediaPipe Face Mesh, OpenCV)"
+	@echo "    featurize-w2v    wav2vec2 cache ($(W2V_PARQUET)) for the GNN presets"
+	@echo "    featurize-face   Face Mesh landmarks -> face_landmarks column (FACE_EXPERIMENT)"
+	@echo "    train-gnn        trains GNN_EXPERIMENT=$(GNN_EXPERIMENT)"
+	@echo "    train-face       trains FACE_EXPERIMENT=$(FACE_EXPERIMENT)"
+	@echo "    eval-run         RUN_DIR=<dir> EXPERIMENT=<preset>: eval_{train,val,test} + predictions.csv"
+	@echo "    eval-ensemble-members  eval-run for every run in the cross-attention manifest"
+	@echo "    ensemble-multimodal    manifest CA seeds + GNN_RUN (+ FACE_RUN), prob. averaging"
+	@echo "    ensemble-multimodal-submit  submission from that ensemble (OUT=$(OUT))"
+	@echo "    meta-router      CA⊕GNN router over the members' predictions.csv"
+	@echo ""
 	@echo "  Quality (CI/CD):"
 	@echo "    ci               format-check + lint + compile (fast gate)"
 	@echo "    check            ci + typecheck + test (full gate)"
@@ -114,6 +145,7 @@ help:
 	@echo "    clean-all        clean + clean-cache + clean-outputs"
 	@echo ""
 	@echo "  Parameters: DEVICE=$(DEVICE)  SPLIT  OUT  EXPERIMENT  ARGS  SWEEP  SEEDS  ENS_CALIB"
+	@echo "              GNN_EXPERIMENT  FACE_EXPERIMENT  GNN_RUN  FACE_RUN  W2V_PARQUET  RUN_DIR"
 
 # ----------------------------------------------------------------------------
 # Environment
@@ -126,6 +158,14 @@ setup-neural:
 
 setup-all:
 	$(UV) sync --group neural --group dev
+
+# Rodrigo's heterogeneous GNNs (torch-geometric + gnn-modalblocks from git).
+setup-gnn:
+	$(UV) sync --group neural --group gnn --group dev
+
+# + video: MediaPipe Face Mesh for mode=featurize_face.
+setup-vision:
+	$(UV) sync --group neural --group gnn --group vision --group dev
 
 ffmpeg-check:
 	@command -v ffmpeg >/dev/null 2>&1 \
@@ -223,6 +263,71 @@ reproduce-best:
 	$(MAKE) ensemble-evaluate SPLIT=test ENS_CALIB=smooth ARGS="+ensemble_name=ensemble_5 $(ARGS)"
 	@echo "✓ Done. Reference: Macro-F1 0.722 · AP 0.875 (test, threshold calibrated on val)."
 	@echo "  Reports: outputs/cross_attention/ensemble_5/eval_test/"
+
+# --- Multimodal: Rodrigo's GNNs + video on top of this pipeline --------------
+# The GNN/face presets (configs/experiment/hetero_gnn*, multimodal_*, face_gnn_ts*)
+# consume the SAME Parquet contract; wav2vec2 presets point to W2V_PARQUET.
+comma := ,
+
+featurize-w2v:
+	$(PY) $(MAIN) mode=featurize +experiment=featurize_deep device=$(DEVICE) \
+	  data.paths.parquet_path=$(W2V_PARQUET) $(ARGS)
+
+# Adds the face_landmarks column (478x3 per window) to the preset's Parquet.
+# Needs the .mp4 files under data/raw/data/Videos and `make setup-vision`.
+featurize-face:
+	$(PY) $(MAIN) mode=featurize_face +experiment=$(FACE_EXPERIMENT) $(ARGS)
+
+train-gnn:
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=$(GNN_EXPERIMENT) \
+	  device=$(DEVICE) $(ARGS)
+
+train-face:
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=$(FACE_EXPERIMENT) \
+	  device=$(DEVICE) $(ARGS)
+
+# eval_{train,val,test}/ (metrics + plots + predictions.csv) for ONE run dir.
+# EXPERIMENT = the preset it was trained with (selects the model and its cache).
+eval-run:
+	@test -n "$(RUN_DIR)" || (echo "Set RUN_DIR=<run dir> (and EXPERIMENT=<training preset>)"; exit 1)
+	@for s in train val test; do \
+	  $(MPS_FALLBACK) $(PY) $(MAIN) mode=evaluate $(_EXP) checkpoint=$(RUN_DIR) split=$$s \
+	    device=$(DEVICE) $(ARGS) || exit 1; \
+	done
+
+# predictions.csv for every cross-attention seed of the manifest (meta-router input).
+eval-ensemble-members:
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Empty manifest: run 'make train-ensemble' first."; exit 1)
+	@for r in $$(cat $(ENSEMBLE_MANIFEST)); do \
+	  $(MAKE) --no-print-directory eval-run RUN_DIR=$$r EXPERIMENT=cross_attention || exit 1; \
+	done
+
+# Heterogeneous ensemble: manifest CA seeds (librosa cache) + GNN_RUN (+ FACE_RUN), each
+# member reading its own cache; threshold recalibrated on val (ENS_CALIB) as usual.
+# (items built with $(comma): a literal comma inside $(if ...) would split its arguments)
+_MM_GNN_ITEM  = {checkpoint:$(GNN_RUN)$(comma)parquet_path:$(W2V_PARQUET)}
+_MM_FACE_ITEM = {checkpoint:$(FACE_RUN)$(comma)parquet_path:$(W2V_PARQUET)}
+_MM_MEMBERS   = $(_ENS_LIST),$(_MM_GNN_ITEM)$(if $(FACE_RUN),$(comma)$(_MM_FACE_ITEM))
+
+ensemble-multimodal:
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Empty manifest: run 'make train-ensemble' first."; exit 1)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=evaluate +experiment=cross_attention \
+	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) \
+	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_MM_MEMBERS)]" \
+	  +ensemble_name=$(MM_ENS_NAME) $(ARGS)
+
+ensemble-multimodal-submit:
+	@test -s $(ENSEMBLE_MANIFEST) || (echo "Empty manifest: run 'make train-ensemble' first."; exit 1)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=submit +experiment=cross_attention \
+	  device=$(DEVICE) $(if $(SPLIT),split=$(SPLIT),split=test) out=$(OUT) \
+	  aggregation.calibration=$(ENS_CALIB) "ensemble=[$(_MM_MEMBERS)]" $(ARGS)
+
+# Rodrigo's CA⊕GNN meta-router (logreg on disagreements) over the members'
+# predictions.csv (run `make eval-ensemble-members` + `make eval-run RUN_DIR=$(GNN_RUN) ...`).
+meta-router:
+	$(PY) scripts/meta_router_ca_gnn.py \
+	  --ca-runs $$(for r in $$(cat $(ENSEMBLE_MANIFEST)); do basename $$r; done) \
+	  --gnn-run $(GNN_RUN) $(ARGS)
 
 # End to end (data -> train -> evaluate).
 pipeline: data train evaluate
