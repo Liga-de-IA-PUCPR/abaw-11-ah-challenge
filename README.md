@@ -208,6 +208,8 @@ run gives 0.722 / 0.875 with the ensemble threshold at 0.50.
 | | `reproduce-best` | **paper result**: data + 5 seeds + test evaluation |
 | **Quality (CI)** | `ci` · `check` | `format-check + lint + compile` · + `typecheck + test` |
 | | `lint` · `format` · `typecheck` · `test` · `compile` | ruff · ruff --fix · mypy · pytest · py_compile |
+| **Outputs archive** | `outputs-push` · `outputs-pull` · `outputs-sync` | `outputs/` → private HF bucket (new version) · bucket → `outputs/` · both ([§11.1](#111-versioned-archive-on-the-hugging-face-hub)) |
+| | `outputs-status` · `outputs-free` · `outputs-log` | what each direction would do · frees the disk (weights already in the bucket) · version history |
 | **Cleaning** | `clean` · `clean-cache` · `clean-outputs` · `clean-all` | caches · `data/interim,processed` · `outputs/…` · everything |
 
 **Parameters** (override on the command line):
@@ -494,9 +496,10 @@ now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-route
 ├── docs/implementation/        # implementation plan (7 phases)
 ├── notebooks/                  # incl. ensemble5_pipeline.ipynb (self-contained best model)
 ├── references/                 # integration plan + GNN / meta-router / improvement-plan docs
-├── scripts/                    # meta-routers CA⊕GNN(+face), OOF ensemble, Optuna, hard mining
+├── scripts/                    # meta-routers CA⊕GNN(+face), OOF ensemble, Optuna, outputs ⇄ HF bucket
 ├── tests/                      # pytest (face path, ensemble, OOF protocol, ASR timing, …)
 ├── data/                       # raw/ (dataset) · interim/ (audio, windows) · processed/ (features)
+├── outputs/                    # run artifacts (gitignored) — versioned in a private HF bucket (§11)
 └── src/
     ├── conf/                   # typed schemas + resolve_device + seed_everything
     ├── logger.py
@@ -510,6 +513,94 @@ now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-route
     ├── pipeline/               # preprocess, featurize, featurize_face (orchestration)
     └── scripts/                # extract_audio (mp4 → flac 16 kHz)
 ```
+
+---
+
+## 11. Outputs & submission
+
+Everything a run produces lands in `outputs/` (git-ignored):
+
+```
+outputs/
+├── <model>/<YYYYMMDD_HHMMSS>/              # one training run
+│   ├── checkpoints/best-*.ckpt             #   Lightning weights (RF/LightGBM: model.joblib)
+│   ├── trainer_state.json                  #   threshold + model config, written when training ENDS
+│   └── eval_<split>/                       #   metrics.json, predictions.csv, results.txt, plots/
+├── cross_attention/ensemble_manifest.txt   # run dirs of the last `make train-ensemble`
+├── cross_attention/ensemble_<n>/eval_test/ # ensemble reports
+├── <experiment_name>/<date_time>/          # Hydra logs (.hydra/ + main.log)
+├── wandb/                                  # W&B runs
+└── submission.txt                          # `make submit` (OUT=<file>; format: src/outputs/submission.py)
+```
+
+### 11.1 Versioned archive on the Hugging Face Hub
+
+`outputs/` is versioned in the **private** Storage Bucket
+`LF-BF/abaw-11-ah-challenge-outputs` (`hf://buckets/LF-BF/abaw-11-ah-challenge-outputs`)
+with the same layout: a file's path in the bucket is its path relative to `outputs/`. The
+bucket is the durable, auditable record of every checkpoint; the local disk is a cache that
+can be emptied and rehydrated. Implementation:
+[`scripts/outputs_bucket.py`](scripts/outputs_bucket.py).
+
+**Setup (once).** Log in with a token that can **write** to the bucket's namespace
+(`uv run hf auth login`, or `HF_TOKEN` in the environment). Every `make outputs-*` prints
+the user, the token role and where the token came from before transferring anything, and
+refuses a read-only token on a push. The first `make outputs-push` creates the bucket as
+private, and the script refuses to sync with a public bucket: checkpoints and predictions
+derive from BAH, whose EULA forbids redistribution. Another bucket (e.g. an organization's,
+to share with the team): `HF_BUCKET=<namespace>/<name> make …`.
+
+```bash
+make outputs-status        # both sides + what push/pull would do (transfers nothing)
+make outputs-push          # local → bucket: what is new or newer here becomes a new version
+make outputs-pull          # bucket → local: what is missing here or newer there
+make outputs-sync          # push + pull (bidirectional)
+make outputs-free          # push + deletes local weights the bucket already has (same hash)
+make outputs-log           # version history: who, when, git commit, what changed
+
+make outputs-pull RUN_DIR=outputs/cross_attention/20260711_191444   # one run (or PREFIX=<dir>)
+make outputs-push ARGS="--dry-run"                                  # any target: only the plan
+make outputs-pull PREFIX=cross_attention ARGS="--exclude '*.ckpt'"  # a subtree without weights
+make outputs-log PREFIX=cross_attention/ensemble_manifest.txt       # history of one file
+```
+
+Guarantees (tested offline in `tests/test_outputs_bucket.py` and end to end against the Hub):
+
+- **Push is additive.** It uploads what is new or newer locally and **never deletes** in the
+  bucket. Before overwriting a file it copies the previous content (server-side, by Xet hash,
+  no re-upload) to `.versions/<version>/archive/<path>`; a local copy that is *older* than the
+  bucket's but holds content the bucket does not have is archived there too. Every push that
+  changes something is a **version** with a manifest, `.versions/<version>/manifest.json`: HF
+  user, machine, git commit/branch/dirty, and per file the size, Xet hash, mtime and where the
+  previous content went. A push with nothing new creates no version.
+- **Pull never loses local work.** It downloads what is missing locally or newer in the bucket
+  (into `*.hfpart`, renamed only once complete) and restores the bucket's mtime, so the next
+  push sends nothing. It never deletes local files and never replaces a local file whose
+  content the bucket does not have: that one is listed as a conflict and kept, and
+  `make outputs-sync` resolves it (the push archives the local copy, then the pull brings the
+  newer one).
+- **Free deletes only what is provably in the bucket:** `*.ckpt` / `*.joblib` (~98% of the
+  volume) whose local Xet hash equals the bucket's, never in a run without
+  `trainer_state.json` (it may still be training), never a file modified in the last 15 min.
+  Freed paths are recorded in `outputs/.outputs_bucket/freed.json`: a full pull or sync does
+  not bring them back, a targeted one (`PREFIX` / `RUN_DIR`, or `ARGS=--rehydrate`) does.
+- Symlinks (W&B's `latest-run`, `debug*.log`) and `.DS_Store` are never uploaded.
+
+To get back an older version of a file, find the version that replaced it and copy it out of
+the archive:
+
+```bash
+make outputs-log PREFIX=<path under outputs/>
+uv run hf buckets cp hf://buckets/LF-BF/abaw-11-ah-challenge-outputs/.versions/<version>/archive/<path> <dest>
+```
+
+After `make outputs-free`, whatever reads weights (`evaluate` / `submit` with
+`checkpoint=<run dir>`, ensembles) needs `make outputs-pull RUN_DIR=<run dir>` first; without
+`checkpoint=`, `evaluate` / `submit` pick the most recent run that still has its weights
+locally. `make clean-outputs` deletes `outputs/` without checking the bucket, so prefer
+`make outputs-free`. The script runs in its own environment (PEP 723 metadata, locked in
+`scripts/outputs_bucket.py.lock`): it needs `huggingface_hub>=2`, and `transformers` pins the
+project's to `<2`.
 
 ---
 

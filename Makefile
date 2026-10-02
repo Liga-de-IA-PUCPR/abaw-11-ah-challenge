@@ -25,6 +25,13 @@
 #   make train-gnn        # heterogeneous GNN (GNN_EXPERIMENT=hetero_gnn_v2_tune_wav2vec2)
 #   make ensemble-multimodal   # cross-attention seeds + GNN (+ face) run dirs, prob. averaging
 #
+# Outputs archive (private Hugging Face bucket, versioned; push never deletes there):
+#   make outputs-push     # local → bucket: what changed becomes a new version
+#   make outputs-pull     # bucket → local (PREFIX=<dir under outputs/> or RUN_DIR=<run dir>)
+#   make outputs-sync     # push + pull   |   outputs-status   what each direction would do
+#   make outputs-free     # push + deletes local weights the bucket already has (same hash)
+#   make outputs-log      # version history: who, when, git commit, what changed
+#
 # Parameters (override on the command line):
 #   DEVICE=auto|cpu|mps|cuda   SPLIT=val|test   OUT=<file>
 #   EXPERIMENT=<preset>        ARGS="<extra Hydra overrides>"   SWEEP="<multirun args>"
@@ -143,6 +150,18 @@ help:
 	@echo "    clean-cache      removes derived artifacts (data/interim, data/processed)"
 	@echo "    clean-outputs    removes outputs/ multirun/ wandb/"
 	@echo "    clean-all        clean + clean-cache + clean-outputs"
+	@echo ""
+	@echo "  Outputs archive — private HF bucket $(HF_BUCKET) (scripts/outputs_bucket.py):"
+	@echo "    outputs-status   both sides + what push/pull would do (transfers nothing)"
+	@echo "    outputs-push     local → bucket: new/changed files become a VERSION; the content"
+	@echo "                     it overwrites is archived in .versions/ (never deletes there)"
+	@echo "    outputs-pull     bucket → local: missing/newer files, bucket mtime restored"
+	@echo "                     (never deletes here nor replaces local content the bucket lacks)"
+	@echo "    outputs-sync     push + pull (bidirectional: newest mtime wins, nothing is lost)"
+	@echo "    outputs-free     push + deletes local *.ckpt/*.joblib with the bucket's Xet hash"
+	@echo "    outputs-log      version history (who, when, git commit, what changed)"
+	@echo "    target: PREFIX=<file|dir under outputs/> or RUN_DIR=outputs/<model>/<run>"
+	@echo "    flags:  ARGS=\"--dry-run\" | \"--exclude '*.ckpt'\" | \"--rehydrate\" (pull/sync)"
 	@echo ""
 	@echo "  Parameters: DEVICE=$(DEVICE)  SPLIT  OUT  EXPERIMENT  ARGS  SWEEP  SEEDS  ENS_CALIB"
 	@echo "              GNN_EXPERIMENT  FACE_EXPERIMENT  GNN_RUN  FACE_RUN  W2V_PARQUET  RUN_DIR"
@@ -363,6 +382,47 @@ ci: format-check lint compile
 # Full gate (includes type-check and tests).
 check: ci typecheck test
 	@echo "✓ Full check OK"
+
+# ----------------------------------------------------------------------------
+# Outputs archive — private Hugging Face Storage Bucket (scripts/outputs_bucket.py)
+# ----------------------------------------------------------------------------
+# outputs/ is versioned in a PRIVATE bucket (checkpoints and predictions derive from the
+# BAH dataset, whose EULA forbids redistribution; the script refuses a public bucket).
+# Nothing is ever lost: push never deletes in the bucket, and before overwriting a file
+# it archives the previous content under .versions/<version>/archive/ (server-side copy,
+# no re-upload); every push that changes something is a version with a manifest (who,
+# when, git commit, what changed). Pull never deletes local files nor replaces local
+# content the bucket does not have. Free only deletes what the bucket holds with the
+# same Xet hash, and a full pull does not bring it back (PREFIX/RUN_DIR does).
+# The script runs in its OWN environment (PEP 723 + scripts/outputs_bucket.py.lock): it
+# needs huggingface_hub>=2, and transformers pins the project's to <2.
+# Auth: `hf auth login` or HF_TOKEN (write token). Another bucket: HF_BUCKET=<ns>/<name>.
+HF_BUCKET      ?= LF-BF/abaw-11-ah-challenge-outputs
+OUTPUTS_BUCKET := $(UV) run scripts/outputs_bucket.py --bucket $(HF_BUCKET)
+# Target (empty = all of outputs/): PREFIX=<file|dir under outputs/> or RUN_DIR=outputs/<...>
+_OB_PREFIX     = $(or $(PREFIX),$(patsubst outputs/%,%,$(RUN_DIR)))
+_OB_TARGET     = $(if $(_OB_PREFIX),--prefix "$(_OB_PREFIX)",)
+
+.PHONY: outputs-status outputs-push outputs-pull outputs-sync outputs-free outputs-log
+
+outputs-status:
+	$(OUTPUTS_BUCKET) status $(_OB_TARGET) $(ARGS)
+
+outputs-push:
+	$(OUTPUTS_BUCKET) push $(_OB_TARGET) $(ARGS)
+
+outputs-pull:
+	$(OUTPUTS_BUCKET) pull $(_OB_TARGET) $(ARGS)
+
+outputs-sync:
+	$(OUTPUTS_BUCKET) sync $(_OB_TARGET) $(ARGS)
+
+# The script pushes first: free only deletes what the bucket already holds.
+outputs-free:
+	$(OUTPUTS_BUCKET) free $(_OB_TARGET) $(ARGS)
+
+outputs-log:
+	$(OUTPUTS_BUCKET) log $(_OB_TARGET) $(ARGS)
 
 # ----------------------------------------------------------------------------
 # Cleaning
