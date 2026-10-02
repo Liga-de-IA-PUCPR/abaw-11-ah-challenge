@@ -44,6 +44,9 @@ def _build_face_module(
     face_max_windows: int | None = None,
     gat_num_layers: int = 2,
     lstm_num_layers: int = 2,
+    tab_fusion: str = "graph",
+    tab_pool: str = "attention",
+    audio_norm: bool = False,
 ):
     import torch
     from torch import nn
@@ -67,6 +70,9 @@ def _build_face_module(
         lstm_hidden=lstm_hidden,
         gat_num_layers=gat_num_layers,
         lstm_num_layers=lstm_num_layers,
+        tab_fusion=tab_fusion,
+        tab_pool=tab_pool,
+        audio_norm=audio_norm,
     )
 
     face_encoder = _build_face_gcn_ts(
@@ -106,13 +112,9 @@ def _build_face_module(
             face_seq: torch.Tensor | None = None,
             key_padding_mask: torch.Tensor | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            fused, proj_a, proj_b = self.base._fuse_windows(feat_a, feat_b)
-            readout_parts = [self.base._gat_video_z(feat_a, feat_b, fused, tab_seq, lengths)]
-
-            if self.base.use_latent_gcn and self.base.latent_gcn is not None:
-                readout_parts.append(self.base._latent_gcn_pool(fused, lengths))
-            if self.base.use_bilstm and self.base.temporal is not None:
-                readout_parts.append(self.base._bilstm_pool(fused, lengths))
+            readout_parts, proj_a, proj_b = self.base._readout_parts(
+                feat_a, feat_b, tab_seq, lengths, key_padding_mask
+            )
             if face_seq is not None and face_seq.numel() > 0:
                 readout_parts.append(self.face_encoder(face_seq, lengths))
 
@@ -162,6 +164,9 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             lstm_hidden=self.lstm_hidden,
             gat_num_layers=self.gat_num_layers,
             lstm_num_layers=self.lstm_num_layers,
+            tab_fusion=self.tab_fusion,
+            tab_pool=self.tab_pool,
+            audio_norm=self.audio_norm,
             face_top_k=self.face_top_k,
             face_spatial_hidden=self.face_spatial_hidden,
             face_spatial_out=self.face_spatial_out,
@@ -188,6 +193,9 @@ class MultimodalHeteroFaceFusion(MultimodalHeteroFullFusion):
             contrastive_cfg=self.contrastive,
             loss_cfg=self.loss,
         )
+        if not self.use_face:
+            # face.enabled=false → é o multimodal_hetero_full puro (forward sem face_seq).
+            return lit
 
         def _forward_with_face(batch):
             return lit.model(

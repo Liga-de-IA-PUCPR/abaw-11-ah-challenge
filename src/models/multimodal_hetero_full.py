@@ -13,6 +13,14 @@ if TYPE_CHECKING:
 
 log = get_logger("models.multimodal_hetero_full")
 
+# Como o tab_seq (features de suporte: hesitação + texto + qtype) entra no modelo:
+#   graph  média crua das janelas como feature do nó ``video`` (original do Rodrigo)
+#   late   BN → proj → pooling atenção-MIL → concat no readout (≈ use_tab_enhanced do HeteroGAT)
+#   token  BN → proj por janela, fundido a cada token ``fused`` ANTES de GAT/LatentGCN/BiLSTM
+#          (mesma fusão da cross-attention com tab_fusion=token)
+#   none   fora do modelo (nó ``video`` zerado) — controle da ablação
+TAB_FUSIONS = ("graph", "late", "token", "none")
+
 
 def _build_full_module(
     dim_a: int,
@@ -31,6 +39,9 @@ def _build_full_module(
     lstm_hidden: int = 64,
     gat_num_layers: int = 2,
     lstm_num_layers: int = 2,
+    tab_fusion: str = "graph",
+    tab_pool: str = "attention",
+    audio_norm: bool = False,
 ):
     import torch
     from gnn_modalblocks import ENCODERS, MultimodalBlock
@@ -38,6 +49,10 @@ def _build_full_module(
     from torch_geometric.data import Batch
 
     from src.models.hetero_gat_edge import build_hetero_gat
+    from src.models.tab_fusion import build_tab_support_encoder, masked_batch_norm
+
+    if tab_fusion not in TAB_FUSIONS:
+        raise ValueError(f"tab_fusion={tab_fusion!r} inválido; use um de {TAB_FUSIONS}.")
 
     in_channels = {
         "audio": dim_a,
@@ -72,6 +87,9 @@ def _build_full_module(
             self.dropout = nn.Dropout(dropout)
             self.use_latent_gcn = use_latent_gcn
             self.use_bilstm = use_bilstm
+            # Áudio em escala crua (librosa: centroide/rolloff ~10³) entra no GAT como feature
+            # de nó; o BN por feature (janelas válidas) o padroniza para todos os ramos.
+            self.audio_norm = nn.BatchNorm1d(dim_a) if audio_norm else None
 
             if use_latent_gcn:
                 self.latent_gcn = ENCODERS.build(
@@ -98,8 +116,25 @@ def _build_full_module(
                 self.temporal = None
                 lstm_out = 0
 
+            # Features de suporte fora do grafo (late/token): mesmo encoder do HeteroGAT
+            # (BN só nas janelas válidas → proj → LN). Em "token" o pooling não é usado.
+            self.tab_fusion = tab_fusion
+            self.tab_encoder = None
+            tab_out = 0
+            if tab_fusion == "late":
+                self.tab_encoder = build_tab_support_encoder(
+                    dim_tab, out_channels, pool=tab_pool, dropout=dropout
+                )
+                tab_out = out_channels
+            elif tab_fusion == "token":
+                self.tab_encoder = build_tab_support_encoder(
+                    dim_tab, common_dim, pool="mean", dropout=dropout
+                )
+                self.token_fuse = nn.Linear(common_dim * 2, common_dim)
+                self.token_norm = nn.LayerNorm(common_dim)
+
             gcn_out = gcn_out_dim if use_latent_gcn else 0
-            readout_dim = out_channels + gcn_out + lstm_out
+            readout_dim = out_channels + gcn_out + lstm_out + tab_out
             self.readout_dim = readout_dim
             self.classifier = nn.Sequential(
                 nn.Linear(readout_dim, readout_dim),
@@ -192,6 +227,33 @@ def _build_full_module(
                 return empty, empty
             return torch.cat(pairs_a, dim=0), torch.cat(pairs_b, dim=0)
 
+        def _readout_parts(
+            self,
+            feat_a: torch.Tensor,
+            feat_b: torch.Tensor,
+            tab_seq: torch.Tensor,
+            lengths: torch.Tensor,
+            key_padding_mask: torch.Tensor | None = None,
+        ) -> tuple[list[torch.Tensor], torch.Tensor, torch.Tensor]:
+            """Ramos do readout (GAT ‖ LatentGCN ‖ BiLSTM ‖ tab late) + projeções áudio/texto."""
+            if self.audio_norm is not None:
+                feat_a = masked_batch_norm(self.audio_norm, feat_a, key_padding_mask)
+            fused, proj_a, proj_b = self._fuse_windows(feat_a, feat_b)
+            if self.tab_fusion == "token":
+                tab_tok = self.tab_encoder.tokens(tab_seq, key_padding_mask)
+                fused = self.token_norm(self.token_fuse(torch.cat([fused, tab_tok], dim=-1)))
+            # Fora do modo "graph" o tab não alimenta o nó video (zeros, mesma largura).
+            graph_tab = tab_seq if self.tab_fusion == "graph" else torch.zeros_like(tab_seq)
+            parts = [self._gat_video_z(feat_a, feat_b, fused, graph_tab, lengths)]
+
+            if self.use_latent_gcn and self.latent_gcn is not None:
+                parts.append(self._latent_gcn_pool(fused, lengths))
+            if self.use_bilstm and self.temporal is not None:
+                parts.append(self._bilstm_pool(fused, lengths))
+            if self.tab_fusion == "late":
+                parts.append(self.tab_encoder(tab_seq, key_padding_mask))
+            return parts, proj_a, proj_b
+
         def forward(
             self,
             feat_a: torch.Tensor,
@@ -201,14 +263,9 @@ def _build_full_module(
             key_padding_mask: torch.Tensor | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """Retorna ``(logit, video_emb, align_a, align_b)``."""
-            fused, proj_a, proj_b = self._fuse_windows(feat_a, feat_b)
-            parts = [self._gat_video_z(feat_a, feat_b, fused, tab_seq, lengths)]
-
-            if self.use_latent_gcn and self.latent_gcn is not None:
-                parts.append(self._latent_gcn_pool(fused, lengths))
-            if self.use_bilstm and self.temporal is not None:
-                parts.append(self._bilstm_pool(fused, lengths))
-
+            parts, proj_a, proj_b = self._readout_parts(
+                feat_a, feat_b, tab_seq, lengths, key_padding_mask
+            )
             video_emb = self.dropout(torch.cat(parts, dim=-1))
             logit = self.classifier(video_emb)
             align_a, align_b = self._collect_align_pairs(proj_a, proj_b, lengths)
@@ -238,6 +295,9 @@ class MultimodalHeteroFullFusion:
         self.use_latent_gcn = bool(cfg.get("use_latent_gcn", True))
         self.use_bilstm = bool(cfg.get("use_bilstm", True))
         self.lstm_hidden = int(cfg.get("lstm_hidden", 64))
+        self.tab_fusion = str(cfg.get("tab_fusion", "graph"))  # graph | late | token | none
+        self.tab_pool = str(cfg.get("tab_pool", "attention"))  # pooling do modo late
+        self.audio_norm = bool(cfg.get("audio_norm", False))  # BN no áudio (librosa cru)
         self.lr = float(cfg.get("lr", 1e-3))
         self.weight_decay = float(cfg.get("weight_decay", 1e-2))
         self.pos_weight = cfg.get("pos_weight", "auto")
@@ -283,6 +343,9 @@ class MultimodalHeteroFullFusion:
             lstm_hidden=self.lstm_hidden,
             gat_num_layers=self.gat_num_layers,
             lstm_num_layers=self.lstm_num_layers,
+            tab_fusion=self.tab_fusion,
+            tab_pool=self.tab_pool,
+            audio_norm=self.audio_norm,
         )
         gae_path = self._gae_init_path or self.gae_init
         if gae_path:
