@@ -92,5 +92,8 @@ calib_split: val
 featurize_chunk_size: null
 # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir no Parquet.
 force_face: false
+# mode=featurize_face: copia face_landmarks de OUTRO Parquet (mesmas janelas) em vez de rodar o
+# MediaPipe — extrai uma vez e reaproveita em todos os caches (librosa, wav2vec2).
+face_from: null
 # mode=train (lightning): JSON {video_id: peso} de mode=hard_mining → WeightedRandomSampler.
 hard_examples: null

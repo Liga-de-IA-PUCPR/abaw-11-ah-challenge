@@ -273,6 +273,9 @@ class DataConfig:
     featurize_chunk_size: int | None = None
     # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir.
     force_face: bool = False
+    # mode=featurize_face: copia a coluna face_landmarks de OUTRO Parquet (join por janela)
+    # em vez de rodar o MediaPipe — mesmo vídeo, outro cache (ex.: librosa → wav2vec2).
+    face_from: str | None = None
     # mode=train (lightning): JSON {video_id: peso} gerado por mode=hard_mining →
     # WeightedRandomSampler no treino. None = amostragem uniforme.
     hard_examples: str | None = None
@@ -369,7 +372,8 @@ class ModelConfig:
     dim_tab: int | None = None  # inferido do cache no fit (ramo tabular opcional)
     use_tabular: bool = False  # funde tab_seq (hesitação + tabulares) na cross-attention
     pool: Literal["mean", "attention", "max"] = "mean"  # agregação temporal janela→vídeo
-    tab_fusion: Literal["late", "token"] = "late"  # tab: late (concat pós-pool) | token (pré-pool)
+    # tab: late (concat pós-pool) | token (pré-pool); GNNs: + graph (nó video) | mean | none
+    tab_fusion: Literal["late", "token", "graph", "mean", "none"] = "late"
     common_dim: int = 512
     num_heads: int = 4
     num_classes: int = 1

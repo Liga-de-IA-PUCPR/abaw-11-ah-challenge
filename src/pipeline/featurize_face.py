@@ -23,6 +23,10 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     os vídeos ``.mp4`` sob ``data.paths.data_root`` (+ grupo opcional ``vision``).
     Processa **por vídeo** (um ``VideoCapture`` por arquivo) p/ não reabrir o mp4
     a cada janela.
+
+    Com ``data.face_from=<parquet>`` não roda o MediaPipe: copia a coluna ``face_landmarks``
+    daquele Parquet (mesmas janelas, outro cache de áudio/texto) — os landmarks são
+    extraídos uma vez e reaproveitados por todos os caches.
     """
     data = cfg.data
     force = bool(data.get("force_face", False))
@@ -34,6 +38,10 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     if "face_landmarks" in df.columns and not force:
         log.info(f"Coluna face_landmarks já presente em {parquet_path} (use data.force_face=true).")
         return {"parquet_path": str(parquet_path), "cached": True}
+
+    face_from = data.get("face_from")
+    if face_from:
+        return _copy_face_column(df, parquet_path, Path(face_from))
 
     interim_dir = Path(data.paths.interim_dir)
     windows_index = interim_dir / "windows_index.parquet"
@@ -74,14 +82,43 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     finally:
         extractor.close()
 
-    face_df = pl.DataFrame(rows)
+    _write_with_face(df, pl.DataFrame(rows), parquet_path, extractor.dim)
+    return {
+        "parquet_path": str(parquet_path),
+        "d_face": extractor.dim,
+        "n_windows": len(windows),
+        "n_videos": len(by_video),
+    }
+
+
+def _copy_face_column(df: pl.DataFrame, parquet_path: Path, source: Path) -> dict[str, Any]:
+    """Grava em ``parquet_path`` a coluna ``face_landmarks`` lida de ``source`` (sem MediaPipe)."""
+    if not source.exists():
+        raise FileNotFoundError(f"data.face_from ausente: {source}")
+    face_df = pl.read_parquet(source, columns=["id", "t0", "t1", "face_landmarks"])
+    d_face = len(face_df["face_landmarks"][0])
+    log.info(f"Copiando face_landmarks de {source} → {parquet_path} (sem MediaPipe).")
+    _write_with_face(df.drop("face_landmarks", strict=False), face_df, parquet_path, d_face)
+    return {
+        "parquet_path": str(parquet_path),
+        "d_face": d_face,
+        "n_windows": df.height,
+        "n_videos": df["id"].n_unique(),
+        "face_from": str(source),
+    }
+
+
+def _write_with_face(
+    df: pl.DataFrame, face_df: pl.DataFrame, parquet_path: Path, d_face: int
+) -> None:
+    """Join por janela ``(id, t0, t1)`` + zeros onde não há rosto + escrita atômica."""
     merged = df.join(face_df, on=["id", "t0", "t1"], how="left")
-    if merged.filter(pl.col("face_landmarks").is_null()).height:
-        n_miss = merged.filter(pl.col("face_landmarks").is_null()).height
+    n_miss = merged.filter(pl.col("face_landmarks").is_null()).height
+    if n_miss:
         log.warning(f"{n_miss} janelas sem face_landmarks após join — preenchendo com zeros.")
         merged = merged.with_columns(
             pl.when(pl.col("face_landmarks").is_null())
-            .then(pl.lit([0.0] * extractor.dim))
+            .then(pl.lit([0.0] * d_face))
             .otherwise(pl.col("face_landmarks"))
             .alias("face_landmarks")
         )
@@ -91,11 +128,4 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     tmp_path = parquet_path.with_suffix(".face_tmp.parquet")
     merged.write_parquet(tmp_path)
     tmp_path.replace(parquet_path)
-    log.info(f"face_landmarks gravado em {parquet_path} (d_face={extractor.dim}).")
-
-    return {
-        "parquet_path": str(parquet_path),
-        "d_face": extractor.dim,
-        "n_windows": len(windows),
-        "n_videos": len(by_video),
-    }
+    log.info(f"face_landmarks gravado em {parquet_path} (d_face={d_face}).")
