@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 log = get_logger("models.face_gnn_ts")
 
+# Como o tab_seq (features de suporte) entra no readout:
+#   mean  média crua das janelas → Linear (original do Rodrigo)
+#   late  BN só nas janelas válidas → proj → LN → pooling atenção-MIL (tab_fusion.py)
+TAB_FUSIONS = ("mean", "late")
+
 
 def _tab_mean_pool(
     tab_seq: torch.Tensor,
@@ -50,9 +55,19 @@ def _build_face_gnn_ts_module(
     landmark_stride: int = 1,
     max_windows: int | None = None,
     roi: str = "full",
+    tab_fusion: str = "mean",
+    tab_pool: str = "attention",
+    use_face: bool = True,
 ):
     import torch
     from torch import nn
+
+    from src.models.tab_fusion import build_tab_support_encoder
+
+    if tab_fusion not in TAB_FUSIONS:
+        raise ValueError(f"tab_fusion={tab_fusion!r} inválido; use um de {TAB_FUSIONS}.")
+    if not use_face and not use_tabular:
+        raise ValueError("face.enabled=false exige use_tabular=true (o modelo ficaria vazio).")
 
     face_encoder = _build_face_gcn_ts(
         spatial_hidden=face_spatial_hidden,
@@ -71,11 +86,18 @@ def _build_face_gnn_ts_module(
     class _FaceGnnTsModule(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.face_encoder = face_encoder
+            # face.enabled=false: controle "só features de suporte" (sem o ramo facial).
+            self.face_encoder = face_encoder if use_face else None
             self.use_tabular = use_tabular
+            self.tab_fusion = tab_fusion
             self.dropout = nn.Dropout(dropout)
-            readout_dim = face_encoder.out_dim
-            if use_tabular:
+            readout_dim = face_encoder.out_dim if use_face else 0
+            if use_tabular and tab_fusion == "late":
+                self.tab_encoder = build_tab_support_encoder(
+                    dim_tab, tab_hidden, pool=tab_pool, dropout=dropout
+                )
+                readout_dim += tab_hidden
+            elif use_tabular:
                 self.tab_proj = nn.Sequential(
                     nn.Linear(dim_tab, tab_hidden),
                     nn.ReLU(),
@@ -92,14 +114,19 @@ def _build_face_gnn_ts_module(
 
         def forward(
             self,
-            face_seq: torch.Tensor,
+            face_seq: torch.Tensor | None,
             lengths: torch.Tensor,
             tab_seq: torch.Tensor | None = None,
+            key_padding_mask: torch.Tensor | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor]:
-            parts = [self.face_encoder(face_seq, lengths)]
+            parts = []
+            if self.face_encoder is not None:
+                parts.append(self.face_encoder(face_seq, lengths))
             if self.use_tabular and tab_seq is not None:
-                tab_pool = _tab_mean_pool(tab_seq, lengths)
-                parts.append(self.tab_proj(tab_pool))
+                if self.tab_fusion == "late":
+                    parts.append(self.tab_encoder(tab_seq, key_padding_mask))
+                else:
+                    parts.append(self.tab_proj(_tab_mean_pool(tab_seq, lengths)))
             video_emb = self.dropout(torch.cat(parts, dim=-1))
             logit = self.classifier(video_emb)
             return logit, video_emb
@@ -161,9 +188,10 @@ def build_face_lit_module(
 
         def _forward(self, batch):
             return self.model(
-                batch["face_seq"],
+                batch.get("face_seq"),
                 batch["lengths"],
                 tab_seq=batch.get("tab_seq"),
+                key_padding_mask=batch.get("key_padding_mask"),
             )
 
         def _shared_step(self, batch, log_aux: bool = True):
@@ -230,6 +258,8 @@ class FaceGnnTsFusion:
         self.dim_tab = int(cfg.get("dim_tab", 32))
         self.use_tabular = bool(cfg.get("use_tabular", True))
         self.tab_hidden = int(cfg.get("tab_hidden", 32))
+        self.tab_fusion = str(cfg.get("tab_fusion", "mean"))  # mean | late
+        self.tab_pool = str(cfg.get("tab_pool", "attention"))  # pooling do modo late
         self.dropout = float(cfg.get("dropout", 0.1))
         self.lr = float(cfg.get("lr", 1e-3))
         self.weight_decay = float(cfg.get("weight_decay", 1e-2))
@@ -237,6 +267,7 @@ class FaceGnnTsFusion:
         self._resolved_pos_weight: float | None = None
 
         face = cfg.get("face", {}) or {}
+        self.use_face = bool(face.get("enabled", True))
         self.face_top_k = int(face.get("top_k", 8))
         self.face_spatial_hidden = int(face.get("spatial_hidden", 64))
         self.face_spatial_out = int(face.get("spatial_out", 128))
@@ -282,6 +313,9 @@ class FaceGnnTsFusion:
             landmark_stride=self.landmark_stride,
             max_windows=self.max_windows,
             roi=self.roi,
+            tab_fusion=self.tab_fusion,
+            tab_pool=self.tab_pool,
+            use_face=self.use_face,
         )
 
     def build_lightning_module(self):

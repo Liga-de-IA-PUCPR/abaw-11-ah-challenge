@@ -4,6 +4,9 @@ family: lightning
 dim_tab: 74
 use_tabular: true
 tab_hidden: 32
+# Features de suporte: mean = média crua → Linear (original); late = BN → proj → atenção-MIL.
+tab_fusion: mean
+tab_pool: attention
 dropout: 0.1
 lr: 1e-3
 weight_decay: 1e-2
@@ -17,6 +20,7 @@ loss:
   gamma: 2.0
   alpha: 0.25
 face:
+  enabled: true                 # false = só features de suporte (controle de ablação)
   top_k: 8
   spatial_hidden: 64
   spatial_out: 64

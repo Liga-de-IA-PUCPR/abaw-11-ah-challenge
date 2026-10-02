@@ -33,6 +33,7 @@ _ARCH_ATTRS = (
     "ca_num_heads",
     "pool",
     "tab_fusion",
+    "audio_norm",
     "contrastive",
 )
 
