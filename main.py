@@ -101,66 +101,10 @@ def _run_featurize(cfg: DictConfig, device) -> int:
 
 
 def _as_loader(cfg: DictConfig, data, family: str, split: str):
-    """Adapta ``data`` ao que o trainer da ``family`` espera (FASE 6).
+    """Adapta ``data`` ao trainer da ``family`` (ver :func:`src.data.datasets.as_loader`)."""
+    from src.data.datasets import as_loader
 
-    O caminho ``sklearn`` consome ``WindowMatrixView`` direto (CPU, sem torch) →
-    devolve ``data`` inalterado. O caminho ``lightning`` precisa de um
-    ``DataLoader`` com ``collate_fn=collate_sequences`` (padding até T_max +
-    ``key_padding_mask``); sem ele o ``LightningTrainer`` recebe um ``Dataset``
-    cru (``_labels_from_loader`` quebra em ``loader.dataset`` e o
-    ``_shared_step`` quebra na chave ausente ``key_padding_mask``).
-
-    O import do ``torch``/``collate_sequences`` é **lazy** para preservar o
-    caminho ``sklearn`` 100% sem torch (README §7).
-    """
-    if family != "lightning":
-        return data
-
-    from torch.utils.data import DataLoader
-
-    from src.data.datasets import collate_sequences
-
-    # Hard mining (opcional): data.hard_examples=<json de mode=hard_mining> troca o
-    # shuffle uniforme do treino por um WeightedRandomSampler (mutuamente exclusivos).
-    sampler = None
-    hard_path = cfg.data.get("hard_examples")
-    if split == "train" and hard_path:
-        sampler = _build_weighted_sampler(hard_path, data)
-
-    return DataLoader(
-        data,
-        batch_size=cfg.data.batch_size,
-        shuffle=(split == "train") and sampler is None,
-        sampler=sampler,
-        num_workers=cfg.data.num_workers,
-        collate_fn=collate_sequences,
-    )
-
-
-def _build_weighted_sampler(hard_path: str, dataset):
-    """``WeightedRandomSampler`` alinhado à ordem de ``dataset.video_ids`` (hard mining)."""
-    import json
-    from pathlib import Path
-
-    p = Path(hard_path)
-    if not p.exists():
-        log.warning(f"hard_examples ausente ({p}); amostragem uniforme.")
-        return None
-
-    from torch.utils.data import WeightedRandomSampler
-
-    payload = json.loads(p.read_text(encoding="utf-8"))
-    weights_map = payload.get("weights", payload)
-    video_ids = getattr(dataset, "video_ids", None)
-    if not video_ids:
-        log.warning("Dataset sem video_ids; amostragem uniforme.")
-        return None
-    weights = [float(weights_map.get(str(vid), 1.0)) for vid in video_ids]
-    log.info(
-        f"WeightedRandomSampler: {len(weights)} amostras, "
-        f"peso∈[{min(weights):.2f}, {max(weights):.2f}] de {p}"
-    )
-    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    return as_loader(cfg, data, family, split)
 
 
 def _build_trainer(cfg: DictConfig, device):
@@ -264,9 +208,20 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
     # permite PREDIZER num parquet (ex.: externo) e CALIBRAR noutro (ex.: raw test).
     calib_split = cfg.data.get("calib_split", "val")
     calib_pq = cfg.data.paths.get("calib_parquet_path", None)
-    calib_view = load_split(cfg, calib_split, family=family, parquet_path=calib_pq)
+    data_cfg = _data_cfg(cfg, trainer)
+    calib_view = load_split(data_cfg, calib_split, family=family, parquet_path=calib_pq)
     calib_loader = _as_loader(cfg, calib_view, family, str(calib_split))
     trainer.recalibrate_on_val(calib_loader)
+
+
+def _data_cfg(cfg: DictConfig, trainer) -> DictConfig:
+    """Config que descreve os dados do trainer carregado.
+
+    Um run recarregado recria o modelo pelo ``model_config`` do treino (``load_trainer``),
+    que pode diferir do ``model`` da CLI (ex.: ramos extras do ``moe_fusion``) — os dados
+    (colunas/transcrição pedidas pelo modelo) seguem a config do próprio trainer.
+    """
+    return getattr(trainer, "config", None) or cfg
 
 
 def _member_spec(item) -> dict:
@@ -437,6 +392,8 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
                 rep.save_predictions_csv(
                     o["video_ids"], o["y_true"], o["y_proba"], o["y_pred"], threshold, metadata=meta
                 )
+                if "embedding" in o:  # vetor pré-logit (moe_fusion) → MoERouter
+                    rep.save_embeddings(o["embedding"])
                 rep.save_error_analysis(o["video_ids"], o["y_true"], o["y_pred"], metadata=meta)
             except Exception as exc:  # noqa: BLE001
                 log.warning(f"predictions.csv / análise de erro pulados: {exc}")
@@ -487,7 +444,8 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
     split = cfg.get("split") or "val"
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
+    view = load_split(_data_cfg(cfg, trainer), split, family=family)
+    data = _as_loader(cfg, view, family, split)
     report = trainer.evaluate(data)
     log.info(
         f"[{split}] Macro-F1={report['macro_f1']:.4f} | "
@@ -513,7 +471,8 @@ def _run_submit(cfg: DictConfig, device) -> int:
 
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
+    view = load_split(_data_cfg(cfg, trainer), split, family=family)
+    data = _as_loader(cfg, view, family, split)
 
     # Formato oficial do desafio (README §9): ordem da referência + (opcional) probabilidades.
     # submission_reference = caminho do trial-0.txt de referência (define a ORDEM exigida).
@@ -615,7 +574,9 @@ def _run_hard_mining(cfg: DictConfig, device) -> int:
     log.info(f"Hard mining: checkpoint {ckpt_dir}")
 
     split = cfg.get("split") or "train"
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, "eval")
+    data = _as_loader(
+        cfg, load_split(_data_cfg(cfg, trainer), split, family=family), family, "eval"
+    )
     o = trainer.video_outputs(data)
 
     hard_hi = float(cfg.get("hard_hi", 0.7))

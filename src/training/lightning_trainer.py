@@ -204,8 +204,13 @@ class LightningTrainer(BaseTrainer):
         if d_tab and hasattr(self.model, "dim_tab") and getattr(self.model, "use_tabular", True):
             self.model.dim_tab = d_tab
             log.info(f"Ramo tabular: dim_tab={d_tab} (inferido do cache)")
+        # Modelos orientados a colunas (moe_fusion): dimensões de cada coluna usada.
+        if hasattr(self.model, "infer_dims"):
+            self.model.infer_dims(train_data.dataset)
         self._apply_pos_weight(train_data)
         self._lit_module = self._build_lit_module()
+        if hasattr(self.model, "init_weights"):  # ex.: ramo inicializado de outro run
+            self.model.init_weights(self._lit_module)
         self._init_weights_from_checkpoint()
         self._trainer = self._build_trainer()
 
@@ -281,20 +286,23 @@ class LightningTrainer(BaseTrainer):
         return {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
 
     def video_outputs(self, data) -> dict[str, np.ndarray]:
-        """Arrays a nível de vídeo p/ plots/relatórios (FASE 5): ids, y_true, y_proba, y_pred."""
+        """Arrays a nível de vídeo p/ plots/relatórios (FASE 5): ids, y_true, y_proba, y_pred
+        + o que o modelo expuser no ``predict_step`` (ex.: ``embedding`` pré-logit)."""
         if self.threshold_ is None:
             raise RuntimeError("Limiar não calibrado: chame fit()/load() antes.")
-        ids, proba = self._infer(data)
+        out = self.predict_outputs(data)
+        ids, proba = out.pop("video_ids"), out.pop("proba")
         labels = self._labels_from_loader(data)
-        sel = [i for i in range(len(ids)) if str(ids[i]) in labels]
+        sel = np.array([i for i in range(len(ids)) if str(ids[i]) in labels], dtype=np.int64)
         y_true = np.array([labels[str(ids[i])] for i in sel], dtype=np.int64)
-        y_proba = np.array([float(proba[i]) for i in sel], dtype=np.float32)
+        y_proba = proba[sel].astype(np.float32)
         y_pred = (y_proba >= self.threshold_).astype(np.int64)
         return {
-            "video_ids": np.asarray([ids[i] for i in sel]),
+            "video_ids": np.asarray(ids)[sel],
             "y_true": y_true,
             "y_proba": y_proba,
             "y_pred": y_pred,
+            **{key: value[sel] for key, value in out.items()},
         }
 
     def save(self, out_dir) -> None:
@@ -342,7 +350,7 @@ class LightningTrainer(BaseTrainer):
         import lightning as L
 
         from src.conf import resolve_device
-        from src.models.checkpoint_compat import resolve_model_cfg_for_load
+        from src.models.checkpoint_compat import resolve_ckpt_path, resolve_model_cfg_for_load
 
         state = json.loads((Path(out_dir) / "trainer_state.json").read_text())
         trainer = cls(model=model, config=config)
@@ -350,12 +358,7 @@ class LightningTrainer(BaseTrainer):
         trainer.output_dir = str(out_dir)
         # ckpt_path do estado; se sumiu (run dir movido), procura o .ckpt DENTRO do
         # próprio run dir → checkpoint auto-contido e portátil.
-        ckpt_path = state.get("ckpt_path")
-        if not ckpt_path or not Path(ckpt_path).exists():
-            cands = sorted(Path(out_dir).glob("checkpoints/*.ckpt")) + sorted(
-                Path(out_dir).glob("*.ckpt")
-            )
-            ckpt_path = str(cands[-1]) if cands else ckpt_path
+        ckpt_path = resolve_ckpt_path(out_dir) or state.get("ckpt_path")
         trainer._ckpt_path = ckpt_path
         # Restaura a arquitetura treinada (hidden_channels, heads, … do model_cfg salvo;
         # runs antigos sem model_cfg: inferida dos shapes do state_dict) p/ casar c/ o ckpt.
@@ -391,15 +394,27 @@ class LightningTrainer(BaseTrainer):
 
     def _infer(self, loader) -> tuple[np.ndarray, np.ndarray]:
         """Roda ``predict_step`` e devolve ``(video_ids, proba)`` como numpy."""
+        out = self.predict_outputs(loader)
+        return out["video_ids"], out["proba"].astype(np.float32)
+
+    def predict_outputs(self, loader) -> dict[str, np.ndarray]:
+        """Tudo o que o ``predict_step`` devolve, concatenado por vídeo: ``video_ids``,
+        ``proba`` e, se o modelo expuser, ``embedding`` (vetor pré-logit, insumo do
+        MoERouter), ``router_weights`` e ``gates``."""
         outputs = self._trainer.predict(
             self._lit_module, dataloaders=loader, ckpt_path=self._ckpt_path
         )
-        ids: list[str] = []
-        proba: list[float] = []
+        parts: dict[str, list] = {}
         for out in outputs:
-            ids.extend(list(out["video_ids"]))
-            proba.extend(out["proba"].detach().cpu().numpy().tolist())
-        return np.asarray(ids), np.asarray(proba, dtype=np.float32)
+            for key, value in out.items():
+                if key == "video_ids":
+                    parts.setdefault(key, []).extend(list(value))
+                else:
+                    parts.setdefault(key, []).append(value.detach().float().cpu().numpy())
+        return {
+            key: np.asarray(value) if key == "video_ids" else np.concatenate(value, axis=0)
+            for key, value in parts.items()
+        }
 
     @staticmethod
     def _labels_from_loader(loader) -> dict[str, int]:
@@ -454,23 +469,9 @@ class LightningTrainer(BaseTrainer):
         ckpt_arg = getattr(self.config, "checkpoint", None)
         if not ckpt_arg:
             return
-        import json
+        from src.models.checkpoint_compat import load_state_dict_from_ckpt, resolve_ckpt_path
 
-        from src.models.checkpoint_compat import load_state_dict_from_ckpt
-
-        p = Path(str(ckpt_arg))
-        ckpt_path: str | None = None
-        if p.is_dir():
-            state_file = p / "trainer_state.json"
-            if state_file.exists():
-                cand = json.loads(state_file.read_text(encoding="utf-8")).get("ckpt_path")
-                if cand and Path(cand).exists():
-                    ckpt_path = str(cand)
-            if ckpt_path is None:
-                cands = sorted(p.glob("checkpoints/*.ckpt")) + sorted(p.glob("*.ckpt"))
-                ckpt_path = str(cands[-1]) if cands else None
-        elif p.suffix == ".ckpt" and p.exists():
-            ckpt_path = str(p)
+        ckpt_path = resolve_ckpt_path(ckpt_arg)
         if not ckpt_path:
             log.warning(f"Fine-tune: checkpoint não encontrado em {ckpt_arg}")
             return

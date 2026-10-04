@@ -1,0 +1,24 @@
+# @package _global_
+# Rodada 2 — 1º MoE (prova a plumbing): texto da Rodada 1 + 74 features tabulares
+# (+ marcadores na cabeça). Cabeça SoftMoE (K=4) com balanceamento só acima de 70%.
+# O texto parte do fine-tune da Rodada 1 e fica fixo: no OOF, cada dobra usa o modelo de
+# texto da MESMA dobra (make oof EXPERIMENT=moe_r2_text_tab TEXT_RUN=outputs/oof/moe-r1-text/<ts>):
+#   "model.branches.text.init_from='<TEXT_RUN>/fold{fold}'"  (aspas: o Hydra lê { como dict)
+# Gate: MoE ≥ texto sozinho no OOF (IC do bootstrap pareado sem piora).
+defaults:
+  - /branch@model.branches.text: text_goemotions
+  - /branch@model.branches.markers: hesitation_markers
+  - /branch@model.branches.tab: tabular
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-r2-text-tab
+
+model:
+  branches:
+    text:
+      trainable: false
+
+trainer:
+  max_epochs: 60
+  patience: 12

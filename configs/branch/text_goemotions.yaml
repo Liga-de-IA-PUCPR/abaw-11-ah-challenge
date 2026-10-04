@@ -1,0 +1,11 @@
+# Âncora de texto: RoBERTa-GoEmotions sobre a transcrição COMPLETA (coluna `transcript`),
+# fine-tune com embeddings + 4 primeiras camadas congeladas, pooling CLS.
+role: anchor
+encoder: hf_text
+model_name: SamLowe/roberta-base-go_emotions   # 28 emoções (GoEmotions) — receita RAS
+num_frozen_layers: 4
+pooling: cls
+max_length: 256
+trainable: true          # false = encoder fixo (ex.: init_from do texto da Rodada 1)
+init_from: null          # run dir/.ckpt cujo ramo `text` inicializa este (OOF: ...fold{fold})
+aux_weight: 0.0

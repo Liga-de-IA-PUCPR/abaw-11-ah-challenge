@@ -1,0 +1,17 @@
+# Canal facial: [face ‖ olhos ‖ boca] por janela (backbone de imagem, vision_embedder) →
+# SoftMoE sobre os 3 recortes (1ª instância de MoE da Rodada 5) → Transformer temporal →
+# [μ, σ, μΔ, σΔ] (estatísticas do RAS).
+role: residual
+encoder: sequence
+column: face_crops_vit_face_expression
+dim: 128
+norm: layer
+mixer: moe               # SoftMoE sobre os recortes concatenados (linear = só projeção)
+groups: 3
+num_experts: 3
+temporal: transformer
+num_layers: 1
+num_heads: 4
+pool: stats
+dropout: 0.3
+aux_weight: 0.0

@@ -1,0 +1,9 @@
+# @package _global_
+# Rodada 4 — + áudio de emoção (wav2vec2-large A/V/D 1024-d por janela) com cabeça temporal
+# GRU e supervisão por janela. Pré-requisito: coluna audio_emb_wav2vec2_emotion_large
+# (make featurize-moe-audio). Gate: MoE com áudio > MoE da Rodada 3 no OOF.
+defaults:
+  - moe_r3_asr
+  - /branch@model.branches.audio: audio_emotion
+
+experiment_name: moe-r4-audio

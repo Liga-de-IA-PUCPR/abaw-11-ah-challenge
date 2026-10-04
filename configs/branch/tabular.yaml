@@ -1,0 +1,11 @@
+# 74 features de suporte por janela (qtype + hesitação acústica + texto A1/A3/A4/H1).
+# BatchNorm só nas janelas reais (escalas heterogêneas) + pooling atenção-MIL.
+role: residual
+encoder: sequence
+column: tabular
+dim: 128
+norm: batch
+temporal: identity
+pool: attention
+dropout: 0.3
+aux_weight: 0.0

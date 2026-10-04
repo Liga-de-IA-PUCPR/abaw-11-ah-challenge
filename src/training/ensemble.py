@@ -87,6 +87,12 @@ class EnsembleTrainer(LightningTrainer):
         finally:
             self._role = "predict"
 
+    def predict_outputs(self, loader) -> dict[str, np.ndarray]:
+        """Só ``video_ids``/``proba`` combinados (membros heterogêneos não têm um embedding
+        comum — o MoERouter combina embeddings a partir dos dumps de cada membro)."""
+        ids, proba = self._infer(loader)
+        return {"video_ids": ids, "proba": proba}
+
     def _infer(self, loader) -> tuple[np.ndarray, np.ndarray]:
         """Combinação das probas por vídeo entre os membros (alinhadas por ``video_id``)."""
         ref_ids: np.ndarray | None = None
@@ -130,6 +136,7 @@ class EnsembleTrainer(LightningTrainer):
         own_pq = self._member_parquet(m)
         src_pq = Path(str(getattr(ds, "parquet_path", "")))
         use_pq = Path(own_pq) if own_pq else src_pq
+        spec = _member_spec(m)
 
         if m.family == "sklearn":
             from src.data.datasets import WindowMatrixView
@@ -138,21 +145,41 @@ class EnsembleTrainer(LightningTrainer):
             ids = np.asarray(list(scores.keys()))
             return ids, np.asarray([scores[v] for v in ids], dtype=np.float32)
 
-        if own_pq and use_pq.resolve() != src_pq.resolve():
-            return m.trainer._infer(self._loader_for(use_pq, video_ids, loader))
+        other_pq = own_pq and use_pq.resolve() != src_pq.resolve()
+        if other_pq or not _dataset_has(ds, spec):
+            return m.trainer._infer(self._loader_for(use_pq, video_ids, loader, spec))
         return m.trainer._infer(loader)
 
     @staticmethod
-    def _loader_for(parquet_path: Path, video_ids: set[str], like_loader):
-        """DataLoader (sem shuffle) sobre ``parquet_path`` restrito a ``video_ids``."""
+    def _loader_for(parquet_path: Path, video_ids: set[str], like_loader, spec: dict | None = None):
+        """DataLoader (sem shuffle) sobre ``parquet_path`` restrito a ``video_ids``, com as
+        entradas extras que o membro declara (``spec``: colunas/transcrição)."""
         from torch.utils.data import DataLoader
 
         from src.data.datasets import VideoSequenceDataset, collate_sequences
 
         return DataLoader(
-            VideoSequenceDataset(parquet_path, video_ids),
+            VideoSequenceDataset(parquet_path, video_ids, **(spec or {})),
             batch_size=like_loader.batch_size or 32,
             shuffle=False,
             num_workers=like_loader.num_workers,
             collate_fn=collate_sequences,
         )
+
+
+def _member_spec(m: EnsembleMember) -> dict:
+    """Entradas extras do modelo do membro (``data_spec``), lidas do cfg do seu trainer."""
+    cfg = getattr(m.trainer, "config", None)
+    model_cfg = getattr(cfg, "model", None) if cfg is not None else None
+    if model_cfg is None:
+        return {}
+    from src.models.registry import data_spec
+
+    return data_spec(model_cfg)
+
+
+def _dataset_has(ds, spec: dict) -> bool:
+    """O dataset do loader já traz o que o membro pede? (colunas extras + transcrição)."""
+    have = set(getattr(ds, "columns", []) or [])
+    has_text = bool(getattr(ds, "_tokens", None)) or not spec.get("transcript")
+    return set(spec.get("columns") or []) <= have and has_text

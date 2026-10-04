@@ -1,0 +1,9 @@
+# @package _global_
+# Rodada 3 — + ASR-erased time (16 gaps do Whisper, replicados nas janelas) sobre a Rodada 2.
+# Gate: MoE(texto, tabular, asr) > MoE da Rodada 2 no OOF; se não bater, "testado, não
+# incorporado" e as rodadas seguintes removem o ramo (~model.branches.asr).
+defaults:
+  - moe_r2_text_tab
+  - /branch@model.branches.asr: asr_timing
+
+experiment_name: moe-r3-asr

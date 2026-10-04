@@ -100,6 +100,22 @@ def focal_loss_with_logits(
     return focal.mean()
 
 
+def symmetric_kl_from_logits(logit1, logit2):
+    """KL simétrico entre duas Bernoulli(logit) — termo de consistência do R-Drop.
+
+    Trata cada logit binário como a distribuição ``[-logit, logit]`` e devolve
+    ``(KL(p1‖p2) + KL(p2‖p1)) / 2``; é 0 quando os dois passes coincidem (ex.: ``eval()``).
+    """
+    import torch
+    from torch.nn import functional as F
+
+    log_p1 = F.log_softmax(torch.cat([-logit1, logit1], dim=-1), dim=-1)
+    log_p2 = F.log_softmax(torch.cat([-logit2, logit2], dim=-1), dim=-1)
+    kl_12 = F.kl_div(log_p1, log_p2.exp(), reduction="batchmean")
+    kl_21 = F.kl_div(log_p2, log_p1.exp(), reduction="batchmean")
+    return (kl_12 + kl_21) / 2.0
+
+
 def build_classification_metrics():
     from torch import nn
     from torchmetrics.classification import BinaryAveragePrecision, MulticlassF1Score
@@ -124,10 +140,15 @@ def configure_adamw_scheduler(
     max_epochs: int = 200,
     warmup_epochs: int = 5,
     min_lr: float = 1e-6,
+    mode: str | None = None,
 ):
+    """AdamW + scheduler. ``params`` aceita grupos (``[{"params": ..., "lr": ...}]``).
+
+    ``mode`` do plateau: explícito ou inferido do ``monitor`` (``max`` só p/ F1 — legado).
+    """
     from torch import optim
 
-    mode = "max" if "f1" in monitor.lower() else "min"
+    mode = mode or ("max" if "f1" in monitor.lower() else "min")
     optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
     if scheduler == "cosine_warmup":

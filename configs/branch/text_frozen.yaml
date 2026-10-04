@@ -1,0 +1,11 @@
+# Âncora de texto alternativa (barata): embeddings CONGELADOS por janela do cache
+# (`text_emb`, RoBERTa-emotion 768-d — a entrada de texto do cross-attention).
+role: anchor
+encoder: sequence
+column: text_emb
+dim: 256
+norm: layer
+temporal: identity
+pool: attention
+dropout: 0.3
+aux_weight: 0.0

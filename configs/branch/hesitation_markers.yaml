@@ -1,0 +1,9 @@
+# 11 marcadores léxicos de hesitação da transcrição (vídeo) — entram DIRETO na cabeça MoE
+# (role=head) e têm cabeça auxiliar própria (peso 0.3), como na figura do plano.
+role: head
+encoder: vector
+column: hesitation_markers
+dim: 32
+norm: batch
+dropout: 0.1
+aux_weight: 0.3

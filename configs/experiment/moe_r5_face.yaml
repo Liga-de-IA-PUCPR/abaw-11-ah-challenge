@@ -1,0 +1,10 @@
+# @package _global_
+# Rodada 5 — + canal visual: recortes face/olhos/boca (SoftMoE dos recortes → Transformer →
+# [μ,σ,μΔ,σΔ]) como expert do MoE principal. Pré-requisito: coluna
+# face_crops_vit_face_expression (make featurize-moe-face). Cena opcional na CLI:
+# +branch@model.branches.scene=scene. Gate: MoE com rosto > MoE da Rodada 4 no OOF.
+defaults:
+  - moe_r4_audio
+  - /branch@model.branches.face: face_crops
+
+experiment_name: moe-r5-face

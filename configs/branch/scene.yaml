@@ -1,0 +1,8 @@
+# Canal de CENA opcional (tracejado na figura): VideoMAE congelado do vídeo inteiro.
+role: residual
+encoder: vector
+column: scene_emb_videomae
+dim: 64
+norm: layer
+dropout: 0.3
+aux_weight: 0.0

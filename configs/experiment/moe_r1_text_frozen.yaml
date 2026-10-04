@@ -1,0 +1,18 @@
+# @package _global_
+# Rodada 1 (variante barata) — âncora de texto com embeddings CONGELADOS do cache
+# (text_emb, RoBERTa-emotion por janela) + marcadores. Régua p/ saber se o fine-tune paga.
+defaults:
+  - /branch@model.branches.text: text_frozen
+  - /branch@model.branches.markers: hesitation_markers
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-r1-text-frozen
+
+model:
+  fusion:
+    head: mlp
+
+trainer:
+  max_epochs: 80
+  patience: 15
