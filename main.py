@@ -6,6 +6,8 @@ por ``cfg.mode``:
     preprocess     índice (FASE 2) + extração de áudio (mp4→flac 16 kHz) + janelas → cache
     featurize      janelas → embedders (texto+áudio) + tabular → Parquet (FASE 3)
     featurize_face (opcional, vídeo) Face Mesh por janela → coluna face_landmarks no Parquet
+    featurize_columns  colunas extras do plano MoE no Parquet (transcrição, ASR timing,
+                   marcadores de hesitação, áudio/rosto/cena por embedder) — ``columns=[...]``
     train          treina o modelo escolhido em ``model=`` (FASE 4)
     evaluate       avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
     submit         escreve o arquivo de submissão (video_id, pred) (FASE 5)
@@ -574,6 +576,22 @@ def _run_featurize_face(cfg: DictConfig) -> int:
     return 0
 
 
+def _run_featurize_columns(cfg: DictConfig) -> int:
+    """``mode=featurize_columns`` — grava ``columns=[...]`` como colunas extras do Parquet.
+
+    Requer o Parquet base (``mode=featurize``) e o índice de janelas (``mode=preprocess``);
+    colunas de vídeo/rosto leem o dataset bruto (``data.paths.data_root``).
+    """
+    from src.pipeline.featurize_columns import run_featurize_columns
+
+    summary = run_featurize_columns(cfg)
+    if summary.get("cached"):
+        log.info(f"Colunas já presentes em {summary['parquet_path']} (data.force_columns=true).")
+    else:
+        log.info(f"Colunas {summary['columns']} gravadas em {summary['parquet_path']}.")
+    return 0
+
+
 def _run_hard_mining(cfg: DictConfig, device) -> int:
     """``mode=hard_mining`` — pontua um split (default train) e grava pesos de amostragem.
 
@@ -661,6 +679,7 @@ _DISPATCH = {
     "preprocess": lambda cfg, dev: _run_preprocess(cfg),
     "featurize": _run_featurize,
     "featurize_face": lambda cfg, dev: _run_featurize_face(cfg),
+    "featurize_columns": lambda cfg, dev: _run_featurize_columns(cfg),
     "train": _run_train,
     "evaluate": _run_evaluate,
     "submit": _run_submit,

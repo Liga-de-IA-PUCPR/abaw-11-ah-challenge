@@ -105,19 +105,16 @@ def test_featurize_face_adds_column_and_zero_fills(face_cfg, monkeypatch):
     import src.pipeline.featurize_face as ff
 
     cfg, pq = face_cfg
-    monkeypatch.setattr(ff, "FaceMeshExtractor", _FakeExtractor)
-    # Simula "sem rosto" em v2: as linhas de v2 não chegam ao DataFrame de landmarks,
-    # então o left join deixa null → o pipeline tem que preencher com zeros.
-    orig_df = ff.pl.DataFrame
 
-    def _drop_v2(rows, *a, **k):
-        if isinstance(rows, list) and rows and "face_landmarks" in rows[0]:
-            rows = [r for r in rows if r["id"] != "v2"]
-        return orig_df(rows, *a, **k)
+    class _NoFaceInV2(_FakeExtractor):
+        """Simula "sem rosto" em v2: o extrator devolve landmarks zerados p/ essas janelas."""
 
-    monkeypatch.setattr(ff.pl, "DataFrame", _drop_v2)
+        def extract(self, batch, video_root):
+            lms = super().extract(batch, video_root)
+            return [lm * 0 if w.video_id == "v2" else lm for lm, w in zip(lms, batch, strict=True)]
+
+    monkeypatch.setattr(ff, "FaceMeshExtractor", _NoFaceInV2)
     summary = ff.run_featurize_face(cfg)
-    monkeypatch.setattr(ff.pl, "DataFrame", orig_df)
 
     assert summary["d_face"] == D_FACE
     df = pl.read_parquet(pq).sort(["id", "window_idx"])
@@ -127,7 +124,7 @@ def test_featurize_face_adds_column_and_zero_fills(face_cfg, monkeypatch):
     v2 = np.vstack(df.filter(pl.col("id") == "v2")["face_landmarks"].to_numpy())
     assert v1.shape == (3, D_FACE) and np.allclose(v1[:, 0], [0, 1, 2])
     assert np.count_nonzero(v2) == 0  # sem landmarks → zeros
-    assert not list(pq.parent.glob("*.face_tmp.parquet"))  # escrita atômica limpa o tmp
+    assert not list(pq.parent.glob("*.tmp.parquet"))  # escrita atômica limpa o tmp
 
     # 2ª chamada: cache (não recomputa sem data.force_face)
     assert ff.run_featurize_face(cfg).get("cached") is True

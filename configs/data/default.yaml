@@ -92,5 +92,7 @@ calib_split: val
 featurize_chunk_size: null
 # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir no Parquet.
 force_face: false
+# mode=featurize_columns: recomputa as colunas pedidas mesmo se já existirem no Parquet.
+force_columns: false
 # mode=train (lightning): JSON {video_id: peso} de mode=hard_mining → WeightedRandomSampler.
 hard_examples: null
