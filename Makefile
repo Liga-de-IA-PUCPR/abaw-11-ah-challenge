@@ -19,6 +19,9 @@
 #   make setup-neural     # adds Lightning + torchmetrics
 #   make train-neural     # cross-attention over the window sequence
 #
+# Ablations (Rodrigo's video models × Luiz preprocessing; references/ablation_plan.md):
+#   make face-caches && make ablate-core && make ablation-report && make ablation-ensembles
+#
 # Multimodal (Rodrigo's GNNs + video; see references/integration_plan.md):
 #   make setup-gnn        # + torch-geometric + gnn-modalblocks (setup-vision adds MediaPipe)
 #   make featurize-w2v    # wav2vec2 cache used by the GNN presets
@@ -92,7 +95,8 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         train-ensemble ensemble-evaluate ensemble-submit reproduce-best \
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
-        meta-router \
+        meta-router meta-router-face \
+        ablate-list face-caches ablate ablate-core ablate-extra ablation-report ablation-ensembles \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -138,6 +142,15 @@ help:
 	@echo "    ensemble-multimodal    manifest CA seeds + GNN_RUN (+ FACE_RUN), prob. averaging"
 	@echo "    ensemble-multimodal-submit  submission from that ensemble (OUT=$(OUT))"
 	@echo "    meta-router      CA⊕GNN router over the members' predictions.csv"
+	@echo "    meta-router-face CA⊕GNN⊕face router (FACE_RUN=<run dir>)"
+	@echo ""
+	@echo "  Ablations — Rodrigo's video models × Luiz preprocessing (references/ablation_plan.md):"
+	@echo "    ablate-list      cells (A* face_gnn_ts_roi, B* multimodal_hetero_face) + overrides"
+	@echo "    face-caches      face landmarks once → librosa/wav2vec2 cache copies (+face)"
+	@echo "    ablate           CELL=<id>: ABL_SEEDS seeds, train + eval train/val/test"
+	@echo "    ablate-core      cells $(ABL_CORE)   |   ablate-extra  $(ABL_EXTRA)"
+	@echo "    ablation-report  table vs CA × 5 (AP, F1 at the same #positives, bootstrap)"
+	@echo "    ablation-ensembles  CA × 5 (+GNN) + each cell, offline + main.py commands"
 	@echo ""
 	@echo "  Quality (CI/CD):"
 	@echo "    ci               format-check + lint + compile (fast gate)"
@@ -347,6 +360,109 @@ meta-router:
 	$(PY) scripts/meta_router_ca_gnn.py \
 	  --ca-runs $$(for r in $$(cat $(ENSEMBLE_MANIFEST)); do basename $$r; done) \
 	  --gnn-run $(GNN_RUN) $(ARGS)
+
+# Face-aware variant (face as 3rd member, rescue when CA == GNN). FACE_RUN = one run dir
+# with eval_{train,val,test}/predictions.csv (e.g. a seed of outputs/ablations/A3).
+meta-router-face:
+	@test -n "$(FACE_RUN)" || (echo "Set FACE_RUN=<run dir> (see outputs/ablations/<cell>/manifest.txt)"; exit 1)
+	BAH_CA_RUNS=$$(paste -sd, $(ENSEMBLE_MANIFEST)) BAH_GNN_RUN=$(GNN_RUN) \
+	  $(PY) scripts/meta_router_ca_gnn_face.py --face-run $(FACE_RUN) $(ARGS)
+
+# --- Ablations: Rodrigo's video models × Luiz's preprocessing ----------------
+# Plan, hypotheses and how to read the table: references/ablation_plan.md.
+# Each cell = ABL_SEEDS seeds; every seed is trained and evaluated on train/val/test
+# (predictions.csv) under ABL_ROOT/<CELL>/. manifest.txt makes reruns resumable.
+ABL_ROOT    ?= outputs/ablations
+ABL_SEEDS   ?= 42 1 2
+ABL_WANDB   ?= offline
+LIBROSA_PQ  ?= data/processed/text_audio_windows.parquet
+FACE_PQ     ?= data/processed/text_audio_windows_face.parquet
+W2V_FACE_PQ ?= data/processed/text_audio_windows_w2v_face.parquet
+
+_A  = +experiment=face_gnn_ts_roi data.paths.parquet_path=$(FACE_PQ)
+_B  = +experiment=multimodal_hetero_face_v2
+# Luiz's audio = librosa prosody; raw scale (~10^3) needs BN before the GAT (audio_norm).
+_BL = $(_B) data.paths.parquet_path=$(FACE_PQ) model.audio_norm=true
+_BW = $(_B) data.paths.parquet_path=$(W2V_FACE_PQ)
+
+# Phase 1A — face_gnn_ts_roi (Rodrigo's newest model: face ROI + GNN4TS), isolated.
+#   A0 support features only (Luiz fusion, no face) · A1 face only
+#   A2 face + support, Rodrigo fusion (raw mean) · A3 face + support, Luiz fusion (BN + MIL)
+ABL_A0 = $(_A) model.face.enabled=false model.tab_fusion=late
+ABL_A1 = $(_A) model.use_tabular=false
+ABL_A2 = $(_A)
+ABL_A3 = $(_A) model.tab_fusion=late
+# Phase 1B — multimodal_hetero_face (audio + text + support + face), isolated.
+#   B1 Rodrigo as is (wav2vec2, support as raw mean in the graph) · B2 + Luiz audio (librosa)
+#   B3 + Luiz support fusion (token) = Luiz preprocessing + Rodrigo video · B4 = B3 without face
+#   extra: B5 wav2vec2 + token (2x2 audio × fusion) · B6 late instead of token · B7 no support
+ABL_B1 = $(_BW)
+ABL_B2 = $(_BL)
+ABL_B3 = $(_BL) model.tab_fusion=token
+ABL_B4 = $(_BL) model.tab_fusion=token model.face.enabled=false
+ABL_B5 = $(_BW) model.tab_fusion=token
+ABL_B6 = $(_BL) model.tab_fusion=late
+ABL_B7 = $(_BL) model.tab_fusion=none
+ABL_CORE  ?= A1 A2 A3 A0 B1 B2 B3 B4
+ABL_EXTRA ?= B5 B6 B7
+
+ablate-list:
+	@echo "make ablate CELL=<id>  (seeds: $(ABL_SEEDS); outputs: $(ABL_ROOT)/<id>/)"
+	@$(foreach c,$(ABL_CORE) $(ABL_EXTRA),echo "  $(c): $(strip $(ABL_$(c)))";)
+
+# Landmarks extracted ONCE (MediaPipe) into a copy of the librosa cache, then copied into a
+# copy of the wav2vec2 cache (data.face_from). The paper caches are never modified.
+# Needs data/raw/data extracted + `make preprocess` (window index) + `make setup-vision`.
+face-caches:
+	@test -f data/interim/windows_index.parquet || (echo "Missing window index: run 'make preprocess'"; exit 1)
+	@test -f $(LIBROSA_PQ) || (echo "Missing $(LIBROSA_PQ): run 'make featurize'"; exit 1)
+	@test -f $(W2V_PARQUET) || (echo "Missing $(W2V_PARQUET): run 'make featurize-w2v'"; exit 1)
+	@test -f $(FACE_PQ) || cp $(LIBROSA_PQ) $(FACE_PQ)
+	@cp $(basename $(LIBROSA_PQ)).json $(basename $(FACE_PQ)).json
+	$(PY) $(MAIN) mode=featurize_face +face_embedder=mediapipe \
+	  data.paths.parquet_path=$(FACE_PQ) $(ARGS)
+	@test -f $(W2V_FACE_PQ) || cp $(W2V_PARQUET) $(W2V_FACE_PQ)
+	@cp $(basename $(W2V_PARQUET)).json $(basename $(W2V_FACE_PQ)).json
+	$(PY) $(MAIN) mode=featurize_face data.paths.parquet_path=$(W2V_FACE_PQ) \
+	  data.face_from=$(FACE_PQ) $(ARGS)
+
+ablate:
+	@test -n "$(CELL)" || (echo "Set CELL=<id> (see 'make ablate-list')"; exit 1)
+	@test -n "$(strip $(ABL_$(CELL)))" || (echo "Unknown CELL=$(CELL) (see 'make ablate-list')"; exit 1)
+	@mkdir -p $(ABL_ROOT)/$(CELL)
+	@echo "$(strip $(ABL_$(CELL)))" > $(ABL_ROOT)/$(CELL)/overrides.txt
+	@for s in $(ABL_SEEDS); do \
+	  if grep -qs "^$$s " $(ABL_ROOT)/$(CELL)/manifest.txt; then \
+	    echo ">>> $(CELL) seed=$$s already done (manifest)"; continue; \
+	  fi; \
+	  echo ">>> $(CELL) seed=$$s: train"; \
+	  $(MPS_FALLBACK) $(PY) $(MAIN) mode=train $(ABL_$(CELL)) seed=$$s device=$(DEVICE) \
+	    data.paths.output_root=$(ABL_ROOT)/$(CELL) wandb.mode=$(ABL_WANDB) $(ARGS) || exit 1; \
+	  run=$$(ls -dt $(ABL_ROOT)/$(CELL)/*/2*/ | head -1 | sed 's#/$$##'); \
+	  for sp in train val test; do \
+	    echo ">>> $(CELL) seed=$$s: evaluate $$sp ($$run)"; \
+	    $(MPS_FALLBACK) $(PY) $(MAIN) mode=evaluate $(ABL_$(CELL)) checkpoint=$$run split=$$sp \
+	      device=$(DEVICE) wandb.mode=$(ABL_WANDB) $(ARGS) || exit 1; \
+	  done; \
+	  echo "$$s $$run" >> $(ABL_ROOT)/$(CELL)/manifest.txt; \
+	done
+	@echo "✓ $(CELL) → $(ABL_ROOT)/$(CELL)/manifest.txt"
+
+ablate-core:
+	@for c in $(ABL_CORE); do $(MAKE) --no-print-directory ablate CELL=$$c || exit 1; done
+
+ablate-extra:
+	@for c in $(ABL_EXTRA); do $(MAKE) --no-print-directory ablate CELL=$$c || exit 1; done
+
+# Table: every cell vs the paper's CA × 5 (AP, F1 at the val threshold, F1 at the SAME number
+# of positives as CA × 5 + paired bootstrap). REPORT_ARGS="--combo ca5+A3+B3 --rank" etc.
+ablation-report:
+	$(PY) scripts/ablation_report.py --root $(ABL_ROOT) $(REPORT_ARGS)
+
+# Phase 2: ensembles CA × 5 (+ GNN) + each cell, each member on its own cache; prints the
+# main.py command that reproduces/submits each combination through the canonical path.
+ablation-ensembles:
+	$(PY) scripts/ablation_report.py --root $(ABL_ROOT) --combos --emit $(REPORT_ARGS)
 
 # End to end (data -> train -> evaluate).
 pipeline: data train evaluate

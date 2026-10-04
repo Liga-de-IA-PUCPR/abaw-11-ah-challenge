@@ -13,6 +13,15 @@ lstm_num_layers: 2
 gcn_out_dim: 128
 top_k: 8
 fusion: attention
+# Features de suporte (tab_seq: hesitação + texto + qtype). graph = média crua no nó
+# video (original); late = BN → proj → atenção-MIL → concat no readout; token = BN → proj
+# fundido a cada janela antes de GAT/LatentGCN/BiLSTM (= cross-attention tab_fusion=token);
+# none = fora do modelo (controle de ablação).
+tab_fusion: graph
+tab_pool: attention              # pooling do modo late (attention | mean | max)
+# BatchNorm por feature no áudio antes de tudo (janelas válidas). Necessário com o cache
+# librosa (escala crua ~10³ vira feature de nó do GAT); o wav2vec2 já vem em escala ~0.2.
+audio_norm: false
 dropout: 0.1
 use_latent_gcn: true
 use_bilstm: true

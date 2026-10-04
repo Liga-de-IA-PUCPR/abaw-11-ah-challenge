@@ -10,6 +10,25 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
+    from torch import nn
+
+
+def masked_batch_norm(
+    bn: nn.BatchNorm1d, x: torch.Tensor, mask: torch.Tensor | None = None
+) -> torch.Tensor:
+    """BatchNorm per-feature sobre ``x (B, T, D)`` só nas janelas válidas (``mask`` True = pad).
+
+    As estatísticas não são contaminadas pelo padding; as posições de padding saem intactas.
+    """
+    b, t, d = x.shape
+    flat = x.reshape(b * t, d)
+    if mask is None:
+        return bn(flat).reshape(b, t, d)
+    valid = (~mask).reshape(b * t)
+    normed = flat.clone()
+    if valid.any():
+        normed[valid] = bn(flat[valid])
+    return normed.reshape(b, t, d)
 
 
 def build_tab_support_encoder(
@@ -39,17 +58,8 @@ def build_tab_support_encoder(
                 self.attn_w = nn.Linear(out_dim, 1)
 
         def _tab_tokens(self, feat_tab: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
-            b, t, d = feat_tab.shape
-            flat = feat_tab.reshape(b * t, d)
-            if mask is not None:
-                valid = (~mask).reshape(b * t)
-                normed = flat.clone()
-                if valid.any():
-                    normed[valid] = self.tab_in_norm(flat[valid])
-            else:
-                normed = self.tab_in_norm(flat)
-            tok = self.tab_norm(torch.relu(self.proj_tab(normed)))
-            return tok.reshape(b, t, -1)
+            normed = masked_batch_norm(self.tab_in_norm, feat_tab, mask)
+            return self.tab_norm(torch.relu(self.proj_tab(normed)))
 
         def _masked_attention_pool(
             self, x: torch.Tensor, mask: torch.Tensor | None
@@ -74,14 +84,21 @@ def build_tab_support_encoder(
             valid = (~mask).unsqueeze(-1).float()
             return (x * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
 
+        def tokens(
+            self,
+            feat_tab: torch.Tensor,
+            key_padding_mask: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            """``(B, T, dim_tab)`` → ``(B, T, out_dim)``: um token por janela (fusão por-token)."""
+            return self.drop(self._tab_tokens(feat_tab, key_padding_mask))
+
         def forward(
             self,
             feat_tab: torch.Tensor,
             key_padding_mask: torch.Tensor | None = None,
         ) -> torch.Tensor:
             """``(B, T, dim_tab)`` → ``(B, out_dim)``."""
-            tokens = self._tab_tokens(feat_tab, key_padding_mask)
-            tokens = self.drop(tokens)
+            tokens = self.tokens(feat_tab, key_padding_mask)
             if self.pool == "attention":
                 return self._masked_attention_pool(tokens, key_padding_mask)
             if self.pool == "max":

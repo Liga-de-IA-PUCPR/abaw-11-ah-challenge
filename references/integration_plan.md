@@ -165,3 +165,8 @@ make eval-ensemble-members && make meta-router     # roteador CA⊕GNN sobre os 
 
 Membros de ensemble aceitam `{checkpoint, model, experiment, weight, parquet_path, calib_parquet_path}`
 (`ensemble_weights=[...]` para pesos alinhados à lista).
+
+## 9. Próximo passo — ablações
+
+Modelos com vídeo do Rodrigo × pré-processamento/features de suporte do Luiz, depois ensembles
+com cada membro no seu cache: [`ablation_plan.md`](ablation_plan.md) (`make ablate-list`).
