@@ -93,3 +93,16 @@ def test_route_rejects_members_with_different_folds(compose_cfg, tmp_path):
     m2 = _fake_member(tmp_path, "m2", np.array([0.3, 0.7]), table.assign(fold=[1, 0]), 0)
     with pytest.raises(ValueError, match="dobras"):
         run_route(compose_cfg(f"route.members=[{m1},{m2}]"))
+
+
+def test_holdout_split_is_participant_wise(compose_cfg, window_parquet):
+    from src.data.datasets import load_split, load_train_val
+
+    cfg = compose_cfg("data.train_splits=[train,val,test]", "data.calib_split=holdout",
+                      "data.holdout_frac=0.2")  # fmt: skip
+    train, hold = load_train_val(cfg, family="sklearn")
+    pool = video_table(window_parquet, ["train", "val", "test"])
+    assert set(train.video_labels) | set(hold.video_labels) == set(pool["video_id"])
+    assert not set(train.groups) & set(hold.groups)  # nenhum participante nos dois
+    assert 0.1 < len(hold.video_labels) / len(pool) < 0.3
+    assert set(load_split(cfg, "holdout", family="sklearn").video_labels) == set(hold.video_labels)

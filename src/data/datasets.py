@@ -464,6 +464,9 @@ def _split_video_ids(df: pl.DataFrame, split: str | Sequence[str]) -> set[str]:
     return set(df.filter(pl.col("split").is_in(splits))["id"].unique().to_list())
 
 
+HOLDOUT = "holdout"  # split especial: fração estratificada por participante dos train_splits
+
+
 def video_table(parquet_path: str | Path, splits: Sequence[str]):
     """Uma linha por vídeo dos ``splits`` (``video_id``, ``participant_id``, ``label``),
     ordenada por ``video_id`` — a tabela que define as dobras/holdouts por participante."""
@@ -484,6 +487,26 @@ def video_table(parquet_path: str | Path, splits: Sequence[str]):
             "label": df["video_label"].cast(pl.Int64).to_list(),
         }
     )
+
+
+def holdout_video_ids(cfg: DictConfig, parquet_path: str | Path | None = None) -> set[str]:
+    """Holdout ``data.holdout_frac`` (default 8%) dos ``data.train_splits``, estratificado pelo
+    rótulo e agrupado por participante (sem vazamento) — determinístico por ``cfg.seed``.
+
+    É o split de early stopping/limiar do re-treino final (Rodada 6: train+val+test).
+    """
+    from src.eval.protocol import make_group_folds
+
+    pq = parquet_path or cfg.data.paths.parquet_path
+    videos = video_table(pq, _train_splits(cfg))
+    frac = float(cfg.data.get("holdout_frac", 0.08))
+    folds = make_group_folds(videos, n_splits=max(2, round(1 / frac)), seed=int(cfg.seed))
+    return set(videos["video_id"][folds == 0])
+
+
+def _train_splits(cfg: DictConfig) -> list[str]:
+    splits = cfg.data.get("train_splits", ["train"])
+    return [splits] if isinstance(splits, str) else list(splits)
 
 
 def _view_for_family(
@@ -520,7 +543,8 @@ def load_split(
 
     Args:
         cfg: config Hydra composto (usa ``cfg.data.paths.parquet_path`` por padrão).
-        split: "train" | "val" | "test", ou uma sequência (ex.: ``["train", "val"]``).
+        split: "train" | "val" | "test" | "holdout" (fração dos ``train_splits``, ver
+            :func:`holdout_video_ids`), ou uma sequência (ex.: ``["train", "val"]``).
         family: "sklearn" (WindowMatrixView) | "lightning" (VideoSequenceDataset).
         parquet_path: sobrepõe o Parquet lido (ex.: calibrar num Parquet diferente do
             de predição). ``None`` = usa ``cfg.data.paths.parquet_path``.
@@ -529,7 +553,10 @@ def load_split(
         :class:`WindowMatrixView` ou :class:`VideoSequenceDataset` do(s) split(s) pedido(s).
     """
     pq = Path(parquet_path) if parquet_path is not None else Path(cfg.data.paths.parquet_path)
-    split_ids = _split_video_ids(pl.read_parquet(pq, columns=["id", "split"]), split)
+    if split == HOLDOUT:
+        split_ids = holdout_video_ids(cfg, pq)
+    else:
+        split_ids = _split_video_ids(pl.read_parquet(pq, columns=["id", "split"]), split)
     log.info(f"load_split(split={split}, family={family}): {len(split_ids)} vídeos [{pq.name}]")
     return load_videos(cfg, split_ids, family=family, parquet_path=pq)
 
@@ -557,6 +584,8 @@ def load_train_val(cfg: DictConfig, *, family: str):
     - ``data.calib_split`` (default ``val``): split usado para calibrar o limiar (e, no
       caminho neural, para monitorar early-stop/checkpoint). Ex.: ``test`` (525, grande
       e limpo) — calibra o limiar num conjunto robusto sem vazamento (splits disjuntos).
+      ``holdout``: ``data.holdout_frac`` (8%) dos próprios ``train_splits``, por participante
+      — o re-treino final da Rodada 6 (``train_splits=[train,val,test]``).
 
     Os defaults reproduzem EXATAMENTE o comportamento anterior (train / val).
 
@@ -567,11 +596,16 @@ def load_train_val(cfg: DictConfig, *, family: str):
     Returns:
         Tupla ``(train_data, calib_data)``.
     """
-    data = cfg.data
-    train_splits = data.get("train_splits", ["train"])
-    train_splits = [train_splits] if isinstance(train_splits, str) else list(train_splits)
-    calib_split = data.get("calib_split", "val")
+    train_splits = _train_splits(cfg)
+    calib_split = cfg.data.get("calib_split", "val")
     log.info(f"Composição de splits: treino={train_splits} · calibração/monitor='{calib_split}'")
+    if calib_split == HOLDOUT:  # re-treino final: holdout sai do próprio conjunto de treino
+        hold = holdout_video_ids(cfg)
+        pool = set(video_table(cfg.data.paths.parquet_path, train_splits)["video_id"])
+        return (
+            load_videos(cfg, pool - hold, family=family),
+            load_videos(cfg, hold, family=family),
+        )
     return (
         load_split(cfg, train_splits, family=family),
         load_split(cfg, calib_split, family=family),
