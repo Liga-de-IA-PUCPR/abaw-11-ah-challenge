@@ -25,6 +25,12 @@
 #   make train-gnn        # heterogeneous GNN (GNN_EXPERIMENT=hetero_gnn_v2_tune_wav2vec2)
 #   make ensemble-multimodal   # cross-attention seeds + GNN (+ face) run dirs, prob. averaging
 #
+# MoE plan (text-anchored fusion + SoftMoE; see references/improvement_plan.md):
+#   make featurize-moe    # extra Parquet columns (transcript, ASR timing, markers, audio, face)
+#   make oof EXPERIMENT=moe_r1_text           # OOF protocol (5 participant folds, fixed τ)
+#   make oof EXPERIMENT=moe_r2_text_tab TEXT_RUN=outputs/oof/moe-r1-text/<ts> BASELINE=<run>
+#   make route MEMBERS="<oof run> <oof run> ..."   # MoERouter over the members
+#
 # Parameters (override on the command line):
 #   DEVICE=auto|cpu|mps|cuda   SPLIT=val|test   OUT=<file>
 #   EXPERIMENT=<preset>        ARGS="<extra Hydra overrides>"   SWEEP="<multirun args>"
@@ -68,6 +74,13 @@ W2V_PARQUET       ?= data/processed/text_audio_windows_w2v.parquet
 GNN_RUN           ?= outputs/hetero_gnn_contrastive/20260713_162753
 FACE_RUN          ?=
 MM_ENS_NAME       ?= ensemble_multimodal
+# MoE plan: extra columns + OOF protocol + MoERouter.
+MOE_COLUMNS       ?= transcript asr_timing hesitation_markers
+MOE_AUDIO         ?= wav2vec2_emotion_large
+MOE_VISION        ?= vit_face_expression
+BASELINE          ?=
+TEXT_RUN          ?=
+MEMBERS           ?=
 
 # MPS (Apple Metal): fall back to CPU for ops not yet supported by Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
@@ -85,7 +98,8 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         train-ensemble ensemble-evaluate ensemble-submit reproduce-best \
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
-        meta-router \
+        meta-router featurize-moe featurize-moe-audio featurize-moe-face featurize-moe-scene \
+        oof route \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -131,6 +145,14 @@ help:
 	@echo "    ensemble-multimodal    manifest CA seeds + GNN_RUN (+ FACE_RUN), prob. averaging"
 	@echo "    ensemble-multimodal-submit  submission from that ensemble (OUT=$(OUT))"
 	@echo "    meta-router      CA⊕GNN router over the members' predictions.csv"
+	@echo ""
+	@echo "  MoE plan — text-anchored fusion + SoftMoE (references/improvement_plan.md):"
+	@echo "    featurize-moe    extra columns: MOE_COLUMNS=\"$(MOE_COLUMNS)\""
+	@echo "    featurize-moe-audio  audio column (MOE_AUDIO=$(MOE_AUDIO))"
+	@echo "    featurize-moe-face   face/eyes/mouth column (MOE_VISION=$(MOE_VISION))"
+	@echo "    featurize-moe-scene  optional scene column (VideoMAE)"
+	@echo "    oof              OOF protocol of EXPERIMENT (+ gate vs BASELINE=<oof run>)"
+	@echo "    route            MoERouter over MEMBERS=\"<oof run> ...\""
 	@echo ""
 	@echo "  Quality (CI/CD):"
 	@echo "    ci               format-check + lint + compile (fast gate)"
@@ -328,6 +350,38 @@ meta-router:
 	$(PY) scripts/meta_router_ca_gnn.py \
 	  --ca-runs $$(for r in $$(cat $(ENSEMBLE_MANIFEST)); do basename $$r; done) \
 	  --gnn-run $(GNN_RUN) $(ARGS)
+
+# --- MoE plan (text-anchored fusion + SoftMoE) -------------------------------
+# Extra Parquet columns (mode=featurize_columns): video-level text/ASR signals, then the
+# per-window audio/face embeddings of the chosen embedders. Needs `make data` first.
+_COLS = $(subst $(eval) ,$(comma),$(strip $(1)))
+
+featurize-moe:
+	$(PY) $(MAIN) mode=featurize_columns "columns=[$(call _COLS,$(MOE_COLUMNS))]" $(ARGS)
+
+featurize-moe-audio:
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=featurize_columns "columns=[audio]" \
+	  audio_embedder=$(MOE_AUDIO) device=$(DEVICE) $(ARGS)
+
+featurize-moe-face:
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=featurize_columns "columns=[face_crops]" \
+	  vision_embedder=$(MOE_VISION) device=$(DEVICE) $(ARGS)
+
+featurize-moe-scene:
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=featurize_columns "columns=[scene]" device=$(DEVICE) $(ARGS)
+
+# OOF protocol of EXPERIMENT (any registry model). BASELINE=<oof run> adds the paired gate;
+# TEXT_RUN=<oof run of moe_r1_text> makes each fold start from that fold's text model.
+oof:
+	@test -n "$(EXPERIMENT)" || (echo "Set EXPERIMENT=<preset>, e.g. EXPERIMENT=moe_r1_text"; exit 1)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=oof $(_EXP) device=$(DEVICE) \
+	  $(if $(BASELINE),oof.baseline=$(BASELINE)) \
+	  $(if $(TEXT_RUN),"model.branches.text.init_from='$(TEXT_RUN)/fold{fold}'") $(ARGS)
+
+# MoERouter over OOF runs (same folds): evaluated on the members' folds + final prediction.
+route:
+	@test -n "$(MEMBERS)" || (echo "Set MEMBERS=\"<oof run> <oof run> ...\""; exit 1)
+	$(PY) $(MAIN) mode=route "route.members=[$(call _COLS,$(MEMBERS))]" $(ARGS)
 
 # End to end (data -> train -> evaluate).
 pipeline: data train evaluate
