@@ -24,8 +24,11 @@ see [§5](#5-reproducing-the-papers-best-result-ensemble_5) to reproduce it with
 The repository also hosts, as an **optional extension**, Rodrigo Watanabe's heterogeneous
 GNNs (audio + text + support features as a graph, plus a Face Mesh branch for **video**),
 running on the same preprocessing and combinable with the cross-attention in a heterogeneous
-ensemble — see [§9.6](#96-extension-heterogeneous-gnns--video-optional). The paper pipeline is
-unchanged and never reads video frames.
+ensemble — see [§9.6](#96-extension-heterogeneous-gnns--video-optional). It also implements the
+**MoE plan** (text-anchored fusion with a Soft Mixture-of-Experts head, per-modality branches —
+fine-tuned text, emotion audio, ASR timing, face crops — an OOF protocol with paired gates and
+a MoERouter) — see [§9.7](#97-extension-moe-plan--text-anchored-fusion--softmoe). The paper
+pipeline is unchanged and never reads video frames.
 
 <details open="open">
   <summary><b>Table of contents</b></summary>
@@ -38,7 +41,7 @@ unchanged and never reads video frames.
     <li><a href="#6-make-commands">Commands (make)</a></li>
     <li><a href="#7-running-experiments-hydra">Running experiments (Hydra)</a></li>
     <li><a href="#8-yaml-configuration">YAML configuration</a></li>
-    <li><a href="#9-how-the-models-work">How the models work</a></li>
+    <li><a href="#9-how-the-models-work">How the models work</a> (incl. <a href="#97-extension-moe-plan--text-anchored-fusion--softmoe">MoE plan</a>)</li>
     <li><a href="#10-project-structure">Project structure</a></li>
     <li><a href="#11-outputs--submission">Outputs &amp; submission</a></li>
     <li><a href="#authors--license">Authors &amp; license</a></li>
@@ -206,6 +209,8 @@ run gives 0.722 / 0.875 with the ensemble threshold at 0.50.
 | | `evaluate` · `submit` · `pipeline` | metrics on a split · submission · end to end |
 | **Ensemble** | `train-ensemble` · `ensemble-evaluate` · `ensemble-submit` | N seeds · averaged-probability eval · submission |
 | | `reproduce-best` | **paper result**: data + 5 seeds + test evaluation |
+| **MoE plan** | `featurize-moe` · `featurize-moe-audio` · `featurize-moe-face` · `featurize-moe-scene` | extra Parquet columns (transcript, ASR timing, markers · audio · face · scene) |
+| | `oof` · `route` | OOF protocol of `EXPERIMENT` (+ paired gate vs `BASELINE`) · MoERouter over `MEMBERS` |
 | **Quality (CI)** | `ci` · `check` | `format-check + lint + compile` · + `typecheck + test` |
 | | `lint` · `format` · `typecheck` · `test` · `compile` | ruff · ruff --fix · mypy · pytest · py_compile |
 | **Cleaning** | `clean` · `clean-cache` · `clean-outputs` · `clean-all` | caches · `data/interim,processed` · `outputs/…` · everything |
@@ -481,6 +486,61 @@ now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-route
 > (0.7226) and AP does not improve — the gain is a threshold shift toward the test prevalence,
 > not better ranking. Details in the integration plan §7.
 
+### 9.7 Extension: MoE plan — text-anchored fusion + SoftMoE
+
+Implementation of Rodrigo's plan ([`references/improvement_plan.md`](references/improvement_plan.md) —
+its first section maps every block of the figure to code/config and lists the commands of each
+round; figures in `references/figures/improvement_plan/`). One model class, `moe_fusion`
+(`src/models/moe_fusion.py`), assembled from **branches** declared in YAML:
+
+```
+branches (LEFT)   h_m = encoder_m(column_m | transcript)            src/models/encoders.py
+anchor            b   = d_text(h_text)
+fusion (CENTER)   z   = LN(b + Σ_m g_m · d_m(h_m)),  g_m = σ(MLP[b; d_m(h_m)])
+head              SoftMoE([z ‖ side branches]) → Linear → p(A/H)    src/models/blocks.py
+```
+
+| Branch (`configs/branch/`) | Input column | Encoder |
+|---|---|---|
+| `text_goemotions` (anchor) | `transcript` (tokenized) | RoBERTa-GoEmotions fine-tune, 4 frozen layers, CLS |
+| `text_frozen` (anchor, cheap) | `text_emb` | per-window attention-MIL |
+| `tabular` | `tabular` (74 support features) | masked BatchNorm + attention-MIL |
+| `hesitation_markers` (head, aux 0.3) | `hesitation_markers` (11 lexical markers) | MLP + auxiliary head |
+| `asr_timing` | `asr_timing` (16 Whisper-gap features) | MLP |
+| `audio_emotion` | `audio_emb_wav2vec2_emotion_large` (1024-d) | GRU + per-window supervision |
+| `face_crops` | `face_crops_vit_face_expression` (face‖eyes‖mouth) | SoftMoE over crops + Transformer + `[μ,σ,μΔ,σΔ]` |
+| `scene` (optional) | `scene_emb_videomae` | MLP |
+
+Everything is swappable from the config: an embedder is a **column** of the window Parquet
+written by `mode=featurize_columns` (e.g. `audio_embedder=hubert` → `audio_emb_hubert`, then
+`model.branches.audio.column=audio_emb_hubert`); a branch architecture is `encoder` /
+`temporal` (`identity|gru|transformer`) / `pool` (`mean|max|attention|stats`) / `mixer`
+(`linear|moe`); presets compose branches (`- /branch@model.branches.<name>: <block>`), and the
+CLI adds/removes them (`+branch@model.branches.scene=scene`, `~model.branches.asr`). A single
+branch is the **unimodal member** of the same class (`moe_unimodal_audio`, `moe_unimodal_asr`).
+
+The plan's rounds are presets (`moe_r1_text` → `moe_r2_text_tab` → `moe_r3_asr` →
+`moe_r4_audio` → `moe_r5_face`) judged by the **OOF protocol** (`mode=oof`, 5 participant-grouped
+folds over train+val, fixed τ = 0.5, paired bootstrap gate against `oof.baseline`). Each
+member exports its pre-logit vector (`oof_embeddings.npy`, `eval_<split>/embeddings.npy`),
+which feeds the **MoERouter** (`mode=route`): a per-sample router over the members, evaluated
+on the members' own folds.
+
+```bash
+make featurize-moe                 # transcript + ASR timing + 11 markers (needs data/raw/data)
+make featurize-moe-audio           # wav2vec2-emotion 1024-d per window
+make featurize-moe-face            # face/eyes/mouth crops of cropped-aligned-faces (vision group)
+
+make oof EXPERIMENT=cross_attention ARGS="experiment_name=r0-cross-attention"   # Round 0
+make oof EXPERIMENT=moe_r1_text                                                 # Round 1
+make oof EXPERIMENT=moe_r2_text_tab TEXT_RUN=outputs/oof/moe-r1-text/<ts> \
+         BASELINE=outputs/oof/moe-r1-text/<ts>                                  # Round 2 (+gate)
+make route MEMBERS="outputs/oof/moe-r5-face/<ts> outputs/oof/moe-r1-text/<ts> ..."
+```
+
+The final retrain (Round 6) uses `data.train_splits=[train,val,test] data.calib_split=holdout`
+(8% participant-wise holdout, `data.holdout_frac`).
+
 ---
 
 ## 10. Project structure
@@ -495,19 +555,19 @@ now also writes `eval_<split>/predictions.csv` (input of the CA⊕GNN meta-route
 ├── notebooks/                  # incl. ensemble5_pipeline.ipynb (self-contained best model)
 ├── references/                 # integration plan + GNN / meta-router / improvement-plan docs
 ├── scripts/                    # meta-routers CA⊕GNN(+face), OOF ensemble, Optuna, hard mining
-├── tests/                      # pytest (face path, ensemble, OOF protocol, ASR timing, …)
+├── tests/                      # pytest (face path, ensemble, OOF protocol, ASR timing, MoE, …)
 ├── data/                       # raw/ (dataset) · interim/ (audio, windows) · processed/ (features)
 └── src/
     ├── conf/                   # typed schemas + resolve_device + seed_everything
     ├── logger.py
     ├── base/                   # ABCs: BaseEmbedder, BaseModel, BaseTrainer
     ├── data/                   # indexing, audio_io, windowing, datasets, schema, graph_builder, face_*
-    ├── features/               # text_embedder, audio_embedder, hesitation, text_features, tabular, builder, face_mesh
-    ├── models/                 # registry, random_forest, cross_attention, hetero_gnn(_contrastive), multimodal_hetero_*, face_gnn_ts
+    ├── features/               # text/audio/vision embedders, hesitation(_markers), text_features, tabular, builder, columns, face_mesh
+    ├── models/                 # registry, random_forest, cross_attention, GNNs, moe_fusion (+ blocks, encoders), moe_router
     ├── eval/                   # protocol (grouped OOF CV + paired bootstrap)
     ├── training/               # factory, sklearn_trainer, lightning_trainer, ensemble, aggregation, metrics, splits
     ├── outputs/                # wandb_logger, checkpoint, reporter, submission
-    ├── pipeline/               # preprocess, featurize, featurize_face (orchestration)
+    ├── pipeline/               # preprocess, featurize, featurize_face, featurize_columns, oof, route
     └── scripts/                # extract_audio (mp4 → flac 16 kHz)
 ```
 
