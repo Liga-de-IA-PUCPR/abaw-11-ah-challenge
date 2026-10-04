@@ -11,8 +11,9 @@ Objetivo: parar de sobreajustar ao val de 124 vídeos. Este módulo fornece:
   treino, devolve uma função ``predict_proba``-like para o fold de teste).
 - ``macro_f1_at_threshold`` / ``average_precision_score_``: métricas com
   limiar **fixo** (default 0.5) — nada de tuning de limiar no val/test.
-- ``paired_bootstrap_macro_f1``: IC por bootstrap pareado (1000
-  reamostragens) da diferença de Macro-F1 entre dois vetores de score.
+- ``paired_bootstrap_macro_f1`` / ``paired_bootstrap_ap``: IC por bootstrap
+  pareado (1000 reamostragens) da diferença de Macro-F1 / AP entre dois
+  vetores de score (núcleo genérico: ``paired_bootstrap``).
 - ``bootstrap_ci_macro_f1``: IC por bootstrap (não pareado) do Macro-F1
   de um único vetor de score.
 
@@ -260,6 +261,36 @@ def paired_bootstrap_macro_f1(
         reamostras em que a diferença troca de sinal em relação à
         observada — teste bicaudal aproximado).
     """
+
+    def metric(y: np.ndarray, s: np.ndarray) -> float:
+        return macro_f1_at_threshold(y, s, threshold=threshold)
+
+    return paired_bootstrap(y_true, y_score_a, y_score_b, metric, n_boot, seed, ci)
+
+
+def paired_bootstrap_ap(
+    y_true: Iterable[int],
+    y_score_a: Iterable[float],
+    y_score_b: Iterable[float],
+    n_boot: int = 1000,
+    seed: int = 0,
+    ci: float = 0.95,
+) -> dict[str, float]:
+    """Como :func:`paired_bootstrap_macro_f1`, para a diferença de AP (livre de limiar)."""
+    metric = average_precision_score_
+    return paired_bootstrap(y_true, y_score_a, y_score_b, metric, n_boot, seed, ci)
+
+
+def paired_bootstrap(
+    y_true: Iterable[int],
+    y_score_a: Iterable[float],
+    y_score_b: Iterable[float],
+    metric: Callable[[np.ndarray, np.ndarray], float],
+    n_boot: int = 1000,
+    seed: int = 0,
+    ci: float = 0.95,
+) -> dict[str, float]:
+    """Bootstrap pareado genérico de ``metric(y, a) - metric(y, b)`` (ver acima)."""
     y_true = np.asarray(list(y_true), dtype=np.int64)
     y_score_a = np.asarray(list(y_score_a), dtype=np.float64)
     y_score_b = np.asarray(list(y_score_b), dtype=np.float64)
@@ -271,13 +302,9 @@ def paired_bootstrap_macro_f1(
     diffs = np.empty(n_boot, dtype=np.float64)
     for b in range(n_boot):
         idx = rng.integers(0, n, size=n)
-        f1_a = macro_f1_at_threshold(y_true[idx], y_score_a[idx], threshold=threshold)
-        f1_b = macro_f1_at_threshold(y_true[idx], y_score_b[idx], threshold=threshold)
-        diffs[b] = f1_a - f1_b
+        diffs[b] = metric(y_true[idx], y_score_a[idx]) - metric(y_true[idx], y_score_b[idx])
 
-    observed = macro_f1_at_threshold(
-        y_true, y_score_a, threshold=threshold
-    ) - macro_f1_at_threshold(y_true, y_score_b, threshold=threshold)
+    observed = metric(y_true, y_score_a) - metric(y_true, y_score_b)
 
     alpha = (1.0 - ci) / 2.0
     # p-value bicaudal: fração de reamostras que cruzam 0 relativo ao sinal observado.

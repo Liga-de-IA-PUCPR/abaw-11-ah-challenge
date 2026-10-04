@@ -464,6 +464,28 @@ def _split_video_ids(df: pl.DataFrame, split: str | Sequence[str]) -> set[str]:
     return set(df.filter(pl.col("split").is_in(splits))["id"].unique().to_list())
 
 
+def video_table(parquet_path: str | Path, splits: Sequence[str]):
+    """Uma linha por vídeo dos ``splits`` (``video_id``, ``participant_id``, ``label``),
+    ordenada por ``video_id`` — a tabela que define as dobras/holdouts por participante."""
+    import pandas as pd
+
+    df = (
+        pl.scan_parquet(parquet_path)
+        .select("id", "participant_id", "video_label", "split")
+        .filter(pl.col("split").is_in(list(splits)))
+        .unique("id", keep="first")
+        .sort("id")
+        .collect()
+    )
+    return pd.DataFrame(
+        {
+            "video_id": df["id"].to_list(),
+            "participant_id": df["participant_id"].to_list(),
+            "label": df["video_label"].cast(pl.Int64).to_list(),
+        }
+    )
+
+
 def _view_for_family(
     parquet_path: str | Path, family: str, split_ids: set[str], spec: dict | None = None
 ):

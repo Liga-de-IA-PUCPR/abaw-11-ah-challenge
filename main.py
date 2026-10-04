@@ -8,6 +8,10 @@ por ``cfg.mode``:
     featurize_face (opcional, vídeo) Face Mesh por janela → coluna face_landmarks no Parquet
     featurize_columns  colunas extras do plano MoE no Parquet (transcrição, ASR timing,
                    marcadores de hesitação, áudio/rosto/cena por embedder) — ``columns=[...]``
+    oof            protocolo OOF (5 dobras por participante, τ fixo) + gate pareado
+                   (``oof.baseline``) — a régua de cada rodada do plano MoE
+    route          MoERouter sobre runs OOF (``route.members``): combina os membros por
+                   amostra a partir dos vetores pré-logit; gate vs melhor membro e média
     train          treina o modelo escolhido em ``model=`` (FASE 4)
     evaluate       avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
     submit         escreve o arquivo de submissão (video_id, pred) (FASE 5)
@@ -551,6 +555,25 @@ def _run_featurize_columns(cfg: DictConfig) -> int:
     return 0
 
 
+def _run_oof(cfg: DictConfig) -> int:
+    """``mode=oof`` — predições out-of-fold + métricas com τ fixo + gate vs ``oof.baseline``."""
+    import src.models  # noqa: F401  — registra os modelos
+    from src.pipeline.oof import run_oof
+
+    summary = run_oof(cfg)
+    log.info(f"OOF concluído: {summary['out_dir']}")
+    return 0
+
+
+def _run_route(cfg: DictConfig) -> int:
+    """``mode=route`` — MoERouter (avaliado nas dobras OOF dos membros) + predição final."""
+    from src.pipeline.route import run_route
+
+    summary = run_route(cfg)
+    log.info(f"MoERouter concluído: {summary['out_dir']}")
+    return 0
+
+
 def _run_hard_mining(cfg: DictConfig, device) -> int:
     """``mode=hard_mining`` — pontua um split (default train) e grava pesos de amostragem.
 
@@ -641,6 +664,8 @@ _DISPATCH = {
     "featurize": _run_featurize,
     "featurize_face": lambda cfg, dev: _run_featurize_face(cfg),
     "featurize_columns": lambda cfg, dev: _run_featurize_columns(cfg),
+    "oof": lambda cfg, dev: _run_oof(cfg),
+    "route": lambda cfg, dev: _run_route(cfg),
     "train": _run_train,
     "evaluate": _run_evaluate,
     "submit": _run_submit,
