@@ -394,16 +394,25 @@ class LightningTrainer(BaseTrainer):
 
     def _infer(self, loader) -> tuple[np.ndarray, np.ndarray]:
         """Roda ``predict_step`` e devolve ``(video_ids, proba)`` como numpy."""
-        out = self.predict_outputs(loader)
+        out = self.predict_outputs(loader, embeddings=False)
         return out["video_ids"], out["proba"].astype(np.float32)
 
-    def predict_outputs(self, loader) -> dict[str, np.ndarray]:
+    def predict_outputs(self, loader, embeddings: bool = True) -> dict[str, np.ndarray]:
         """Tudo o que o ``predict_step`` devolve, concatenado por vídeo: ``video_ids``,
-        ``proba`` e, se o modelo expuser, ``embedding`` (vetor pré-logit, insumo do
-        MoERouter), ``router_weights`` e ``gates``."""
-        outputs = self._trainer.predict(
-            self._lit_module, dataloaders=loader, ckpt_path=self._ckpt_path
-        )
+        ``proba`` e o que o modelo expuser (``router_weights``/``gates`` do moe_fusion).
+
+        ``embeddings=True`` garante o vetor pré-logit (``embedding``, insumo do MoERouter)
+        para QUALQUER modelo: se o ``predict_step`` não o devolve (cross-attention, GNNs),
+        ele é capturado na entrada da camada ``Linear(·, 1)`` que gera o logit.
+        """
+        capture = _PrelogitCapture(self._lit_module) if embeddings else None
+        try:
+            outputs = self._trainer.predict(
+                self._lit_module, dataloaders=loader, ckpt_path=self._ckpt_path
+            )
+        finally:
+            if capture is not None:
+                capture.remove()
         parts: dict[str, list] = {}
         for out in outputs:
             for key, value in out.items():
@@ -411,10 +420,15 @@ class LightningTrainer(BaseTrainer):
                     parts.setdefault(key, []).extend(list(value))
                 else:
                     parts.setdefault(key, []).append(value.detach().float().cpu().numpy())
-        return {
+        result = {
             key: np.asarray(value) if key == "video_ids" else np.concatenate(value, axis=0)
             for key, value in parts.items()
         }
+        if capture is not None and "embedding" not in result:
+            emb = capture.embedding_for(result["proba"])
+            if emb is not None:
+                result["embedding"] = emb
+        return result
 
     @staticmethod
     def _labels_from_loader(loader) -> dict[str, int]:
@@ -498,6 +512,52 @@ class LightningTrainer(BaseTrainer):
         preds = aggregate_to_video(proba, ids, method="identity", threshold=self.threshold_)
         scores = {str(v): float(p) for v, p in zip(ids, proba, strict=False)}
         return evaluate_video_predictions(video_labels=labels, video_pred=preds, video_score=scores)
+
+
+class _PrelogitCapture:
+    """Captura a ENTRADA da camada ``Linear(·, 1)`` que gera o logit (o vetor pré-logit) de
+    qualquer ``LightningModule``, sem mudar o código do modelo.
+
+    Registra hooks em toda ``Linear`` com 1 saída; no fim fica com a camada cujo
+    ``sigmoid(saída)`` reproduz a ``proba`` do ``predict_step`` — cabeças auxiliares e
+    escores de atenção (por janela) não batem e são descartados.
+    """
+
+    def __init__(self, module: Any) -> None:
+        from torch import nn
+
+        self._records: dict[str, tuple[list[np.ndarray], list[np.ndarray]]] = {}
+        self._handles = [
+            layer.register_forward_hook(self._hook(name))
+            for name, layer in module.named_modules()
+            if isinstance(layer, nn.Linear) and layer.out_features == 1
+        ]
+
+    def _hook(self, name: str):
+        inputs, logits = self._records.setdefault(name, ([], []))
+
+        def hook(_layer, args, output) -> None:
+            if output.dim() == 2 and args and args[0].dim() == 2:  # (B, d) → (B, 1)
+                inputs.append(args[0].detach().float().cpu().numpy())
+                logits.append(output.detach().float().cpu().numpy()[:, 0])
+
+        return hook
+
+    def remove(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+
+    def embedding_for(self, proba: np.ndarray) -> np.ndarray | None:
+        """Entradas da (última) camada cujo ``sigmoid`` reproduz ``proba``; ``None`` se nenhuma."""
+        from scipy.special import expit
+
+        for inputs, logits in reversed(list(self._records.values())):
+            if logits:
+                z = np.concatenate(logits)
+                if z.shape == proba.shape and np.allclose(expit(z), proba, atol=1e-4):
+                    return np.concatenate(inputs)
+        log.info("Vetor pré-logit não identificado: nenhuma Linear(·, 1) reproduz a proba.")
+        return None
 
 
 def _opt_float(value: Any) -> float | None:

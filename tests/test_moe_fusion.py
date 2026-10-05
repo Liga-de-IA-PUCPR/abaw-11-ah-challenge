@@ -236,3 +236,63 @@ def test_train_save_reload_exports_embeddings(compose_cfg):
     assert out["embedding"].shape == (len(out["video_ids"]), 16)
     assert out["router_weights"].shape[1] == 4 and out["gates"].shape[1] == 2
     assert np.isfinite(out["y_proba"]).all()
+
+
+# ---- vetor pré-logit de QUALQUER membro (CA/GNN não o devolvem no predict_step) ----
+
+
+def test_prelogit_capture_picks_the_logit_layer():
+    from torch import nn
+
+    from src.training.lightning_trainer import _PrelogitCapture
+
+    class _Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.body = nn.Linear(3, 4)
+            self.aux = nn.Linear(4, 1)  # isca: também (B, 4) → (B, 1), mas não gera a proba
+            self.head = nn.Linear(4, 1)
+
+        def forward(self, x):
+            h = torch.relu(self.body(x))
+            self.aux(h)
+            return torch.sigmoid(self.head(h)).squeeze(1), h
+
+    net = _Net().eval()
+    capture = _PrelogitCapture(net)
+    with torch.no_grad():
+        outs = [net(torch.randn(5, 3)) for _ in range(2)]
+    capture.remove()
+    proba = torch.cat([p for p, _ in outs]).numpy()
+    emb = capture.embedding_for(proba)
+    np.testing.assert_allclose(emb, torch.cat([h for _, h in outs]).numpy(), rtol=1e-6)
+    assert capture.embedding_for(proba + 0.3) is None  # nenhuma camada reproduz → sem embedding
+
+
+def test_cross_attention_member_exports_prelogit_embeddings(compose_cfg):
+    from scipy.special import expit
+
+    from src.data.datasets import as_loader, load_split
+    from src.models.registry import create_model
+    from src.training.factory import create_trainer
+
+    cfg = compose_cfg(
+        "+experiment=cross_attention",
+        "model.common_dim=8",
+        "model.num_heads=2",
+        "trainer.max_epochs=1",
+        "data.batch_size=8",
+    )
+    model, family = create_model(cfg.model.name, cfg.model)
+    trainer = create_trainer(family, model=model, cfg=cfg)
+    trainer.output_dir = f"{cfg.data.paths.output_root}/ca"
+    trainer.fit(
+        as_loader(cfg, load_split(cfg, "train", family=family), family, "train"),
+        as_loader(cfg, load_split(cfg, "val", family=family), family, "val"),
+    )
+    test = as_loader(cfg, load_split(cfg, "test", family=family), family, "test")
+    out = trainer.predict_outputs(test)
+    head = trainer._lit_module.model.classifier[-1]  # Linear(common_dim, 1) que gera o logit
+    logit = out["embedding"] @ head.weight.detach().numpy().T + head.bias.detach().numpy()
+    np.testing.assert_allclose(expit(logit[:, 0]), out["proba"], atol=1e-4)
+    assert "embedding" not in trainer.predict_outputs(test, embeddings=False)

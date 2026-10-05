@@ -87,7 +87,7 @@ class EnsembleTrainer(LightningTrainer):
         finally:
             self._role = "predict"
 
-    def predict_outputs(self, loader) -> dict[str, np.ndarray]:
+    def predict_outputs(self, loader, embeddings: bool = True) -> dict[str, np.ndarray]:
         """Só ``video_ids``/``proba`` combinados (membros heterogêneos não têm um embedding
         comum — o MoERouter combina embeddings a partir dos dumps de cada membro)."""
         ids, proba = self._infer(loader)
