@@ -182,6 +182,7 @@ class FaceCropsColumn(ColumnFeaturizer):
                 model_name=v.model_name,
                 pooling=v.get("pooling", "cls"),
                 batch_size=v.get("batch_size", 64),
+                trust_remote_code=bool(v.get("trust_remote_code", False)),
                 device=self.cfg.device,
             )
             frames_root = v.get("frames_root") or (
@@ -239,6 +240,8 @@ class SceneColumn(VideoLevelColumn):
                 model_name=s.model_name,
                 num_frames=int(s.get("num_frames", 16)),
                 pooling=s.get("pooling", "mean"),
+                input_layout=s.get("input_layout", "btchw"),
+                trust_remote_code=bool(s.get("trust_remote_code", False)),
                 device=self.cfg.device,
             )
         return self._embedder

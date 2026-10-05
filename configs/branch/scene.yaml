@@ -1,4 +1,5 @@
 # Canal de CENA opcional (tracejado na figura): VideoMAE congelado do vídeo inteiro.
+# VideoMAE-v2: column: scene_emb_videomae_v2 (scene_embedder=videomae_v2 no featurize_columns).
 role: residual
 encoder: vector
 column: scene_emb_videomae

@@ -7,6 +7,7 @@ name: vit_face_expression
 model_name: trpakov/vit-face-expression   # ViT-B/16 fine-tunado em expressões faciais (768-d)
 pooling: cls                              # cls | mean | pooler (ConvNets: média espacial)
 batch_size: 64
+trust_remote_code: false                  # true p/ backbones com código remoto no Hub
 sample_fps: 1.0                           # frames/s amostrados (grade compartilhada pelas janelas)
 default_fps: 30.0                         # fps assumido se o .mp4 não estiver disponível
 frames_root: null                         # null = ${data.paths.data_root}/cropped-aligned-faces

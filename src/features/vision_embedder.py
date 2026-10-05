@@ -15,7 +15,8 @@ serve (``model_name`` no YAML). Nenhuma dependência nova: só ``transformers`` 
   grade de ``sample_fps`` por vídeo (compartilhada pelas janelas sobrepostas), embeda cada
   recorte e grava, por janela, ``[face ‖ eyes ‖ mouth]`` (média dos frames da janela).
 - :class:`SceneEmbedder` — canal de CENA opcional (VideoMAE congelado sobre ``num_frames``
-  frames do vídeo inteiro, não recortado) → vetor por vídeo.
+  frames do vídeo inteiro, não recortado) → vetor por vídeo; também carrega o VideoMAE-v2
+  (código remoto, ``scene_embedder=videomae_v2``).
 
 A dinâmica temporal (Transformer + ``[μ, σ, μΔ, σΔ]``) e a mistura dos recortes (SoftMoE)
 ficam no MODELO (``src/models/encoders.py``), não aqui: o cache guarda só o que é caro.
@@ -44,7 +45,12 @@ DEFAULT_CROPS: dict[str, Sequence[float]] = {
 
 
 def _pool_hidden(out, pooling: str):
-    """Vetor por item a partir da saída de um ``AutoModel`` de visão (ViT/ConvNet/VideoMAE)."""
+    """Vetor por item a partir da saída de um ``AutoModel`` de visão (ViT/ConvNet/VideoMAE).
+
+    Modelos de código remoto que já devolvem o vetor (ex.: VideoMAE-v2) passam direto.
+    """
+    if not hasattr(out, "last_hidden_state"):
+        return out if out.dim() == 2 else out.mean(dim=1)
     if pooling == "pooler" and getattr(out, "pooler_output", None) is not None:
         return out.pooler_output.flatten(1)
     hidden = out.last_hidden_state
@@ -53,6 +59,25 @@ def _pool_hidden(out, pooling: str):
     if pooling == "cls":
         return hidden[:, 0]
     return hidden.mean(dim=1)  # tokens (ViT/VideoMAE)
+
+
+def _load_hf_vision(model_name: str, trust_remote_code: bool, device):
+    """``(processor, modelo em eval no device)`` de um repositório de visão do HuggingFace."""
+    from transformers import AutoImageProcessor, AutoModel
+
+    processor = AutoImageProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    return processor, model.to(device).eval()
+
+
+def _config_dim(model) -> int | None:
+    """Dimensão declarada no config (ViT: ``hidden_size``; ConvNets: ``hidden_sizes[-1]``).
+
+    ``None`` quando o config não declara (código remoto) — aí a dimensão sai de 1 forward.
+    """
+    config = model.config
+    sizes = getattr(config, "hidden_sizes", None) or [None]
+    return getattr(config, "hidden_size", None) or sizes[-1]
 
 
 class HFImageEmbedder(BaseEmbedder):
@@ -65,44 +90,42 @@ class HFImageEmbedder(BaseEmbedder):
         model_name: str = "trpakov/vit-face-expression",
         pooling: str = "cls",
         batch_size: int = 64,
+        trust_remote_code: bool = False,
         device: str = "auto",
     ) -> None:
-        from transformers import AutoImageProcessor, AutoModel
-
         self.model_name = model_name
         self.pooling = pooling
         self.batch_size = int(batch_size)
         self.device = resolve_device(device)
         log.info(f"Carregando backbone visual: {model_name}")
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(self.device).eval()
-        self._dim = int(
-            getattr(self.model.config, "hidden_size", 0)
-            or self.model.config.hidden_sizes[-1]  # ConvNets (ResNet/ConvNeXt)
-        )
+        self.processor, self.model = _load_hf_vision(model_name, trust_remote_code, self.device)
+        self._dim = _config_dim(self.model)
 
     @property
     def dim(self) -> int:
-        return self._dim
+        if self._dim is None:  # config sem a dimensão: 1 forward com uma imagem em branco
+            self._dim = self._embed([np.zeros((224, 224, 3), dtype=np.uint8)]).shape[1]
+        return int(self._dim)
 
     def extract(self, inputs: list) -> np.ndarray:
         """Lista de imagens (``PIL.Image`` ou ``np.ndarray`` HxWx3) → ``(n, dim)`` float32."""
-        import torch
-
         if not inputs:
-            return np.zeros((0, self._dim), dtype=np.float32)
-        out: list[np.ndarray] = []
-        with torch.no_grad():
-            for start in range(0, len(inputs), self.batch_size):
-                batch = self.processor(
-                    images=inputs[start : start + self.batch_size], return_tensors="pt"
-                ).to(self.device)
-                pooled = _pool_hidden(self.model(**batch), self.pooling)
-                out.append(pooled.float().cpu().numpy())
+            return np.zeros((0, self.dim), dtype=np.float32)
+        out = [
+            self._embed(inputs[start : start + self.batch_size])
+            for start in range(0, len(inputs), self.batch_size)
+        ]
         return self._validate_output(np.concatenate(out, axis=0), len(inputs))
 
+    def _embed(self, images: list) -> np.ndarray:
+        import torch
+
+        with torch.no_grad():
+            batch = self.processor(images=images, return_tensors="pt").to(self.device)
+            return _pool_hidden(self.model(**batch), self.pooling).float().cpu().numpy()
+
     def feature_names(self) -> list[str]:
-        return [f"image_emb_{i}" for i in range(self._dim)]
+        return [f"image_emb_{i}" for i in range(self.dim)]
 
 
 class FaceCropEmbedder:
@@ -167,7 +190,12 @@ class FaceCropEmbedder:
 
 
 class SceneEmbedder(BaseEmbedder):
-    """Vídeo inteiro → 1 vetor (VideoMAE congelado, ``num_frames`` frames uniformes)."""
+    """Vídeo inteiro → 1 vetor (VideoMAE congelado, ``num_frames`` frames uniformes).
+
+    ``input_layout="bcthw"`` + ``trust_remote_code=True`` habilitam o VideoMAE-v2 do Hub
+    (código remoto: entrada ``(B, C, T, H, W)``, saída já é o vetor do clipe); o default
+    ``btchw`` é o layout do VideoMAE do transformers.
+    """
 
     name: str = "scene"
 
@@ -176,39 +204,50 @@ class SceneEmbedder(BaseEmbedder):
         model_name: str = "MCG-NJU/videomae-base",
         num_frames: int = 16,
         pooling: str = "mean",
+        input_layout: str = "btchw",
+        trust_remote_code: bool = False,
         device: str = "auto",
     ) -> None:
-        from transformers import AutoImageProcessor, AutoModel
-
+        if input_layout not in ("btchw", "bcthw"):
+            raise ValueError(f"input_layout desconhecido: {input_layout!r} (btchw|bcthw)")
         self.model_name = model_name
         self.num_frames = int(num_frames)
         self.pooling = pooling
+        self.input_layout = input_layout
         self.device = resolve_device(device)
         log.info(f"Carregando encoder de cena: {model_name}")
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(self.device).eval()
-        self._dim = int(self.model.config.hidden_size)
+        self.processor, self.model = _load_hf_vision(model_name, trust_remote_code, self.device)
+        self._dim = _config_dim(self.model)
 
     @property
     def dim(self) -> int:
-        return self._dim
+        if self._dim is None:  # config sem a dimensão: 1 forward com um clipe em branco
+            blank = np.zeros((self.num_frames, 224, 224, 3), dtype=np.uint8)
+            self._dim = self._embed(blank).shape[0]
+        return int(self._dim)
 
     def extract(self, inputs: list) -> np.ndarray:
         """Lista de caminhos ``.mp4`` → ``(n, dim)`` (zeros p/ vídeo ilegível)."""
-        import torch
-
-        out = np.zeros((len(inputs), self._dim), dtype=np.float32)
-        with torch.no_grad():
-            for i, path in enumerate(inputs):
-                frames = read_uniform_frames(path, self.num_frames)
-                if frames is None:
-                    continue
-                batch = self.processor(list(frames), return_tensors="pt").to(self.device)
-                out[i] = _pool_hidden(self.model(**batch), self.pooling)[0].float().cpu().numpy()
+        out = np.zeros((len(inputs), self.dim), dtype=np.float32)
+        for i, path in enumerate(inputs):
+            frames = read_uniform_frames(path, self.num_frames)
+            if frames is not None:
+                out[i] = self._embed(frames)
         return self._validate_output(out, len(inputs))
 
+    def _embed(self, frames: np.ndarray) -> np.ndarray:
+        """Clipe ``(T, H, W, 3)`` → vetor ``(dim,)``."""
+        import torch
+
+        pixels = self.processor(list(frames), return_tensors="pt")["pixel_values"]
+        if self.input_layout == "bcthw":  # (B, T, C, H, W) do processor → (B, C, T, H, W)
+            pixels = pixels.permute(0, 2, 1, 3, 4)
+        with torch.no_grad():
+            out = self.model(pixel_values=pixels.to(self.device))
+        return _pool_hidden(out, self.pooling)[0].float().cpu().numpy()
+
     def feature_names(self) -> list[str]:
-        return [f"scene_emb_{i}" for i in range(self._dim)]
+        return [f"scene_emb_{i}" for i in range(self.dim)]
 
 
 # ==============================================================================

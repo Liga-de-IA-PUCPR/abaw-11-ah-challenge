@@ -85,6 +85,7 @@ MM_ENS_NAME       ?= ensemble_multimodal
 MOE_COLUMNS       ?= transcript asr_timing hesitation_markers
 MOE_AUDIO         ?= wav2vec2_emotion_large
 MOE_VISION        ?= vit_face_expression
+MOE_SCENE         ?= videomae
 BASELINE          ?=
 TEXT_RUN          ?=
 MEMBERS           ?=
@@ -157,7 +158,7 @@ help:
 	@echo "    featurize-moe    extra columns: MOE_COLUMNS=\"$(MOE_COLUMNS)\""
 	@echo "    featurize-moe-audio  audio column (MOE_AUDIO=$(MOE_AUDIO))"
 	@echo "    featurize-moe-face   face/eyes/mouth column (MOE_VISION=$(MOE_VISION))"
-	@echo "    featurize-moe-scene  optional scene column (VideoMAE)"
+	@echo "    featurize-moe-scene  optional scene column (MOE_SCENE=$(MOE_SCENE); videomae_v2 = VideoMAE-v2)"
 	@echo "    oof              OOF protocol of EXPERIMENT (+ gate vs BASELINE=<oof run>)"
 	@echo "    route            MoERouter over MEMBERS=\"<oof run> ...\""
 	@echo ""
@@ -387,7 +388,8 @@ featurize-moe-face:
 	  vision_embedder=$(MOE_VISION) device=$(DEVICE) $(ARGS)
 
 featurize-moe-scene:
-	$(MPS_FALLBACK) $(PY) $(MAIN) mode=featurize_columns "columns=[scene]" device=$(DEVICE) $(ARGS)
+	$(MPS_FALLBACK) $(PY) $(MAIN) mode=featurize_columns "columns=[scene]" \
+	  scene_embedder=$(MOE_SCENE) device=$(DEVICE) $(ARGS)
 
 # OOF protocol of EXPERIMENT (any registry model). BASELINE=<oof run> adds the paired gate;
 # TEXT_RUN=<oof run of moe_r1_text> makes each fold start from that fold's text model.

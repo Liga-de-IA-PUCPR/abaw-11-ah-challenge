@@ -131,3 +131,36 @@ def test_merge_zero_fills_windows_missing_from_index(tmp_path):
 def test_unknown_column_is_rejected():
     with pytest.raises(KeyError, match="desconhecida"):
         columns_mod.build_column_featurizer("nope", None)
+
+
+# ---- cena: VideoMAE-v2 (código remoto: entrada (B, C, T, H, W), saída já é o vetor) ----
+
+
+def test_scene_embedder_supports_remote_videomae_v2_layout(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+
+    import src.features.vision_embedder as ve
+
+    seen: list[tuple] = []
+
+    class _Processor:
+        def __call__(self, frames, return_tensors="pt"):
+            return {"pixel_values": torch.zeros(1, len(frames), 3, 8, 8)}  # (B, T, C, H, W)
+
+    class _RemoteModel:
+        config = SimpleNamespace()  # sem hidden_size → dimensão sai de 1 forward
+
+        def __call__(self, pixel_values):
+            seen.append(tuple(pixel_values.shape))
+            return torch.ones(pixel_values.shape[0], 5)  # tensor direto, sem last_hidden_state
+
+    monkeypatch.setattr(ve, "_load_hf_vision", lambda *a, **k: (_Processor(), _RemoteModel()))
+    monkeypatch.setattr(ve, "read_uniform_frames", lambda path, n: np.zeros((n, 8, 8, 3)))
+    emb = ve.SceneEmbedder("remote", num_frames=4, input_layout="bcthw", trust_remote_code=True,
+                           device="cpu")  # fmt: skip
+    out = emb.extract(["a.mp4", "b.mp4"])
+    assert emb.dim == 5 and out.shape == (2, 5) and np.allclose(out, 1.0)
+    assert seen[-1] == (1, 3, 4, 8, 8)  # (B, C, T, H, W)
+    with pytest.raises(ValueError, match="input_layout"):
+        ve.SceneEmbedder("remote", input_layout="xyz", device="cpu")

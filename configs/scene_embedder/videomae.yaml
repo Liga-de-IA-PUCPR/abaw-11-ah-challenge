@@ -1,9 +1,11 @@
 # configs/scene_embedder/videomae.yaml — canal de CENA opcional do plano MoE (tracejado).
 # VideoMAE congelado sobre num_frames frames uniformes do vídeo INTEIRO (fundo, postura) →
 # coluna scene_emb_<name> (1 vetor por vídeo, replicado nas janelas).
-# VideoMAE-v2 (OpenGVLab/VideoMAEv2-*) exige código remoto; o v1 abaixo roda com o transformers.
+# VideoMAE-v2 (o da figura do plano): scene_embedder=videomae_v2.
 #   python main.py mode=featurize_columns "columns=[scene]" scene_embedder=videomae
 name: videomae
 model_name: MCG-NJU/videomae-base
 num_frames: 16
 pooling: mean
+input_layout: btchw          # (B, T, C, H, W) — layout do VideoMAE do transformers
+trust_remote_code: false
