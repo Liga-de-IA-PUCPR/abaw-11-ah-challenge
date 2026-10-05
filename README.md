@@ -511,7 +511,7 @@ head              SoftMoE([z ‖ side branches]) → Linear → p(A/H)    src/mo
 | `asr_timing` | `asr_timing` (16 Whisper-gap features) | MLP |
 | `audio_emotion` | `audio_emb_wav2vec2_emotion_large` (1024-d) | GRU + per-window supervision |
 | `face_crops` | `face_crops_vit_face_expression` (face‖eyes‖mouth) | SoftMoE over crops + Transformer + `[μ,σ,μΔ,σΔ]` |
-| `scene` (optional) | `scene_emb_videomae` | MLP |
+| `scene` (optional) | `scene_emb_videomae` (or `scene_emb_videomae_v2`, `scene_embedder=videomae_v2`) | MLP |
 
 Everything is swappable from the config: an embedder is a **column** of the window Parquet
 written by `mode=featurize_columns` (e.g. `audio_embedder=hubert` → `audio_emb_hubert`, then
@@ -523,10 +523,14 @@ branch is the **unimodal member** of the same class (`moe_unimodal_audio`, `moe_
 
 The plan's rounds are presets (`moe_r1_text` → `moe_r2_text_tab` → `moe_r3_asr` →
 `moe_r4_audio` → `moe_r5_face`) judged by the **OOF protocol** (`mode=oof`, 5 participant-grouped
-folds over train+val, fixed τ = 0.5, paired bootstrap gate against `oof.baseline`). Each
-member exports its pre-logit vector (`oof_embeddings.npy`, `eval_<split>/embeddings.npy`),
-which feeds the **MoERouter** (`mode=route`): a per-sample router over the members, evaluated
-on the members' own folds.
+folds over train+val, fixed τ = 0.5, paired bootstrap gate against `oof.baseline`). Every
+member — cross-attention and GNNs included — exports its pre-logit vector
+(`oof_embeddings.npy`, `eval_<split>/embeddings.npy`; captured at the input of the logit
+layer when the model does not return it), which feeds the **MoERouter** (`mode=route`): a
+per-sample router over the members, evaluated on the members' own folds. The fold models
+also predict the public test and any extra Parquet (`oof.predict_parquets`, e.g. the private
+test); `route.measure_splits=[test]` is the single public-test measurement and
+`route.submit_split=external` writes the official submission.
 
 ```bash
 make featurize-moe                 # transcript + ASR timing + 11 markers (needs data/raw/data)

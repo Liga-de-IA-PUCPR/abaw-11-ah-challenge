@@ -356,6 +356,7 @@ class VisionEmbedderConfig:
     model_name: str = "trpakov/vit-face-expression"
     pooling: Literal["cls", "mean", "pooler"] = "cls"
     batch_size: int = 64
+    trust_remote_code: bool = False  # backbones com código remoto no Hub
     sample_fps: float = 1.0
     default_fps: float = 30.0
     frames_root: str | None = None  # None = <data_root>/cropped-aligned-faces
@@ -376,6 +377,9 @@ class SceneEmbedderConfig:
     model_name: str = "MCG-NJU/videomae-base"
     num_frames: int = 16
     pooling: Literal["cls", "mean", "pooler"] = "mean"
+    # VideoMAE-v2 (scene_embedder=videomae_v2): bcthw + código remoto
+    input_layout: Literal["btchw", "bcthw"] = "btchw"
+    trust_remote_code: bool = False
 
 
 @dataclass
@@ -390,6 +394,8 @@ class OOFConfig:
     n_boot: int = 1000
     baseline: str | None = None  # run OOF de referência → gate pareado
     predict_splits: list[str] = field(default_factory=lambda: ["test"])
+    # {nome: Parquet} preditos inteiros pelos modelos das dobras (ex.: private test externo)
+    predict_parquets: dict[str, str] | None = None
 
 
 @dataclass
@@ -409,6 +415,8 @@ class RouteConfig:
     threshold: float = 0.5
     n_boot: int = 1000
     predict_splits: list[str] = field(default_factory=lambda: ["test"])
+    measure_splits: list[str] = field(default_factory=list)  # medição única (Rodada 6)
+    submit_split: str | None = None  # ex.: "external" → submissão oficial
 
 
 @dataclass
