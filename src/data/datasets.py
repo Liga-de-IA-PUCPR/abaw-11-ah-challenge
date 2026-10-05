@@ -489,6 +489,11 @@ def video_table(parquet_path: str | Path, splits: Sequence[str]):
     )
 
 
+def parquet_video_ids(parquet_path: str | Path) -> set[str]:
+    """Todos os ``video_id`` de um Parquet de janelas (qualquer split)."""
+    return set(pl.scan_parquet(parquet_path).select("id").unique().collect()["id"].to_list())
+
+
 def holdout_video_ids(cfg: DictConfig, parquet_path: str | Path | None = None) -> set[str]:
     """Holdout ``data.holdout_frac`` (default 8%) dos ``data.train_splits``, estratificado pelo
     rótulo e agrupado por participante (sem vazamento) — determinístico por ``cfg.seed``.

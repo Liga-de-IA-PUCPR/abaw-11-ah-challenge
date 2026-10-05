@@ -43,6 +43,8 @@ oof:
   n_boot: 1000                       # reamostras dos ICs por bootstrap
   baseline: null                     # run OOF de referência (outputs/oof/<exp>/<ts>) → gate
   predict_splits: [test]             # splits preditos pelos modelos das dobras (média, sem métricas)
+  predict_parquets: null             # {nome: Parquet} preditos inteiros pelas dobras — ex.:
+                                     # "oof.predict_parquets={external:'data/processed/external_windows.parquet'}"
 
 # MoERouter (mode=route, src/pipeline/route.py) — combina membros OOF por amostra (Rodada 6).
 route:
@@ -58,7 +60,11 @@ route:
   inner_val_frac: 0.15
   threshold: 0.5                     # τ fixo
   n_boot: 1000
-  predict_splits: [test]             # aplica o roteador final às saídas por dobra dos membros
+  predict_splits: [test]             # nomes com pred_<nome>_folds.npz nos membros (oof.predict_splits
+                                     # ou oof.predict_parquets) → roteador final, média das dobras
+  measure_splits: []                 # MEDIÇÃO ÚNICA da Rodada 6 num split rotulado (ex.: [test])
+  submit_split: null                 # ex.: external → submissão oficial (out, submission_reference,
+                                     # submission_probabilities), τ = route.threshold
 
 # Tracking (FASE 5). W&B primário; Reporter local sempre roda como fallback.
 wandb:

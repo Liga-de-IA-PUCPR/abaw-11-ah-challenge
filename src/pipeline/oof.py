@@ -6,9 +6,10 @@ Para o modelo de ``cfg.model`` (qualquer modelo do registry — RF, cross-attent
     1. 5 dobras ``StratifiedGroupKFold`` por participante (:func:`make_group_folds`), com a
        MESMA semente em todas as rodadas → comparações pareadas vídeo a vídeo.
     2. Dobra k: treina nas outras dobras com um holdout INTERNO por participante
-       (``oof.inner_val_frac``) p/ early stopping/checkpoint; prediz a dobra k (OOF) e os
+       (``oof.inner_val_frac``) p/ early stopping/checkpoint; prediz a dobra k (OOF), os
        splits de ``oof.predict_splits`` (ex.: test → média das 5 dobras = bagging, gravada
-       SEM métricas: o public test é medido uma única vez, na consolidação).
+       SEM métricas: o public test é medido uma única vez, na consolidação) e os Parquets
+       inteiros de ``oof.predict_parquets`` (ex.: ``{external: <private test>}``).
     3. Macro-F1 com limiar FIXO (``oof.threshold``, 0.5), AP e IC por bootstrap; com
        ``oof.baseline=<run OOF>``, o gate pareado (Δ Macro-F1 e Δ AP, bootstrap pareado).
 
@@ -18,8 +19,8 @@ texto fine-tunado da MESMA dobra da Rodada 1:
 na CLI: o Hydra lê ``{`` como início de dict).
 
 Saída em ``outputs/oof/<experiment_name>/<timestamp>/``: ``oof_predictions.csv``,
-``oof_embeddings.npy`` (linhas = csv, se o modelo expuser), ``oof_metrics.json``,
-``pred_<split>.csv`` (+ ``pred_<split>_folds.npz``) e ``fold<k>/`` (run dir de cada dobra).
+``oof_embeddings.npy`` (linhas = csv), ``oof_metrics.json``, ``pred_<nome>.csv`` (+
+``pred_<nome>_folds.npz``, por split/Parquet extra) e ``fold<k>/`` (run dir de cada dobra).
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ log = get_logger("pipeline.oof")
 
 def run_oof(cfg: DictConfig) -> dict[str, Any]:
     """Roda o protocolo OOF do modelo de ``cfg`` e grava predições + métricas + gate."""
-    from src.data.datasets import load_split, load_videos, video_table
+    from src.data.datasets import load_split, load_videos, parquet_video_ids, video_table
     from src.models.registry import get_family
 
     o = cfg.oof
@@ -61,6 +62,10 @@ def run_oof(cfg: DictConfig) -> dict[str, Any]:
 
     pool = load_videos(cfg, set(videos["video_id"]), family=family)  # Parquet lido 1× só
     extra = {s: load_split(cfg, s, family=family) for s in (o.get("predict_splits") or [])}
+    for name, pq in (o.get("predict_parquets") or {}).items():  # ex.: private test externo
+        if name in extra:
+            raise ValueError(f"oof.predict_parquets: {name!r} repete um nome de predict_splits")
+        extra[name] = load_videos(cfg, parquet_video_ids(pq), family=family, parquet_path=pq)
     proba = np.full(len(videos), np.nan)
     emb_parts: dict[int, np.ndarray] = {}
     extra_out: dict[str, list[dict[str, np.ndarray]]] = {s: [] for s in extra}

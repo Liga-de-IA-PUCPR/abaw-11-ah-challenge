@@ -10,12 +10,16 @@ houver — ``oof_embeddings.npy`` (vetor pré-logit) e ``pred_<split>_folds.npz`
    sem vazamento.
 2. Métricas com τ fixo (0.5) + gate pareado vs. o MELHOR membro (AP OOF) e vs. a MÉDIA simples
    dos membros; uso médio de cada membro pelo roteador (quem ele escolhe).
-3. Roteador final (todas as linhas OOF) aplicado aos splits de ``route.predict_splits``: para
+3. Roteador final (todas as linhas OOF) aplicado aos nomes de ``route.predict_splits`` (splits
+   de ``oof.predict_splits`` ou Parquets de ``oof.predict_parquets``, ex. o private test): para
    cada dobra k, combina as saídas dos modelos da dobra k dos membros (mesmo espaço de
    embedding que o roteador viu no OOF) e tira a média das dobras.
+4. Rodada 6, opt-in: ``route.measure_splits=[test]`` é a medição ÚNICA no public test (roteador
+   × cada membro × média); ``route.submit_split=external`` escreve a submissão oficial
+   (``out``, ``submission_reference``, ``submission_probabilities``, τ fixo).
 
 Saída em ``outputs/route/<route.name>/<timestamp>/``: ``route_oof.csv``, ``route_metrics.json``,
-``pred_<split>.csv``.
+``pred_<nome>.csv`` e, se pedida, a submissão.
 """
 
 from __future__ import annotations
@@ -86,10 +90,16 @@ def run_route(cfg: DictConfig) -> dict[str, Any]:
     oof.to_csv(out_dir / "route_oof.csv", index=False)
 
     final = _fit(r, table, inputs, int(cfg.seed))
+    preds: dict[str, pd.DataFrame] = {}
     for split in r.get("predict_splits") or []:
         pred = predict_split(final, members, split, bool(r.use_embeddings))
         if pred is not None:
             pred.to_csv(out_dir / f"pred_{split}.csv", index=False)
+            preds[split] = pred
+    for split in r.get("measure_splits") or []:  # medição ÚNICA no public test (Rodada 6)
+        report[f"measure_{split}"] = measure_split(cfg, members, names, preds, split, tau, n_boot)
+    if r.get("submit_split"):
+        report["submission"] = str(write_route_submission(cfg, preds, str(r.submit_split), out_dir))
     (out_dir / "route_metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
     _log_summary(report)
     return {"out_dir": str(out_dir), **report["router"]}
@@ -144,6 +154,68 @@ def predict_split(
         embs = [e if router.net.has_emb[i] else None for i, e in enumerate(embs)]
         probas.append(router.predict(RouterInputs(logits, embs))[0])
     return pd.DataFrame({"video_id": ids, "y_proba": np.mean(probas, axis=0)})
+
+
+def measure_split(
+    cfg: DictConfig,
+    members: list[Path],
+    names: list[str],
+    preds: dict[str, pd.DataFrame],
+    split: str,
+    tau: float,
+    n_boot: int,
+) -> dict[str, Any]:
+    """Métricas num split ROTULADO do Parquet de treino: roteador × cada membro × média.
+
+    É a medição única da Rodada 6 — opt-in (``route.measure_splits``), nunca automática.
+    """
+    from src.data.datasets import video_table
+
+    if split not in preds:
+        raise ValueError(f"route.measure_splits: '{split}' precisa estar em route.predict_splits")
+    labels = video_table(cfg.data.paths.parquet_path, [split]).set_index("video_id")["label"]
+    router = preds[split].set_index("video_id")["y_proba"]
+    ids = [v for v in router.index if v in labels.index]
+    if not ids or (labels.loc[ids] < 0).any():
+        raise ValueError(f"route.measure_splits: '{split}' não tem rótulos no Parquet de treino")
+    y = labels.loc[ids].to_numpy()
+    member_p = {
+        n: pd.read_csv(m / f"pred_{split}.csv").set_index("video_id")["y_proba"].loc[ids].to_numpy()
+        for n, m in zip(names, members, strict=True)
+    }
+    out = {
+        "n_videos": len(ids),
+        "router": {
+            **_metrics(y, router.loc[ids].to_numpy(), tau),
+            "macro_f1_ci": bootstrap_ci_macro_f1(y, router.loc[ids].to_numpy(), tau, n_boot),
+        },
+        "mean_of_members": _metrics(y, np.mean(list(member_p.values()), axis=0), tau),
+        "members": {n: _metrics(y, p, tau) for n, p in member_p.items()},
+    }
+    log.info(
+        f"Medição única em '{split}' ({len(ids)} vídeos): MoERouter "
+        f"Macro-F1@{tau}={out['router']['macro_f1']:.4f} AP={out['router']['ap']:.4f} · "
+        f"média dos membros F1={out['mean_of_members']['macro_f1']:.4f}"
+    )
+    return out
+
+
+def write_route_submission(
+    cfg: DictConfig, preds: dict[str, pd.DataFrame], split: str, out_dir: Path
+) -> Path:
+    """Submissão oficial a partir das probas do roteador em ``split`` (τ = ``route.threshold``)."""
+    from src.outputs.submission import read_reference_order, write_submission
+
+    if split not in preds:
+        raise ValueError(f"route.submit_split: '{split}' precisa estar em route.predict_splits")
+    scores = dict(zip(preds[split]["video_id"].astype(str), preds[split]["y_proba"], strict=True))
+    tau = float(cfg.route.threshold)
+    return write_submission(
+        {v: int(p >= tau) for v, p in scores.items()},
+        Path(cfg.get("out") or out_dir / f"submission_{split}.txt"),
+        order=read_reference_order(cfg.get("submission_reference")),
+        probabilities=scores if cfg.get("submission_probabilities") else None,
+    )
 
 
 def _fit(r: DictConfig, table: pd.DataFrame, inputs: RouterInputs, seed: int) -> MoERouter:

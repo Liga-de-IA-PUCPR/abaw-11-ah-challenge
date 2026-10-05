@@ -465,7 +465,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
     from pathlib import Path
 
     from src.data.datasets import load_split
-    from src.outputs.submission import write_submission
+    from src.outputs.submission import read_reference_order, write_submission
 
     family = _data_family(cfg, device)
     # Resolve 1 checkpoint OU um ensemble (ensemble=[...]) — média de probas por vídeo.
@@ -481,11 +481,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
     # Formato oficial do desafio (README §9): ordem da referência + (opcional) probabilidades.
     # submission_reference = caminho do trial-0.txt de referência (define a ORDEM exigida).
     # submission_probabilities = escreve 'video_id,p0,p1,pred' (habilita o AP) em vez de 'video_id,pred'.
-    order = None
-    ref = cfg.get("submission_reference")
-    if ref:
-        order = [ln.split(",")[0].strip() for ln in Path(ref).read_text().splitlines() if ln.strip()]
-        log.info(f"Ordem da submissão vinda da referência: {ref} ({len(order)} vídeos)")
+    order = read_reference_order(cfg.get("submission_reference"))
 
     want_probs = bool(cfg.get("submission_probabilities", False))
     if hasattr(trainer, "predict_scores"):
