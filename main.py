@@ -6,6 +6,12 @@ por ``cfg.mode``:
     preprocess     índice (FASE 2) + extração de áudio (mp4→flac 16 kHz) + janelas → cache
     featurize      janelas → embedders (texto+áudio) + tabular → Parquet (FASE 3)
     featurize_face (opcional, vídeo) Face Mesh por janela → coluna face_landmarks no Parquet
+    featurize_columns  colunas extras do plano MoE no Parquet (transcrição, ASR timing,
+                   marcadores de hesitação, áudio/rosto/cena por embedder) — ``columns=[...]``
+    oof            protocolo OOF (5 dobras por participante, τ fixo) + gate pareado
+                   (``oof.baseline``) — a régua de cada rodada do plano MoE
+    route          MoERouter sobre runs OOF (``route.members``): combina os membros por
+                   amostra a partir dos vetores pré-logit; gate vs melhor membro e média
     train          treina o modelo escolhido em ``model=`` (FASE 4)
     evaluate       avalia a nível de vídeo (Macro-F1, AP) em um split (FASE 4/5)
     submit         escreve o arquivo de submissão (video_id, pred) (FASE 5)
@@ -99,66 +105,10 @@ def _run_featurize(cfg: DictConfig, device) -> int:
 
 
 def _as_loader(cfg: DictConfig, data, family: str, split: str):
-    """Adapta ``data`` ao que o trainer da ``family`` espera (FASE 6).
+    """Adapta ``data`` ao trainer da ``family`` (ver :func:`src.data.datasets.as_loader`)."""
+    from src.data.datasets import as_loader
 
-    O caminho ``sklearn`` consome ``WindowMatrixView`` direto (CPU, sem torch) →
-    devolve ``data`` inalterado. O caminho ``lightning`` precisa de um
-    ``DataLoader`` com ``collate_fn=collate_sequences`` (padding até T_max +
-    ``key_padding_mask``); sem ele o ``LightningTrainer`` recebe um ``Dataset``
-    cru (``_labels_from_loader`` quebra em ``loader.dataset`` e o
-    ``_shared_step`` quebra na chave ausente ``key_padding_mask``).
-
-    O import do ``torch``/``collate_sequences`` é **lazy** para preservar o
-    caminho ``sklearn`` 100% sem torch (README §7).
-    """
-    if family != "lightning":
-        return data
-
-    from torch.utils.data import DataLoader
-
-    from src.data.datasets import collate_sequences
-
-    # Hard mining (opcional): data.hard_examples=<json de mode=hard_mining> troca o
-    # shuffle uniforme do treino por um WeightedRandomSampler (mutuamente exclusivos).
-    sampler = None
-    hard_path = cfg.data.get("hard_examples")
-    if split == "train" and hard_path:
-        sampler = _build_weighted_sampler(hard_path, data)
-
-    return DataLoader(
-        data,
-        batch_size=cfg.data.batch_size,
-        shuffle=(split == "train") and sampler is None,
-        sampler=sampler,
-        num_workers=cfg.data.num_workers,
-        collate_fn=collate_sequences,
-    )
-
-
-def _build_weighted_sampler(hard_path: str, dataset):
-    """``WeightedRandomSampler`` alinhado à ordem de ``dataset.video_ids`` (hard mining)."""
-    import json
-    from pathlib import Path
-
-    p = Path(hard_path)
-    if not p.exists():
-        log.warning(f"hard_examples ausente ({p}); amostragem uniforme.")
-        return None
-
-    from torch.utils.data import WeightedRandomSampler
-
-    payload = json.loads(p.read_text(encoding="utf-8"))
-    weights_map = payload.get("weights", payload)
-    video_ids = getattr(dataset, "video_ids", None)
-    if not video_ids:
-        log.warning("Dataset sem video_ids; amostragem uniforme.")
-        return None
-    weights = [float(weights_map.get(str(vid), 1.0)) for vid in video_ids]
-    log.info(
-        f"WeightedRandomSampler: {len(weights)} amostras, "
-        f"peso∈[{min(weights):.2f}, {max(weights):.2f}] de {p}"
-    )
-    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    return as_loader(cfg, data, family, split)
 
 
 def _build_trainer(cfg: DictConfig, device):
@@ -186,7 +136,7 @@ def _run_train(cfg: DictConfig, device) -> int:
     """``mode=train`` — treina + calibra limiar + salva checkpoint (FASE 4/5)."""
     import src.models  # noqa: F401  — dispara os decorators @register_model
     from src.data.datasets import load_train_val
-    from src.outputs.checkpoint import resolve_output_dir
+    from src.outputs.checkpoint import hydra_run_dir, resolve_output_dir
 
     trainer, family = _build_trainer(cfg, device)
 
@@ -201,8 +151,9 @@ def _run_train(cfg: DictConfig, device) -> int:
 
     # Resolve o run dir ANTES do fit: o ModelCheckpoint do Lightning grava o .ckpt
     # DENTRO deste dir (junto do trainer_state.json), então evaluate/submit resolvem
-    # UM só diretório. O SklearnTrainer ignora self.output_dir.
-    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
+    # UM só diretório — o do run Hydra (outputs/<modelo>/<ts>, junto de .hydra/ + main.log).
+    # O SklearnTrainer ignora self.output_dir.
+    out_dir = hydra_run_dir() or resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
     trainer.output_dir = str(out_dir)
 
     result = trainer.fit(train_data, val_data)
@@ -262,9 +213,20 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
     # permite PREDIZER num parquet (ex.: externo) e CALIBRAR noutro (ex.: raw test).
     calib_split = cfg.data.get("calib_split", "val")
     calib_pq = cfg.data.paths.get("calib_parquet_path", None)
-    calib_view = load_split(cfg, calib_split, family=family, parquet_path=calib_pq)
+    data_cfg = _data_cfg(cfg, trainer)
+    calib_view = load_split(data_cfg, calib_split, family=family, parquet_path=calib_pq)
     calib_loader = _as_loader(cfg, calib_view, family, str(calib_split))
     trainer.recalibrate_on_val(calib_loader)
+
+
+def _data_cfg(cfg: DictConfig, trainer) -> DictConfig:
+    """Config que descreve os dados do trainer carregado.
+
+    Um run recarregado recria o modelo pelo ``model_config`` do treino (``load_trainer``),
+    que pode diferir do ``model`` da CLI (ex.: ramos extras do ``moe_fusion``) — os dados
+    (colunas/transcrição pedidas pelo modelo) seguem a config do próprio trainer.
+    """
+    return getattr(trainer, "config", None) or cfg
 
 
 def _member_spec(item) -> dict:
@@ -435,6 +397,8 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
                 rep.save_predictions_csv(
                     o["video_ids"], o["y_true"], o["y_proba"], o["y_pred"], threshold, metadata=meta
                 )
+                if "embedding" in o:  # vetor pré-logit (moe_fusion) → MoERouter
+                    rep.save_embeddings(o["embedding"])
                 rep.save_error_analysis(o["video_ids"], o["y_true"], o["y_pred"], metadata=meta)
             except Exception as exc:  # noqa: BLE001
                 log.warning(f"predictions.csv / análise de erro pulados: {exc}")
@@ -485,7 +449,8 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
     log.info(f"Checkpoint carregado: {ckpt_dir}")
 
     split = cfg.get("split") or "val"
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
+    view = load_split(_data_cfg(cfg, trainer), split, family=family)
+    data = _as_loader(cfg, view, family, split)
     report = trainer.evaluate(data)
     log.info(
         f"[{split}] Macro-F1={report['macro_f1']:.4f} | "
@@ -501,7 +466,7 @@ def _run_submit(cfg: DictConfig, device) -> int:
     from pathlib import Path
 
     from src.data.datasets import load_split
-    from src.outputs.submission import write_submission
+    from src.outputs.submission import read_reference_order, write_submission
 
     family = _data_family(cfg, device)
     # Resolve 1 checkpoint OU um ensemble (ensemble=[...]) — média de probas por vídeo.
@@ -511,16 +476,13 @@ def _run_submit(cfg: DictConfig, device) -> int:
 
     split = cfg.get("split") or "test"
     out_path = Path(cfg.get("out") or "outputs/submission.txt")
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, split)
+    view = load_split(_data_cfg(cfg, trainer), split, family=family)
+    data = _as_loader(cfg, view, family, split)
 
     # Formato oficial do desafio (README §9): ordem da referência + (opcional) probabilidades.
     # submission_reference = caminho do trial-0.txt de referência (define a ORDEM exigida).
     # submission_probabilities = escreve 'video_id,p0,p1,pred' (habilita o AP) em vez de 'video_id,pred'.
-    order = None
-    ref = cfg.get("submission_reference")
-    if ref:
-        order = [ln.split(",")[0].strip() for ln in Path(ref).read_text().splitlines() if ln.strip()]
-        log.info(f"Ordem da submissão vinda da referência: {ref} ({len(order)} vídeos)")
+    order = read_reference_order(cfg.get("submission_reference"))
 
     want_probs = bool(cfg.get("submission_probabilities", False))
     if hasattr(trainer, "predict_scores"):
@@ -574,6 +536,41 @@ def _run_featurize_face(cfg: DictConfig) -> int:
     return 0
 
 
+def _run_featurize_columns(cfg: DictConfig) -> int:
+    """``mode=featurize_columns`` — grava ``columns=[...]`` como colunas extras do Parquet.
+
+    Requer o Parquet base (``mode=featurize``) e o índice de janelas (``mode=preprocess``);
+    colunas de vídeo/rosto leem o dataset bruto (``data.paths.data_root``).
+    """
+    from src.pipeline.featurize_columns import run_featurize_columns
+
+    summary = run_featurize_columns(cfg)
+    if summary.get("cached"):
+        log.info(f"Colunas já presentes em {summary['parquet_path']} (data.force_columns=true).")
+    else:
+        log.info(f"Colunas {summary['columns']} gravadas em {summary['parquet_path']}.")
+    return 0
+
+
+def _run_oof(cfg: DictConfig) -> int:
+    """``mode=oof`` — predições out-of-fold + métricas com τ fixo + gate vs ``oof.baseline``."""
+    import src.models  # noqa: F401  — registra os modelos
+    from src.pipeline.oof import run_oof
+
+    summary = run_oof(cfg)
+    log.info(f"OOF concluído: {summary['out_dir']}")
+    return 0
+
+
+def _run_route(cfg: DictConfig) -> int:
+    """``mode=route`` — MoERouter (avaliado nas dobras OOF dos membros) + predição final."""
+    from src.pipeline.route import run_route
+
+    summary = run_route(cfg)
+    log.info(f"MoERouter concluído: {summary['out_dir']}")
+    return 0
+
+
 def _run_hard_mining(cfg: DictConfig, device) -> int:
     """``mode=hard_mining`` — pontua um split (default train) e grava pesos de amostragem.
 
@@ -597,7 +594,9 @@ def _run_hard_mining(cfg: DictConfig, device) -> int:
     log.info(f"Hard mining: checkpoint {ckpt_dir}")
 
     split = cfg.get("split") or "train"
-    data = _as_loader(cfg, load_split(cfg, split, family=family), family, "eval")
+    data = _as_loader(
+        cfg, load_split(_data_cfg(cfg, trainer), split, family=family), family, "eval"
+    )
     o = trainer.video_outputs(data)
 
     hard_hi = float(cfg.get("hard_hi", 0.7))
@@ -661,6 +660,9 @@ _DISPATCH = {
     "preprocess": lambda cfg, dev: _run_preprocess(cfg),
     "featurize": _run_featurize,
     "featurize_face": lambda cfg, dev: _run_featurize_face(cfg),
+    "featurize_columns": lambda cfg, dev: _run_featurize_columns(cfg),
+    "oof": lambda cfg, dev: _run_oof(cfg),
+    "route": lambda cfg, dev: _run_route(cfg),
     "train": _run_train,
     "evaluate": _run_evaluate,
     "submit": _run_submit,

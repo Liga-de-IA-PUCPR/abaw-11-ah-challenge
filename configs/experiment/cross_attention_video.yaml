@@ -1,0 +1,12 @@
+# @package _global_
+# Comparação Luiz × Rodrigo — cross-attention do ARTIGO (librosa 320 + RoBERTa-emotion 768 +
+# 74 de suporte, atenção-MIL, tab por token) + o canal de VÍDEO do plano MoE: recortes
+# face/olhos/boca por janela (coluna face_crops_<vision_embedder>, make featurize-moe-face),
+# fundidos por token antes do pooling. Única diferença p/ +experiment=cross_attention.
+defaults:
+  - cross_attention
+
+experiment_name: cross-attention-video
+
+model:
+  extra_columns: [face_crops_vit_face_expression]

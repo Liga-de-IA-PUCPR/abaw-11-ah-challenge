@@ -11,10 +11,14 @@ Colunas esperadas no Parquet (1 linha por janela):
     label (i8, -1 se desconhecido), video_label (i8, -1 se test)
 Coluna OPCIONAL (``mode=featurize_face``):
     face_landmarks (list<f32>, 478×3 achatado) → ``face_seq`` (T, 478, 3) no batch
+Colunas EXTRAS (``mode=featurize_columns``, pedidas pelo modelo via ``data_spec``):
+    qualquer coluna vetorial → ``features[<coluna>]`` (T, d) no batch; ``transcript`` →
+    ``input_ids``/``attention_mask`` (transcrição tokenizada, ramo de texto fine-tunado)
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,20 +42,33 @@ log = get_logger("data.datasets")
 # ==============================================================================
 
 
+# Colunas que toda visão lê (as extras entram sob demanda — o Parquet pode ter dezenas).
+_BASE_COLUMNS = [
+    "id", "window_idx", "participant_id", "audio_emb", "text_emb", "tabular", "label",
+    "video_label",
+]  # fmt: skip
+
+
 def _read_window_parquet(
     parquet_path: str | Path,
     split_video_ids: set[str] | None = None,
+    extra_columns: Sequence[str] = (),
 ) -> pl.DataFrame:
-    """Lê o Parquet de janelas (Polars) e, opcionalmente, filtra por ``id`` (vídeo).
+    """Lê do Parquet de janelas (Polars, scan preguiçoso) só as colunas necessárias.
 
     Args:
         parquet_path: caminho do ``text_audio_windows.parquet`` (FASE 3).
         split_video_ids: se dado, mantém apenas linhas cujo ``id`` está no conjunto
             (aplica o split participant-wise resolvido na FASE 4).
+        extra_columns: colunas além das canônicas (ignora as que não existirem — quem as
+            exige valida antes).
     """
-    df = pl.read_parquet(parquet_path)
+    schema = pl.read_parquet_schema(parquet_path)
+    cols = _BASE_COLUMNS + [c for c in extra_columns if c in schema and c not in _BASE_COLUMNS]
+    lf = pl.scan_parquet(parquet_path).select(cols)
     if split_video_ids is not None:
-        df = df.filter(pl.col("id").is_in(list(split_video_ids)))
+        lf = lf.filter(pl.col("id").is_in(list(split_video_ids)))
+    df = lf.collect()
     log.info(f"Parquet: {df.height} janelas, {df['id'].n_unique()} vídeos")
     return df
 
@@ -113,6 +130,15 @@ class WindowMatrixView:
     def __len__(self) -> int:
         return self.X.shape[0]
 
+    def subset(self, video_ids: set[str]) -> WindowMatrixView:
+        """Visão restrita às janelas dos vídeos ``video_ids`` (dobras do OOF, sem reler)."""
+        rows = np.isin(self.video_ids, list(video_ids))
+        sub = copy.copy(self)
+        sub.X, sub.y, sub.groups = self.X[rows], self.y[rows], self.groups[rows]
+        sub.video_ids = self.video_ids[rows]
+        sub.video_labels = {v: lab for v, lab in self.video_labels.items() if v in video_ids}
+        return sub
+
 
 # ==============================================================================
 # (b) Sequência por vídeo (T>1) — cross_attention (Lightning)
@@ -141,37 +167,38 @@ class VideoSequenceDataset(Dataset):
         self,
         parquet_path: str | Path,
         split_video_ids: set[str] | None = None,
+        columns: Sequence[str] | None = None,
+        transcript: dict[str, Any] | None = None,
     ):
+        """Args:
+        parquet_path / split_video_ids: cache de janelas e vídeos do split.
+        columns: colunas por janela extras (ex.: ``asr_timing``, ``audio_emb_<embedder>``)
+            → ``features[<coluna>]`` no batch. As canônicas (``audio_emb``/``text_emb``/
+            ``tabular``) também podem ser pedidas por nome.
+        transcript: ``{"model_name", "max_length"}`` → tokeniza a coluna ``transcript``
+            (texto do vídeo) com o tokenizer do modelo → ``input_ids``/``attention_mask``.
+        """
         import torch  # noqa: F401 — lazy: falha cedo se o grupo `neural` não estiver instalado
 
         self.parquet_path: Path = Path(parquet_path)  # fonte (ensemble: dado por membro)
-        df = _read_window_parquet(parquet_path, split_video_ids)
+        self.columns: list[str] = list(columns or [])
+        needed = self.columns + (["transcript"] if transcript else [])
+        df = _read_window_parquet(parquet_path, split_video_ids, [*needed, "face_landmarks"])
         df = df.sort(["id", "window_idx"])
+        missing = [c for c in needed if c not in df.columns]
+        if missing:
+            raise KeyError(
+                f"Colunas {missing} ausentes em {self.parquet_path.name} — grave-as com "
+                f"'mode=featurize_columns columns=[...]' (ver src/features/columns.py)."
+            )
         # Vídeo (opcional): landmarks do Face Mesh gravados por mode=featurize_face.
         self._has_face = "face_landmarks" in df.columns
+        face_shape = (0, 0)
         if self._has_face:
             from src.features.face_mesh import LANDMARK_DIM, NUM_FACE_LANDMARKS
 
             face_shape = (NUM_FACE_LANDMARKS, LANDMARK_DIM)
-
-        # Agrupa janelas por vídeo preservando a ordem temporal.
-        self.video_ids: list[str] = []
-        self._audio: list[np.ndarray] = []
-        self._text: list[np.ndarray] = []
-        self._tab: list[np.ndarray] = []
-        self._face: list[np.ndarray] = []
-        self._labels: list[int] = []
-
-        for vid, g in df.group_by("id", maintain_order=True):
-            vid = vid[0] if isinstance(vid, tuple) else vid
-            self.video_ids.append(str(vid))
-            self._audio.append(np.vstack(g["audio_emb"].to_numpy()).astype(np.float32))
-            self._text.append(np.vstack(g["text_emb"].to_numpy()).astype(np.float32))
-            self._tab.append(np.vstack(g["tabular"].to_numpy()).astype(np.float32))
-            if self._has_face:
-                face_flat = np.vstack(g["face_landmarks"].to_numpy()).astype(np.float32)
-                self._face.append(face_flat.reshape(-1, *face_shape))
-            self._labels.append(int(g["video_label"][0]))
+        texts = self._group_videos(df, face_shape, with_text=bool(transcript))
 
         self.lengths: list[int] = [a.shape[0] for a in self._audio]
         # Dimensões dos embeddings no cache (librosa 320 / wav2vec2 768; texto 768).
@@ -180,7 +207,18 @@ class VideoSequenceDataset(Dataset):
         self.dim_text: int = int(self._text[0].shape[1]) if self._text else 0
         self.dim_tab: int = int(self._tab[0].shape[1]) if self._tab else 0
         self.has_face: bool = self._has_face
-        self.dim_face: tuple[int, int] = face_shape if self._has_face else (0, 0)
+        self.dim_face: tuple[int, int] = face_shape
+        # {coluna: d} de todas as colunas por janela carregadas (canônicas + extras).
+        self.dims: dict[str, int] = {
+            "audio_emb": self.dim_audio,
+            "text_emb": self.dim_text,
+            "tabular": self.dim_tab,
+            **{c: int(v[0].shape[1]) for c, v in self._extra.items() if v},
+        }
+        self._tokens: list[list[int]] = []
+        self.pad_token_id = 0
+        if transcript:
+            self._tokens, self.pad_token_id = _tokenize(texts, **transcript)
         # Acessor público alinhado com WindowMatrixView (FASE_4 depende deste contrato):
         # {video_id: global_ah} (rótulo a nível de vídeo; -1 = test).
         self.video_labels: dict[str, int] = dict(zip(self.video_ids, self._labels, strict=False))
@@ -188,10 +226,61 @@ class VideoSequenceDataset(Dataset):
             f"VideoSequenceDataset: {len(self.video_ids)} vídeos, "
             f"T∈[{min(self.lengths)}, {max(self.lengths)}], "
             f"T_max={max(self.lengths)}"
+            + (f", colunas extras={self.columns}" if self.columns else "")
+            + (" + transcrição tokenizada" if transcript else "")
         )
+
+    def _group_videos(
+        self, df: pl.DataFrame, face_shape: tuple[int, int], with_text: bool
+    ) -> list[str]:
+        """Empilha as janelas de cada vídeo (ordem temporal) → listas por vídeo; devolve as
+        transcrições (``with_text``) p/ tokenizar."""
+        self.video_ids: list[str] = []
+        self._audio: list[np.ndarray] = []
+        self._text: list[np.ndarray] = []
+        self._tab: list[np.ndarray] = []
+        self._face: list[np.ndarray] = []
+        self._labels: list[int] = []
+        self._window_labels: list[np.ndarray] = []
+        canonical = {"audio_emb": self._audio, "text_emb": self._text, "tabular": self._tab}
+        self._extra: dict[str, list[np.ndarray]] = {c: canonical.get(c, []) for c in self.columns}
+        texts: list[str] = []
+        for vid, g in df.group_by("id", maintain_order=True):
+            vid = vid[0] if isinstance(vid, tuple) else vid
+            self.video_ids.append(str(vid))
+            self._audio.append(np.vstack(g["audio_emb"].to_numpy()).astype(np.float32))
+            self._text.append(np.vstack(g["text_emb"].to_numpy()).astype(np.float32))
+            self._tab.append(np.vstack(g["tabular"].to_numpy()).astype(np.float32))
+            for c in self.columns:
+                if c not in canonical:
+                    self._extra[c].append(np.vstack(g[c].to_numpy()).astype(np.float32))
+            if self._has_face:
+                face_flat = np.vstack(g["face_landmarks"].to_numpy()).astype(np.float32)
+                self._face.append(face_flat.reshape(-1, *face_shape))
+            self._labels.append(int(g["video_label"][0]))
+            self._window_labels.append(g["label"].to_numpy().astype(np.int64))
+            if with_text:
+                texts.append(str(g["transcript"][0] or ""))
+        return texts
 
     def __len__(self) -> int:
         return len(self.video_ids)
+
+    def subset(self, video_ids: set[str]) -> VideoSequenceDataset:
+        """Visão dos vídeos ``video_ids`` compartilhando os arrays (dobras do OOF: o Parquet
+        é lido uma vez só)."""
+        keep = [i for i, v in enumerate(self.video_ids) if v in video_ids]
+
+        def pick(xs: list) -> list:
+            return [xs[i] for i in keep] if xs else xs
+
+        sub = copy.copy(self)
+        for name in ("video_ids", "_audio", "_text", "_tab", "_face", "_labels",
+                     "_window_labels", "lengths", "_tokens"):  # fmt: skip
+            setattr(sub, name, pick(getattr(self, name)))
+        sub._extra = {c: pick(v) for c, v in self._extra.items()}
+        sub.video_labels = dict(zip(sub.video_ids, sub._labels, strict=False))
+        return sub
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         # Import local (não um atributo): o dataset precisa ser picklável p/ DataLoader com
@@ -208,6 +297,14 @@ class VideoSequenceDataset(Dataset):
         }
         if self._has_face:
             item["face_seq"] = torch.tensor(self._face[idx], dtype=torch.float32)  # (T, 478, 3)
+        item["window_label"] = torch.tensor(self._window_labels[idx])  # (T,) — -1 = sem rótulo
+        if self.columns:
+            item["features"] = {
+                c: torch.tensor(v[idx], dtype=torch.float32) for c, v in self._extra.items()
+            }
+        if self._tokens:
+            item["input_ids"] = torch.tensor(self._tokens[idx], dtype=torch.long)
+            item["pad_token_id"] = self.pad_token_id
         return item
 
 
@@ -225,7 +322,10 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
           "tab_seq": (B, T_max, d_tab), "lengths": (B,),
           "key_padding_mask": (B, T_max) bool, "label": (B, 1) float,
           "video_id": list[str],
-          "face_seq": (B, T_max, 478, 3)   # só se os itens tiverem face_seq
+          "face_seq": (B, T_max, 478, 3),  # só se os itens tiverem face_seq
+          "window_label": (B, T_max) long  # -1 = sem rótulo de janela / padding
+          "features": {coluna: (B, T_max, d)},                  # colunas extras pedidas
+          "input_ids"/"attention_mask": (B, L_max)              # transcrição tokenizada
         }
     """
     import torch
@@ -256,7 +356,94 @@ def collate_sequences(batch: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if "face_seq" in batch[0]:
         out["face_seq"] = pad_sequence([b["face_seq"] for b in batch], batch_first=True)
+    if "window_label" in batch[0]:
+        out["window_label"] = pad_sequence(
+            [b["window_label"] for b in batch], batch_first=True, padding_value=-1
+        )
+    if "features" in batch[0]:
+        out["features"] = {
+            c: pad_sequence([b["features"][c] for b in batch], batch_first=True)
+            for c in batch[0]["features"]
+        }
+    if "input_ids" in batch[0]:
+        ids = [b["input_ids"] for b in batch]
+        out["input_ids"] = pad_sequence(
+            ids, batch_first=True, padding_value=int(batch[0]["pad_token_id"])
+        )
+        out["attention_mask"] = pad_sequence(
+            [torch.ones_like(t) for t in ids], batch_first=True, padding_value=0
+        )
     return out
+
+
+def _tokenize(texts: list[str], model_name: str, max_length: int = 256) -> tuple[list, int]:
+    """Tokeniza as transcrições (sem padding — o collate faz) → ``(ids por vídeo, pad_id)``."""
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(model_name)
+    enc = tok(texts, truncation=True, max_length=int(max_length))
+    return list(enc["input_ids"]), int(tok.pad_token_id or 0)
+
+
+def as_loader(cfg: DictConfig, data, family: str, split: str):
+    """Adapta ``data`` ao que o trainer da ``family`` espera (FASE 6).
+
+    O caminho ``sklearn`` consome ``WindowMatrixView`` direto (CPU, sem torch) →
+    devolve ``data`` inalterado. O caminho ``lightning`` precisa de um
+    ``DataLoader`` com ``collate_fn=collate_sequences`` (padding até T_max +
+    ``key_padding_mask``); sem ele o ``LightningTrainer`` recebe um ``Dataset``
+    cru (``_labels_from_loader`` quebra em ``loader.dataset`` e o
+    ``_shared_step`` quebra na chave ausente ``key_padding_mask``).
+
+    O import do ``torch`` é **lazy** para preservar o
+    caminho ``sklearn`` 100% sem torch (README §7).
+    """
+    if family != "lightning":
+        return data
+
+    from torch.utils.data import DataLoader
+
+    # Hard mining (opcional): data.hard_examples=<json de mode=hard_mining> troca o
+    # shuffle uniforme do treino por um WeightedRandomSampler (mutuamente exclusivos).
+    sampler = None
+    hard_path = cfg.data.get("hard_examples")
+    if split == "train" and hard_path:
+        sampler = _build_weighted_sampler(hard_path, data)
+
+    return DataLoader(
+        data,
+        batch_size=cfg.data.batch_size,
+        shuffle=(split == "train") and sampler is None,
+        sampler=sampler,
+        num_workers=cfg.data.num_workers,
+        collate_fn=collate_sequences,
+    )
+
+
+def _build_weighted_sampler(hard_path: str, dataset):
+    """``WeightedRandomSampler`` alinhado à ordem de ``dataset.video_ids`` (hard mining)."""
+    import json
+    from pathlib import Path
+
+    p = Path(hard_path)
+    if not p.exists():
+        log.warning(f"hard_examples ausente ({p}); amostragem uniforme.")
+        return None
+
+    from torch.utils.data import WeightedRandomSampler
+
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    weights_map = payload.get("weights", payload)
+    video_ids = getattr(dataset, "video_ids", None)
+    if not video_ids:
+        log.warning("Dataset sem video_ids; amostragem uniforme.")
+        return None
+    weights = [float(weights_map.get(str(vid), 1.0)) for vid in video_ids]
+    log.info(
+        f"WeightedRandomSampler: {len(weights)} amostras, "
+        f"peso∈[{min(weights):.2f}, {max(weights):.2f}] de {p}"
+    )
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
 # ==============================================================================
@@ -277,17 +464,77 @@ def _split_video_ids(df: pl.DataFrame, split: str | Sequence[str]) -> set[str]:
     return set(df.filter(pl.col("split").is_in(splits))["id"].unique().to_list())
 
 
-def _view_for_family(parquet_path: str | Path, family: str, split_ids: set[str]):
+HOLDOUT = "holdout"  # split especial: fração estratificada por participante dos train_splits
+
+
+def video_table(parquet_path: str | Path, splits: Sequence[str]):
+    """Uma linha por vídeo dos ``splits`` (``video_id``, ``participant_id``, ``label``),
+    ordenada por ``video_id`` — a tabela que define as dobras/holdouts por participante."""
+    import pandas as pd
+
+    df = (
+        pl.scan_parquet(parquet_path)
+        .select("id", "participant_id", "video_label", "split")
+        .filter(pl.col("split").is_in(list(splits)))
+        .unique("id", keep="first")
+        .sort("id")
+        .collect()
+    )
+    return pd.DataFrame(
+        {
+            "video_id": df["id"].to_list(),
+            "participant_id": df["participant_id"].to_list(),
+            "label": df["video_label"].cast(pl.Int64).to_list(),
+        }
+    )
+
+
+def parquet_video_ids(parquet_path: str | Path) -> set[str]:
+    """Todos os ``video_id`` de um Parquet de janelas (qualquer split)."""
+    return set(pl.scan_parquet(parquet_path).select("id").unique().collect()["id"].to_list())
+
+
+def holdout_video_ids(cfg: DictConfig, parquet_path: str | Path | None = None) -> set[str]:
+    """Holdout ``data.holdout_frac`` (default 8%) dos ``data.train_splits``, estratificado pelo
+    rótulo e agrupado por participante (sem vazamento) — determinístico por ``cfg.seed``.
+
+    É o split de early stopping/limiar do re-treino final (Rodada 6: train+val+test).
+    """
+    from src.eval.protocol import make_group_folds
+
+    pq = parquet_path or cfg.data.paths.parquet_path
+    videos = video_table(pq, _train_splits(cfg))
+    frac = float(cfg.data.get("holdout_frac", 0.08))
+    folds = make_group_folds(videos, n_splits=max(2, round(1 / frac)), seed=int(cfg.seed))
+    return set(videos["video_id"][folds == 0])
+
+
+def _train_splits(cfg: DictConfig) -> list[str]:
+    splits = cfg.data.get("train_splits", ["train"])
+    return [splits] if isinstance(splits, str) else list(splits)
+
+
+def _view_for_family(
+    parquet_path: str | Path, family: str, split_ids: set[str], spec: dict | None = None
+):
     """Devolve a visão correta dos dados por família (README §6.4 / FASE 4).
 
     - ``sklearn``   → :class:`WindowMatrixView` (matriz achatada por janela, CPU).
-    - ``lightning`` → :class:`VideoSequenceDataset` (sequência ``(T, d)`` por vídeo).
+    - ``lightning`` → :class:`VideoSequenceDataset` (sequência ``(T, d)`` por vídeo), com as
+      entradas extras que o modelo declara em ``spec`` (``columns``/``transcript``).
     """
     if family == "sklearn":
         return WindowMatrixView(parquet_path, split_video_ids=split_ids)
     if family == "lightning":
-        return VideoSequenceDataset(parquet_path, split_video_ids=split_ids)
+        return VideoSequenceDataset(parquet_path, split_video_ids=split_ids, **(spec or {}))
     raise ValueError(f"família desconhecida: {family!r} (use 'sklearn' | 'lightning').")
+
+
+def model_data_spec(cfg: DictConfig) -> dict:
+    """Entradas extras que o modelo de ``cfg.model`` pede ao dataset (``{}`` p/ os demais)."""
+    from src.models.registry import data_spec
+
+    return data_spec(cfg.model)
 
 
 def load_split(
@@ -301,7 +548,8 @@ def load_split(
 
     Args:
         cfg: config Hydra composto (usa ``cfg.data.paths.parquet_path`` por padrão).
-        split: "train" | "val" | "test", ou uma sequência (ex.: ``["train", "val"]``).
+        split: "train" | "val" | "test" | "holdout" (fração dos ``train_splits``, ver
+            :func:`holdout_video_ids`), ou uma sequência (ex.: ``["train", "val"]``).
         family: "sklearn" (WindowMatrixView) | "lightning" (VideoSequenceDataset).
         parquet_path: sobrepõe o Parquet lido (ex.: calibrar num Parquet diferente do
             de predição). ``None`` = usa ``cfg.data.paths.parquet_path``.
@@ -310,10 +558,25 @@ def load_split(
         :class:`WindowMatrixView` ou :class:`VideoSequenceDataset` do(s) split(s) pedido(s).
     """
     pq = Path(parquet_path) if parquet_path is not None else Path(cfg.data.paths.parquet_path)
-    df = pl.read_parquet(pq)
-    split_ids = _split_video_ids(df, split)
+    if split == HOLDOUT:
+        split_ids = holdout_video_ids(cfg, pq)
+    else:
+        split_ids = _split_video_ids(pl.read_parquet(pq, columns=["id", "split"]), split)
     log.info(f"load_split(split={split}, family={family}): {len(split_ids)} vídeos [{pq.name}]")
-    return _view_for_family(pq, family, split_ids)
+    return load_videos(cfg, split_ids, family=family, parquet_path=pq)
+
+
+def load_videos(
+    cfg: DictConfig,
+    video_ids: set[str],
+    *,
+    family: str,
+    parquet_path: str | Path | None = None,
+):
+    """Visão da ``family`` sobre um conjunto EXPLÍCITO de vídeos (folds do OOF, holdout)."""
+    pq = Path(parquet_path) if parquet_path is not None else Path(cfg.data.paths.parquet_path)
+    spec = model_data_spec(cfg) if family == "lightning" else None
+    return _view_for_family(pq, family, set(video_ids), spec)
 
 
 def load_train_val(cfg: DictConfig, *, family: str):
@@ -326,6 +589,8 @@ def load_train_val(cfg: DictConfig, *, family: str):
     - ``data.calib_split`` (default ``val``): split usado para calibrar o limiar (e, no
       caminho neural, para monitorar early-stop/checkpoint). Ex.: ``test`` (525, grande
       e limpo) — calibra o limiar num conjunto robusto sem vazamento (splits disjuntos).
+      ``holdout``: ``data.holdout_frac`` (8%) dos próprios ``train_splits``, por participante
+      — o re-treino final da Rodada 6 (``train_splits=[train,val,test]``).
 
     Os defaults reproduzem EXATAMENTE o comportamento anterior (train / val).
 
@@ -336,11 +601,16 @@ def load_train_val(cfg: DictConfig, *, family: str):
     Returns:
         Tupla ``(train_data, calib_data)``.
     """
-    data = cfg.data
-    train_splits = data.get("train_splits", ["train"])
-    train_splits = [train_splits] if isinstance(train_splits, str) else list(train_splits)
-    calib_split = data.get("calib_split", "val")
+    train_splits = _train_splits(cfg)
+    calib_split = cfg.data.get("calib_split", "val")
     log.info(f"Composição de splits: treino={train_splits} · calibração/monitor='{calib_split}'")
+    if calib_split == HOLDOUT:  # re-treino final: holdout sai do próprio conjunto de treino
+        hold = holdout_video_ids(cfg)
+        pool = set(video_table(cfg.data.paths.parquet_path, train_splits)["video_id"])
+        return (
+            load_videos(cfg, pool - hold, family=family),
+            load_videos(cfg, hold, family=family),
+        )
     return (
         load_split(cfg, train_splits, family=family),
         load_split(cfg, calib_split, family=family),

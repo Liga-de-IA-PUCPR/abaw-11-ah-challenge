@@ -34,6 +34,7 @@ _ARCH_ATTRS = (
     "pool",
     "tab_fusion",
     "contrastive",
+    "input_dims",  # moe_fusion: dimensões das colunas por ramo (inferidas do cache no fit)
 )
 
 
@@ -114,6 +115,29 @@ def infer_model_cfg_from_state_dict(state_dict: dict[str, Any]) -> dict[str, Any
         return cfg
 
     return cfg
+
+
+def resolve_ckpt_path(path: Any) -> str | None:
+    """``.ckpt`` ou run dir → caminho do checkpoint Lightning (``None`` se não houver).
+
+    No run dir: o ``ckpt_path`` do ``trainer_state.json`` se ainda existir; senão o último
+    ``checkpoints/*.ckpt`` / ``*.ckpt`` DENTRO do próprio dir (run movido de lugar).
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(str(path))
+    if p.suffix == ".ckpt":
+        return str(p) if p.exists() else None
+    if not p.is_dir():
+        return None
+    state = p / "trainer_state.json"
+    if state.exists():
+        cand = json.loads(state.read_text(encoding="utf-8")).get("ckpt_path")
+        if cand and Path(cand).exists():
+            return str(cand)
+    cands = sorted(p.glob("checkpoints/*.ckpt")) + sorted(p.glob("*.ckpt"))
+    return str(cands[-1]) if cands else None
 
 
 def load_state_dict_from_ckpt(ckpt_path: str) -> dict[str, Any]:

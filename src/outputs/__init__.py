@@ -20,6 +20,7 @@ from __future__ import annotations
 from src.outputs.checkpoint import (
     CheckpointBundle,
     NeuralSidecar,
+    hydra_run_dir,
     load_neural_sidecar,
     load_rf_bundle,
     resolve_latest_checkpoint,
@@ -40,6 +41,7 @@ __all__ = [
     "NeuralSidecar",
     "Reporter",
     "WandbRun",
+    "hydra_run_dir",
     "load_neural_sidecar",
     "load_rf_bundle",
     "predict_from_checkpoint",

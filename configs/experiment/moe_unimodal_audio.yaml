@@ -1,0 +1,19 @@
+# @package _global_
+# Membro UNIMODAL "áudio temporal" do MoERouter: só o ramo de áudio de emoção (âncora).
+defaults:
+  - /branch@model.branches.audio: audio_emotion
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-unimodal-audio
+
+model:
+  branches:
+    audio:
+      role: anchor
+  fusion:
+    head: mlp
+
+trainer:
+  max_epochs: 60
+  patience: 12

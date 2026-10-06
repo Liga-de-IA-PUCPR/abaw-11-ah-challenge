@@ -1,0 +1,19 @@
+# configs/vision_embedder/vit_face_expression.yaml — canal FACIAL do plano MoE.
+# Recortes face/olhos/boca dos rostos JÁ alinhados do BAH (cropped-aligned-faces, 256×256)
+# → backbone de imagem HF (qualquer AutoModel de visão: troque model_name) → coluna
+# face_crops_<name> com [face ‖ eyes ‖ mouth] por janela (média dos frames da janela).
+#   python main.py mode=featurize_columns "columns=[face_crops]" vision_embedder=vit_face_expression
+name: vit_face_expression
+model_name: trpakov/vit-face-expression   # ViT-B/16 fine-tunado em expressões faciais (768-d)
+pooling: cls                              # cls | mean | pooler (ConvNets: média espacial)
+batch_size: 64
+trust_remote_code: false                  # true p/ backbones com código remoto no Hub
+sample_fps: 1.0                           # frames/s amostrados (grade compartilhada pelas janelas)
+default_fps: 30.0                         # fps assumido se o .mp4 não estiver disponível
+frames_root: null                         # null = ${data.paths.data_root}/cropped-aligned-faces
+# Caixas (x0, y0, x1, y1) em fração da imagem alinhada: olhos (+ sobrancelhas) e boca ficam
+# em posições canônicas, então o recorte é geométrico (sem detector por frame).
+crops:
+  face: [0.0, 0.0, 1.0, 1.0]
+  eyes: [0.08, 0.26, 0.92, 0.60]
+  mouth: [0.24, 0.66, 0.76, 0.98]

@@ -1,0 +1,37 @@
+# configs/model/moe_fusion.yaml — fusão ancorada em texto + Mixture-of-Experts (family=lightning)
+# Plano: references/improvement_plan.md · código: src/models/moe_fusion.py
+#
+#   ramos (LEFT)  h_m = encoder_m(coluna_m | transcrição)       configs/branch/*.yaml
+#   fusão         z = LN(b + Σ_m g_m·d_m(h_m)),  g_m = σ(MLP[b; d_m(h_m)])
+#   cabeça        SoftMoE([z ‖ ramos role=head]) → Linear → p(A/H)
+#
+# Os ramos são blocos do grupo `branch` posicionados por nome nos presets
+# (configs/experiment/moe_*.yaml): `- /branch@model.branches.<nome>: <bloco>`. Exatamente um
+# ramo tem role=anchor. Na CLI: +branch@model.branches.scene=scene (acrescenta um ramo),
+# ~model.branches.asr (remove). Trocar o embedder de uma modalidade = apontar `column` p/
+# outra coluna (mode=featurize_columns) — ex.: model.branches.audio.column=audio_emb_hubert.
+name: moe_fusion
+family: lightning
+branches: {}               # preenchido pelos presets (configs/branch/*.yaml)
+fusion:
+  dim: 256                 # largura de b, d_m(h_m) e z
+  head: moe                # moe (SoftMoE) | mlp
+  num_experts: 4           # K experts da cabeça (3–4 no plano)
+  expert_hidden: null      # largura interna de cada expert (null = entrada)
+  dropout: 0.3
+  gate: scalar             # porta por modalidade: scalar | vector
+  gate_init_bias: -1.0     # σ(-1)≈0,27: começa perto do texto puro e abre o que ajudar
+  modality_dropout: 0.0    # zera a porta de um ramo residual por amostra (robustez)
+loss:
+  pos_weight: auto         # neg/pos do treino
+  label_smoothing: 0.0
+  rdrop_alpha: 0.0         # R-Drop (consistência entre 2 passes com dropout)
+  balance_weight: 0.05     # KL(uso‖uniforme) dos experts…
+  balance_threshold: 0.7   # …só quando 1 expert passa de 70% do tráfego no lote
+optim:
+  lr: 5e-4                 # ramos/fusão/cabeça
+  lr_backbone: 2e-5        # encoders HF (ramo hf_text)
+  weight_decay: 0.05
+  scheduler: cosine_warmup # cosine_warmup | plateau
+  warmup_epochs: 1
+input_dims: null           # {coluna: d} — inferido do cache no fit (não editar)

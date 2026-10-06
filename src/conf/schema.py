@@ -267,12 +267,15 @@ class DataConfig:
     # Composição de splits (mode=train). Defaults reproduzem o comportamento anterior.
     # Ex. metodologia (avaliação real é externa): train_splits=[train,val], calib_split=test.
     train_splits: list[str] = field(default_factory=lambda: ["train"])
-    calib_split: str = "val"
+    calib_split: str = "val"  # val | test | holdout (fração dos train_splits, por participante)
+    holdout_frac: float = 0.08  # calib_split=holdout: re-treino final da Rodada 6
     # mode=featurize: processa em lotes de ~N janelas alinhados por vídeo (RAM/VRAM).
     # None = lote único (comportamento original).
     featurize_chunk_size: int | None = None
     # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir.
     force_face: bool = False
+    # mode=featurize_columns: recomputa as colunas pedidas mesmo se já existirem.
+    force_columns: bool = False
     # mode=train (lightning): JSON {video_id: peso} gerado por mode=hard_mining →
     # WeightedRandomSampler no treino. None = amostragem uniforme.
     hard_examples: str | None = None
@@ -321,6 +324,8 @@ class AudioEmbedderConfig:
     model_name: str | None = None
     pooling: Literal["mean", "cls"] = "mean"
     dim: int | None = None  # derivado em runtime (FASE 3)
+    normalize_waveform: bool = False  # deep: média 0 / variância 1 (do_normalize do checkpoint)
+    batch_size: int = 8
 
 
 @dataclass
@@ -340,6 +345,81 @@ class FaceEmbedderConfig:
 
 
 @dataclass
+class VisionEmbedderConfig:
+    """Grupo ``vision_embedder`` — recortes face/olhos/boca → coluna ``face_crops_<name>``.
+
+    Qualquer ``AutoModel`` de visão do HuggingFace (``model_name``); recortes = caixas
+    fracionárias sobre os rostos alinhados do BAH (``cropped-aligned-faces``).
+    """
+
+    name: str = "vit_face_expression"
+    model_name: str = "trpakov/vit-face-expression"
+    pooling: Literal["cls", "mean", "pooler"] = "cls"
+    batch_size: int = 64
+    trust_remote_code: bool = False  # backbones com código remoto no Hub
+    sample_fps: float = 1.0
+    default_fps: float = 30.0
+    frames_root: str | None = None  # None = <data_root>/cropped-aligned-faces
+    crops: dict[str, list[float]] = field(
+        default_factory=lambda: {
+            "face": [0.0, 0.0, 1.0, 1.0],
+            "eyes": [0.08, 0.26, 0.92, 0.60],
+            "mouth": [0.24, 0.66, 0.76, 0.98],
+        }
+    )
+
+
+@dataclass
+class SceneEmbedderConfig:
+    """Grupo ``scene_embedder`` — VideoMAE congelado do vídeo inteiro → ``scene_emb_<name>``."""
+
+    name: str = "videomae"
+    model_name: str = "MCG-NJU/videomae-base"
+    num_frames: int = 16
+    pooling: Literal["cls", "mean", "pooler"] = "mean"
+    # VideoMAE-v2 (scene_embedder=videomae_v2): bcthw + código remoto
+    input_layout: Literal["btchw", "bcthw"] = "btchw"
+    trust_remote_code: bool = False
+
+
+@dataclass
+class OOFConfig:
+    """Bloco ``oof`` — protocolo OOF do plano MoE (``mode=oof``, ``src/pipeline/oof.py``)."""
+
+    splits: list[str] = field(default_factory=lambda: ["train", "val"])
+    n_splits: int = 5
+    seed: int = 42  # mesmas dobras em todas as rodadas (gate pareado)
+    inner_val_frac: float = 0.15  # holdout interno por participante (early stopping)
+    threshold: float = 0.5  # τ fixo
+    n_boot: int = 1000
+    baseline: str | None = None  # run OOF de referência → gate pareado
+    predict_splits: list[str] = field(default_factory=lambda: ["test"])
+    # {nome: Parquet} preditos inteiros pelos modelos das dobras (ex.: private test externo)
+    predict_parquets: dict[str, str] | None = None
+
+
+@dataclass
+class RouteConfig:
+    """Bloco ``route`` — MoERouter sobre runs OOF (``mode=route``, ``src/pipeline/route.py``)."""
+
+    name: str = "moe_router"
+    members: list[str] = field(default_factory=list)
+    use_embeddings: bool = True
+    proj_dim: int = 16
+    dropout: float = 0.1
+    lr: float = 1e-2
+    weight_decay: float = 1e-2
+    max_epochs: int = 500
+    patience: int = 50
+    inner_val_frac: float = 0.15
+    threshold: float = 0.5
+    n_boot: int = 1000
+    predict_splits: list[str] = field(default_factory=lambda: ["test"])
+    measure_splits: list[str] = field(default_factory=list)  # medição única (Rodada 6)
+    submit_split: str | None = None  # ex.: "external" → submissão oficial
+
+
+@dataclass
 class ModelConfig:
     """Grupo ``model`` — registra a família (``sklearn`` | ``lightning``) + hiperparâmetros.
 
@@ -348,9 +428,9 @@ class ModelConfig:
     usados por uma família são simplesmente ignorados por ela.
 
     Os GNNs (``configs/model/hetero_gnn_contrastive.yaml``, ``multimodal_hetero_face.yaml``,
-    ``face_gnn_ts.yaml``) trazem blocos próprios (``hidden_channels``, ``heads``,
-    ``contrastive``, ``loss``, ``face``…) lidos direto do YAML — o schema aqui documenta
-    só os campos compartilhados.
+    ``face_gnn_ts.yaml``) e o ``moe_fusion`` (``branches``/``fusion``/``loss``/``optim``, ramos
+    em ``configs/branch/``) trazem blocos próprios lidos direto do YAML — o schema aqui
+    documenta só os campos compartilhados.
     """
 
     name: str = "random_forest"
@@ -370,6 +450,7 @@ class ModelConfig:
     use_tabular: bool = False  # funde tab_seq (hesitação + tabulares) na cross-attention
     pool: Literal["mean", "attention", "max"] = "mean"  # agregação temporal janela→vídeo
     tab_fusion: Literal["late", "token"] = "late"  # tab: late (concat pós-pool) | token (pré-pool)
+    extra_columns: list[str] = field(default_factory=list)  # colunas por janela extras (ex.: vídeo)
     common_dim: int = 512
     num_heads: int = 4
     num_classes: int = 1
@@ -454,6 +535,10 @@ class RootConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     aggregation: AggregationConfig = field(default_factory=AggregationConfig)
+    vision_embedder: VisionEmbedderConfig = field(default_factory=VisionEmbedderConfig)
+    scene_embedder: SceneEmbedderConfig = field(default_factory=SceneEmbedderConfig)
+    oof: OOFConfig = field(default_factory=OOFConfig)
+    route: RouteConfig = field(default_factory=RouteConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
 
     seed: int = 42
@@ -466,6 +551,9 @@ class RootConfig:
         "hard_mining",
         "evaluate",
         "submit",
+        "featurize_columns",
+        "oof",
+        "route",
     ] = "train"
     experiment_name: str = "abaw-ah"
 
@@ -487,6 +575,8 @@ class RootConfig:
     # submission_probabilities: escreve 'video_id,p0,p1,pred' (habilita AP) em vez de 'video_id,pred'.
     submission_reference: str | None = None
     submission_probabilities: bool = False
+    # mode=featurize_columns: colunas extras do Parquet (src/features/columns.py).
+    columns: list[str] | None = None
 
 
 # ==============================================================================
@@ -511,6 +601,8 @@ def register_configs() -> None:
     cs.store(group="model", name="schema", node=ModelConfig)
     cs.store(group="trainer", name="schema", node=TrainerConfig)
     cs.store(group="aggregation", name="schema", node=AggregationConfig)
+    cs.store(group="vision_embedder", name="schema", node=VisionEmbedderConfig)
+    cs.store(group="scene_embedder", name="schema", node=SceneEmbedderConfig)
     log.debug("Schemas registrados no ConfigStore.")
 
 

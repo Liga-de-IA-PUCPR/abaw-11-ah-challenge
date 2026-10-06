@@ -52,6 +52,7 @@ def create_audio_embedder(
     batch_size: int = 8,
     device: str = "auto",
     n_jobs: int = -1,
+    normalize_waveform: bool = False,
 ) -> AudioEmbedder:
     """Instancia o embedder de áudio conforme ``audio_embedder.backend``.
 
@@ -64,6 +65,9 @@ def create_audio_embedder(
         sample_rate: SR dos waveforms (deve casar com data.audio.sample_rate).
         batch_size: batch dos backends deep.
         device: "auto" | "cpu" | "mps" | "cuda" (só relevante p/ backends deep).
+        normalize_waveform: backends deep — padroniza cada waveform (média 0, variância 1)
+            antes do encoder, como o ``do_normalize`` do feature extractor HF. Exigido por
+            checkpoints treinados com entrada normalizada (ex.: audeering wav2vec2-large-robust).
 
     Returns:
         Uma instância de :class:`AudioEmbedder` (subclasse concreta).
@@ -85,6 +89,7 @@ def create_audio_embedder(
         sample_rate=sample_rate,
         batch_size=batch_size,
         device=device,
+        normalize_waveform=normalize_waveform,
     )
 
 
@@ -377,6 +382,7 @@ class DeepAudioEmbedder(AudioEmbedder):
         sample_rate: int = _SR_DEFAULT,
         batch_size: int = 8,
         device: str = "auto",
+        normalize_waveform: bool = False,
     ) -> None:
         import torch
         from transformers import AutoModel
@@ -385,6 +391,7 @@ class DeepAudioEmbedder(AudioEmbedder):
         self.model_name = model_name
         self.sample_rate = sample_rate
         self.batch_size = batch_size
+        self.normalize_waveform = bool(normalize_waveform)
         self.device = resolve_device(device)
         self._torch = torch
 
@@ -418,6 +425,8 @@ class DeepAudioEmbedder(AudioEmbedder):
                 arr = np.zeros((len(batch), max_len), dtype=np.float32)
                 for i, w in enumerate(batch):
                     w = np.asarray(w, dtype=np.float32).ravel()
+                    if self.normalize_waveform and w.size:
+                        w = (w - w.mean()) / np.sqrt(w.var() + 1e-7)
                     arr[i, : w.size] = w
                 input_values = torch.from_numpy(arr).to(self.device)
                 hidden = self.model(input_values=input_values).last_hidden_state  # (b, T, H)

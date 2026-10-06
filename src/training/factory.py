@@ -93,8 +93,13 @@ def load_trainer(family: str, out_dir: Any, cfg: Any) -> BaseTrainer:
         from src.models.registry import create_model
         from src.training.lightning_trainer import LightningTrainer
 
-        model_cfg = _saved_model_config(out_dir, cfg) or cfg.model
-        model, _ = create_model(model_cfg.name, model_cfg)
+        saved = _saved_model_config(out_dir, cfg)
+        if saved is not None:  # o trainer carrega a config do modelo QUE treinou (dados idem)
+            from omegaconf import OmegaConf
+
+            cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+            cfg.model = saved
+        model, _ = create_model(cfg.model.name, cfg.model)
         log.info("Trainer: LightningTrainer recarregado (import lazy de lightning).")
         return LightningTrainer.load(out_dir, model=model, config=cfg)
 

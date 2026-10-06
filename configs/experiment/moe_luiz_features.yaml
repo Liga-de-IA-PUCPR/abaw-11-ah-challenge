@@ -1,0 +1,26 @@
+# @package _global_
+# Comparação Luiz × Rodrigo — arquitetura MoE do Rodrigo (= moe_r5_face) com as features de
+# ÁUDIO e TEXTO do artigo no lugar das dele: librosa 320 (audio_emb) no ramo de áudio e
+# RoBERTa-emotion por janela congelado (text_emb) como âncora. Tabular, marcadores, ASR timing
+# e o vídeo (recortes faciais) ficam iguais ao moe_r5_face — isola o efeito dos embedders.
+defaults:
+  - /branch@model.branches.text: text_frozen
+  - /branch@model.branches.markers: hesitation_markers
+  - /branch@model.branches.tab: tabular
+  - /branch@model.branches.asr: asr_timing
+  - /branch@model.branches.audio: audio_emotion
+  - /branch@model.branches.face: face_crops
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-luiz-features
+
+model:
+  branches:
+    audio:
+      column: audio_emb   # librosa 320-d do artigo: escala crua → BatchNorm por feature
+      norm: batch
+
+trainer:
+  max_epochs: 60
+  patience: 12

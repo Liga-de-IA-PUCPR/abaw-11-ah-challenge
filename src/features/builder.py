@@ -243,30 +243,8 @@ class FeatureBuilder:
     # =========================================================================
 
     def _load_waveforms(self, windows: list[WindowSample]) -> list[np.ndarray]:
-        """Corta o waveform de cada janela de ``audio_dir/<pid>/<stem>.flac`` em ``[t0, t1]``.
-
-        Mesma convenção de caminho do ``preprocess`` (que extraiu os ``.flac``). Janelas
-        com áudio ausente ou curto demais recebem silêncio mínimo (evita erro do librosa).
-        """
-        waveforms: list[np.ndarray] = []
-        min_len = int(self.sample_rate * _MIN_WAVE_S)
-        missing = 0
-        for w in windows:
-            stem = Path(w.video_id).stem  # <file>_Video
-            flac = self.audio_dir / w.participant_id / f"{stem}.flac"
-            if flac.exists():
-                seg = load_segment(flac, w.t0, w.t1, sr=self.sample_rate)
-            else:
-                seg = np.zeros(0, dtype=np.float32)
-                missing += 1
-            if seg.size < min_len:  # pad p/ um piso mínimo (silêncio à direita)
-                padded = np.zeros(min_len, dtype=np.float32)
-                padded[: seg.size] = seg
-                seg = padded
-            waveforms.append(seg)
-        if missing:
-            log.warning(f"{missing}/{len(windows)} janelas sem .flac sob {self.audio_dir}")
-        return waveforms
+        """Waveform de cada janela (ver :func:`load_window_waveforms`)."""
+        return load_window_waveforms(windows, self.audio_dir, self.sample_rate)
 
     # =========================================================================
     # Load / sidecar / cache key
@@ -380,8 +358,6 @@ def build_feature_components(
     Returns:
         ``FeatureBuilder`` pronto para ``build(windows, out_path)``.
     """
-    from src.features.audio_embedder import create_audio_embedder
-
     text_embedder = TextEmbedder(
         model_name=cfg.text_embedder.model_name,
         pooling=cfg.text_embedder.pooling,
@@ -391,17 +367,7 @@ def build_feature_components(
         device=cfg.device,
         trust_remote_code=bool(cfg.text_embedder.get("trust_remote_code", False)),
     )
-    audio_embedder = create_audio_embedder(
-        backend=cfg.audio_embedder.backend,
-        model_name=getattr(cfg.audio_embedder, "model_name", None),
-        feature_set=getattr(cfg.audio_embedder, "feature_set", None),
-        n_mfcc=getattr(cfg.audio_embedder, "n_mfcc", 20),
-        agg_stats=getattr(cfg.audio_embedder, "agg_stats", None),
-        hesitation=getattr(cfg.audio_embedder, "hesitation", None),
-        sample_rate=cfg.data.audio.sample_rate,
-        batch_size=getattr(cfg.audio_embedder, "batch_size", 8),
-        device=cfg.device,
-    )
+    audio_embedder = build_audio_embedder(cfg)
     tabular = TabularFeaturizer.from_config(
         getattr(cfg.data, "tabular", None),
         sample_rate=cfg.data.audio.sample_rate,
@@ -432,6 +398,54 @@ def build_feature_components(
         sample_rate=cfg.data.audio.sample_rate,
         text_featurizer=text_featurizer,
     )
+
+
+def build_audio_embedder(cfg) -> AudioEmbedder:
+    """Embedder de áudio do grupo ``audio_embedder`` (librosa | wav2vec2 | hubert)."""
+    from src.features.audio_embedder import create_audio_embedder
+
+    return create_audio_embedder(
+        backend=cfg.audio_embedder.backend,
+        model_name=getattr(cfg.audio_embedder, "model_name", None),
+        feature_set=getattr(cfg.audio_embedder, "feature_set", None),
+        n_mfcc=getattr(cfg.audio_embedder, "n_mfcc", 20),
+        agg_stats=getattr(cfg.audio_embedder, "agg_stats", None),
+        hesitation=getattr(cfg.audio_embedder, "hesitation", None),
+        sample_rate=cfg.data.audio.sample_rate,
+        batch_size=getattr(cfg.audio_embedder, "batch_size", 8),
+        device=cfg.device,
+        normalize_waveform=bool(cfg.audio_embedder.get("normalize_waveform", False)),
+    )
+
+
+def load_window_waveforms(
+    windows: list[WindowSample], audio_dir: str | Path, sample_rate: int
+) -> list[np.ndarray]:
+    """Corta o waveform de cada janela de ``audio_dir/<pid>/<stem>.flac`` em ``[t0, t1]``.
+
+    Mesma convenção de caminho do ``preprocess`` (que extraiu os ``.flac``). Janelas
+    com áudio ausente ou curto demais recebem silêncio mínimo (evita erro do librosa).
+    """
+    audio_dir = Path(audio_dir)
+    waveforms: list[np.ndarray] = []
+    min_len = int(sample_rate * _MIN_WAVE_S)
+    missing = 0
+    for w in windows:
+        stem = Path(w.video_id).stem  # <file>_Video
+        flac = audio_dir / w.participant_id / f"{stem}.flac"
+        if flac.exists():
+            seg = load_segment(flac, w.t0, w.t1, sr=sample_rate)
+        else:
+            seg = np.zeros(0, dtype=np.float32)
+            missing += 1
+        if seg.size < min_len:  # pad p/ um piso mínimo (silêncio à direita)
+            padded = np.zeros(min_len, dtype=np.float32)
+            padded[: seg.size] = seg
+            seg = padded
+        waveforms.append(seg)
+    if missing:
+        log.warning(f"{missing}/{len(windows)} janelas sem .flac sob {audio_dir}")
+    return waveforms
 
 
 def _video_aligned_spans(

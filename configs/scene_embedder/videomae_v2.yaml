@@ -1,0 +1,11 @@
+# configs/scene_embedder/videomae_v2.yaml — VideoMAE-v2 congelado (o canal de cena da figura).
+# Repositório com código remoto (trust_remote_code): entrada (B, C, T, H, W) e a saída já é o
+# vetor do clipe (fc_norm da média dos tokens). Licença do checkpoint: CC BY-NC 4.0.
+#   python main.py mode=featurize_columns "columns=[scene]" scene_embedder=videomae_v2
+#   → coluna scene_emb_videomae_v2 (no modelo: model.branches.scene.column=scene_emb_videomae_v2)
+name: videomae_v2
+model_name: OpenGVLab/VideoMAEv2-Base
+num_frames: 16
+pooling: mean
+input_layout: bcthw
+trust_remote_code: true

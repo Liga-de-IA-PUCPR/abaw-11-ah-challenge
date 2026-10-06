@@ -85,12 +85,15 @@ num_workers: 0
 # ⚠️ NUNCA ponha 'test' em train_splits no caminho sklearn/RF: as janelas de test têm
 # rótulo -1 (sem label de janela) e o RF treinaria numa classe espúria.
 train_splits: [train]
-calib_split: val
+calib_split: val                         # val | test | holdout (fração dos train_splits ↓)
+holdout_frac: 0.08                       # calib_split=holdout: % dos vídeos, por participante
 
 # mode=featurize: lotes de ~N janelas (alinhados por vídeo) p/ limitar RAM/VRAM com
 # embedders deep (wav2vec2/hubert). null = lote único (comportamento original).
 featurize_chunk_size: null
 # mode=featurize_face: recomputa a coluna face_landmarks mesmo se já existir no Parquet.
 force_face: false
+# mode=featurize_columns: recomputa as colunas pedidas mesmo se já existirem no Parquet.
+force_columns: false
 # mode=train (lightning): JSON {video_id: peso} de mode=hard_mining → WeightedRandomSampler.
 hard_examples: null

@@ -1,0 +1,8 @@
+# ASR-erased time: 16 features de gaps dos chunks do Whisper (vídeo, replicado nas janelas).
+role: residual
+encoder: vector
+column: asr_timing
+dim: 64
+norm: batch
+dropout: 0.1
+aux_weight: 0.0

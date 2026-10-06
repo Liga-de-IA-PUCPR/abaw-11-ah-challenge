@@ -7,14 +7,24 @@ defaults:
   - model: random_forest             # baseline barato; competição = cross_attention
   - trainer: sklearn                 # caminho CPU; neural = lightning
   - aggregation: default
+  - vision_embedder: vit_face_expression   # recortes face/olhos/boca (mode=featurize_columns)
+  - scene_embedder: videomae               # cena opcional (mode=featurize_columns)
   - override hydra/launcher: joblib  # multirun paralelo (-m)
   - _self_
 
 seed: 42
-device: "mps"                       # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
+device: "auto"                      # auto (mps▸cuda▸cpu) | cpu | mps | cuda  (README §3)
 mode: "train"                        # train | preprocess | featurize | featurize_face | evaluate | submit
-                                     # | hard_mining (lightning)
+                                     # | hard_mining (lightning) | featurize_columns | oof | route
 experiment_name: "abaw-ah"
+
+# Pasta de cada run sob data.paths.output_root, por modo: o Hydra grava .hydra/ (config +
+# overrides) e main.log NELA, e o modo grava os artefatos na MESMA pasta (um run = uma pasta).
+# Modos sem artefato próprio (preprocess, featurize*, evaluate, submit, hard_mining) → logs/<mode>.
+run_dirs:
+  train: ${model.name}               # outputs/<modelo>/<ts> (checkpoints, trainer_state.json)
+  oof: oof/${experiment_name}        # outputs/oof/<exp>/<ts> (fold<k>/, oof_*.csv/json, plots/)
+  route: route/${route.name}         # outputs/route/<nome>/<ts>
 
 # Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler
 # (split: val em evaluate / test em submit; checkpoint: bundle mais recente em outputs/).
@@ -24,9 +34,45 @@ checkpoint: null                     # caminho do checkpoint (.joblib/.ckpt)
 ensemble: null                       # membros p/ mediar probas (evaluate/submit): run dirs ou
                                      # {checkpoint, model, weight, parquet_path} (CA + GNN + face)
 ensemble_weights: null               # pesos alinhados a `ensemble` (null = média simples)
+# mode=featurize_columns: colunas extras gravadas no Parquet de janelas (src/features/columns.py):
+# transcript | asr_timing | hesitation_markers | audio | face_crops | scene
+columns: null
 # Submissão (formato oficial do desafio BAH). Ver src/outputs/submission.py.
 submission_reference: null           # trial-0.txt de referência: define a ORDEM exigida (null = alfabética + aviso)
 submission_probabilities: false      # true → 'video_id,p0,p1,pred' (habilita AP); false → 'video_id,pred'
+
+# Protocolo OOF (mode=oof, src/pipeline/oof.py) — régua de toda rodada do plano MoE.
+oof:
+  splits: [train, val]               # vídeos do protocolo (902; o public test fica de fora)
+  n_splits: 5                        # dobras por participante (StratifiedGroupKFold)
+  seed: 42                           # MESMAS dobras em todas as rodadas (gate pareado)
+  inner_val_frac: 0.15               # holdout interno por participante (early stopping)
+  threshold: 0.5                     # τ fixo — nada de calibrar limiar no OOF
+  n_boot: 1000                       # reamostras dos ICs por bootstrap
+  baseline: null                     # run OOF de referência (outputs/oof/<exp>/<ts>) → gate
+  predict_splits: [test]             # splits preditos pelos modelos das dobras (média, sem métricas)
+  predict_parquets: null             # {nome: Parquet} preditos inteiros pelas dobras — ex.:
+                                     # "oof.predict_parquets={external:'data/processed/external_windows.parquet'}"
+
+# MoERouter (mode=route, src/pipeline/route.py) — combina membros OOF por amostra (Rodada 6).
+route:
+  name: moe_router
+  members: []                        # runs OOF (outputs/oof/<exp>/<ts>) com as MESMAS dobras
+  use_embeddings: true               # vê os vetores pré-logit (false = só os logits)
+  proj_dim: 16                       # projeção de cada embedding antes do roteador
+  dropout: 0.1
+  lr: 1e-2
+  weight_decay: 1e-2
+  max_epochs: 500                    # full-batch; early stopping no holdout interno
+  patience: 50
+  inner_val_frac: 0.15
+  threshold: 0.5                     # τ fixo
+  n_boot: 1000
+  predict_splits: [test]             # nomes com pred_<nome>_folds.npz nos membros (oof.predict_splits
+                                     # ou oof.predict_parquets) → roteador final, média das dobras
+  measure_splits: []                 # MEDIÇÃO ÚNICA da Rodada 6 num split rotulado (ex.: [test])
+  submit_split: null                 # ex.: external → submissão oficial (out, submission_reference,
+                                     # submission_probabilities), τ = route.threshold
 
 # Tracking (FASE 5). W&B primário; Reporter local sempre roda como fallback.
 wandb:
@@ -38,7 +84,7 @@ hydra:
   launcher:
     n_jobs: 1                        # multirun: -m hydra.launcher.n_jobs=4
   run:
-    dir: outputs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
-  sweep:
-    dir: outputs/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${data.paths.output_root}/${oc.select:run_dirs.${mode},logs/${mode}}/${now:%Y%m%d_%H%M%S}
+  sweep:                             # multirun (-m): .hydra/ aqui, artefatos em <run_dirs>/<ts>
+    dir: ${data.paths.output_root}/multirun/${now:%Y%m%d_%H%M%S}
     subdir: ${hydra.job.num}

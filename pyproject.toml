@@ -72,7 +72,8 @@ dependencies = [
 #                `uv sync --group neural`. Importado LAZY pelo LightningTrainer.
 #   - `gnn`    : OPCIONAL — GNNs heterogêneos do Rodrigo (hetero_gnn*, multimodal_hetero_*,
 #                face_gnn_ts). Exige `neural`. Importado LAZY pelos modelos.
-#   - `vision` : OPCIONAL — Face Mesh (MediaPipe Tasks) p/ `mode=featurize_face`.
+#   - `vision` : OPCIONAL — Face Mesh (MediaPipe Tasks) p/ `mode=featurize_face` + recortes
+#                faciais/cena (`mode=featurize_columns columns=[face_crops,scene]`).
 #   - `dev`    : lint / type-check / testes / notebooks / HPO.
 # -----------------------------------------------------------------------------
 [dependency-groups]
@@ -88,6 +89,7 @@ gnn = [
 vision = [
     "mediapipe>=0.10.14",        # Face Landmarker (478 landmarks x,y,z por janela)
     "opencv-python-headless>=4.10.0",  # leitura dos frames dos .mp4
+    "torchvision>=0.27.0",       # AutoImageProcessor (transformers 5) dos embedders visuais
 ]
 dev = [
     "ruff>=0.6.0",               # lint + format

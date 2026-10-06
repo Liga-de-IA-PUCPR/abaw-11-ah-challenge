@@ -8,6 +8,167 @@
 
 Geradas por `scripts/plot_improvement_plan.py` (Graphviz/`dot`, PNG + PDF em `docs/figures/`).
 
+## Status da implementação (branch `feat/moe-fusion`)
+
+Toda a arquitetura da figura está implementada sobre o pipeline da `develop`, opt-in (nenhum
+default muda; o caminho do artigo segue idêntico). **Nenhuma rodada foi medida ainda** — os
+experimentos rodam na máquina com GPU; os números entram nesta seção.
+
+### Mapa figura → código
+
+| Bloco da figura | Onde está | Config |
+|---|---|---|
+| Sinais novos como colunas do Parquet de janelas (sem refazer o `featurize`) | `src/features/columns.py`, `src/pipeline/featurize_columns.py` (`mode=featurize_columns`) | `columns=[...]` |
+| transcript → **RoBERTa-GoEmotions** (4 camadas congeladas, CLS) | ramo `hf_text` em `src/models/encoders.py`; transcrição tokenizada no `VideoSequenceDataset` (o `TextSequenceDataset` pendente da Rodada 1) | `configs/branch/text_goemotions.yaml` |
+| transcript → **11 marcadores de hesitação** + cabeça auxiliar (0.3) | `src/features/hesitation_markers.py` (léxicos reusados de `text_features.py`) | `configs/branch/hesitation_markers.yaml` (`role: head`, `aux_weight: 0.3`) |
+| Whisper → **ASR-erased time** (16) | `src/features/asr_timing.py` (já existia), coluna `asr_timing` | `configs/branch/asr_timing.yaml` |
+| waveform → **wav2vec2-emotion** (1024-d) + cabeça temporal + supervisão por janela | coluna `audio_emb_<audio_embedder>`; GRU + logit por janela (rótulos de `time_detailed_ah`) | `configs/audio_embedder/wav2vec2_emotion_large.yaml`, `configs/branch/audio_emotion.yaml` |
+| **recortes face/olhos/boca** → backbone → Transformer → `[μ,σ,μΔ,σΔ]` | `src/features/vision_embedder.py` (`FaceCropEmbedder`); no modelo, SoftMoE dos recortes + Transformer + `StatsPool` | `configs/vision_embedder/vit_face_expression.yaml`, `configs/branch/face_crops.yaml` |
+| **Scene** (opcional, tracejado) — VideoMAE-v2 congelado, 16 frames | `SceneEmbedder` (mesmo módulo; aceita código remoto, entrada `(B,C,T,H,W)` e saída já vetorial) | `configs/scene_embedder/videomae_v2.yaml` (ou `videomae.yaml`, v1), `configs/branch/scene.yaml` |
+| **projection block** `d_m`, **reliability gate** `g_m = σ(MLP[b; h_m])`, `z = LN(b + Σ g_m·d_m(h_m))` | `ProjectionBlock`, `ReliabilityGate` (`src/models/blocks.py`), `TextAnchoredMoE` (`src/models/moe_fusion.py`) | `model.fusion.*` (`configs/model/moe_fusion.yaml`) |
+| **SoftMoE (MoEFusionHead)**, K=3–4 ExpertMLP | `SoftMoE` (`src/models/blocks.py`) | `model.fusion.head: moe`, `num_experts` |
+| **load-balancing loss** (só se 1 expert > 70%) | `load_balance_loss` — KL(uso‖uniforme) aplicado só quando o uso máximo no lote passa do limiar; `train_moe_max_usage` logado | `model.loss.balance_weight`, `balance_threshold: 0.7` |
+| **todo** membro expõe o **vetor pré-logit** | `LightningTrainer.predict_outputs`: o `moe_fusion` devolve `embedding` no `predict_step`; nos demais (cross-attention, GNNs) ele é capturado na entrada da `Linear(·,1)` que gera o logit (a camada cujo `sigmoid` reproduz a `proba`). Vai para `eval_<split>/embeddings.npy` (linhas = `predictions.csv`) e `oof_embeddings.npy` | — |
+| **MoERouter** (sucessor do router CA/GNN), τ = 0.5 fixo | `src/models/moe_router.py`, `src/pipeline/route.py` (`mode=route`): avaliação nas dobras dos membros, medição única no public test e submissão oficial no private test | bloco `route` (`measure_splits`, `submit_split`) |
+| Gate OOF de cada rodada (Rodada 0+) | `src/pipeline/oof.py` (`mode=oof`) sobre `src/eval/protocol.py` (+ `paired_bootstrap_ap`); os modelos das dobras também predizem o test e Parquets extras (private test) | bloco `oof` (`predict_splits`, `predict_parquets`) |
+| Re-treino final com holdout de ~8% (Rodada 6) | split especial `holdout` em `src/data/datasets.py` | `data.calib_split=holdout`, `data.holdout_frac` |
+
+Tudo é trocável pela config: um embedder é uma **coluna** (`audio_embedder=hubert` →
+`audio_emb_hubert`, depois `model.branches.audio.column=audio_emb_hubert`); a arquitetura de
+um ramo é `encoder` (`sequence|vector|hf_text`) / `temporal` (`identity|gru|transformer`) /
+`pool` (`mean|max|attention|stats`) / `mixer` (`linear|moe`); os presets compõem ramos de
+`configs/branch/` e a CLI acrescenta/remove (`+branch@model.branches.scene=scene`,
+`~model.branches.asr`). Um ramo só é o **membro unimodal** da mesma classe.
+
+### Como rodar cada rodada (máquina com GPU)
+
+Pré-requisitos: dataset extraído em `data/raw/data/` (inclui `cropped-aligned-faces/`) e o
+ambiente `make setup-vision` (traz `torchvision`, exigido pelo `AutoImageProcessor` do
+transformers 5).
+
+```bash
+make data                          # preprocess + featurize (Parquet canônico)
+make featurize-moe                 # transcript + asr_timing + hesitation_markers
+make featurize-moe-audio           # audio_emb_wav2vec2_emotion_large
+make featurize-moe-face            # face_crops_vit_face_expression
+make featurize-moe-scene MOE_SCENE=videomae_v2   # (opcional) scene_emb_videomae_v2 (código remoto)
+
+# Rodada 0 — régua: cross-attention do artigo (e, se quiser, o GNN) no protocolo OOF
+make oof EXPERIMENT=cross_attention ARGS="experiment_name=r0-cross-attention"
+make oof EXPERIMENT=hetero_gnn_v2_tune_wav2vec2 ARGS="experiment_name=r0-hetero-gnn"  # make featurize-w2v antes
+make route MEMBERS="outputs/oof/r0-cross-attention/<ts> outputs/oof/r0-hetero-gnn/<ts>" \
+     ARGS="route.name=r0-router route.use_embeddings=false"    # "router atual" reavaliado
+
+# Rodada 1 — texto como âncora (gate: OOF AP ≥ 0.80); variante barata congelada como régua
+make oof EXPERIMENT=moe_r1_text BASELINE=outputs/oof/r0-cross-attention/<ts>
+make oof EXPERIMENT=moe_r1_text_frozen BASELINE=outputs/oof/r0-cross-attention/<ts>
+
+# Rodadas 2–5 — cada uma contra a anterior; o texto parte do modelo da Rodada 1 da MESMA dobra
+R1=outputs/oof/moe-r1-text/<ts>
+make oof EXPERIMENT=moe_r2_text_tab TEXT_RUN=$R1 BASELINE=$R1
+make oof EXPERIMENT=moe_r3_asr      TEXT_RUN=$R1 BASELINE=outputs/oof/moe-r2-text-tab/<ts>
+make oof EXPERIMENT=moe_r4_audio    TEXT_RUN=$R1 BASELINE=outputs/oof/moe-r3-asr/<ts>
+make oof EXPERIMENT=moe_r5_face     TEXT_RUN=$R1 BASELINE=outputs/oof/moe-r4-audio/<ts>
+# sinal reprovado no gate → "testado, não incorporado": remova o ramo nas rodadas seguintes,
+# ex.: make oof EXPERIMENT=moe_r4_audio TEXT_RUN=$R1 ARGS="~model.branches.asr"
+
+# membros unimodais do MoERouter
+make oof EXPERIMENT=moe_unimodal_audio
+make oof EXPERIMENT=moe_unimodal_asr
+
+# Rodada 6 — MoERouter final sobre os membros que passaram (+ CA/GNN se ajudarem no OOF).
+# 1) colunas no Parquet do private test (caminhos isolados p/ não sobrescrever os do raw):
+EXT="data.paths.data_root=data/external/data data.paths.interim_dir=data/interim/external \
+     data.paths.parquet_path=data/processed/external_windows.parquet"
+make preprocess ARGS="$EXT"
+make featurize-moe ARGS="$EXT" && make featurize-moe-audio ARGS="$EXT" && make featurize-moe-face ARGS="$EXT"
+# 2) cada membro roda o OOF predizendo também o private test (os modelos das 5 dobras):
+make oof EXPERIMENT=<membro> ... \
+     ARGS="\"oof.predict_parquets={external:'data/processed/external_windows.parquet'}\""
+# 3) roteador: medição ÚNICA no public test + submissão oficial no private test (τ = 0.5)
+make route MEMBERS="outputs/oof/moe-r5-face/<ts> $R1 outputs/oof/moe-unimodal-audio/<ts> ..." \
+     ARGS="route.predict_splits=[test,external] route.measure_splits=[test] \
+           route.submit_split=external submission_reference=data/external/reference_trial-0.txt \
+           submission_probabilities=true"
+```
+
+Cada `make oof` grava em `outputs/oof/<experiment_name>/<ts>/`: `oof_predictions.csv`,
+`oof_embeddings.npy`, `oof_metrics.json` (Macro-F1@0.5, AP, IC bootstrap, por dobra e o gate
+pareado vs `BASELINE`: ΔF1/ΔAP com IC → `melhora`/`empate`/`piora`), `pred_test.csv` (média
+das 5 dobras, **sem métricas** — o public test é medido uma vez só) e `fold<k>/` (checkpoints).
+O `make route` grava `route_metrics.json` (gate vs melhor membro e vs média, uso de cada
+membro e, se pedido, `measure_test` — roteador × cada membro × média no public test),
+`pred_<nome>.csv` e a submissão (`submission_external.txt`, ou `out=`). Alternativa de
+modelo único: re-treino com holdout, com o ramo de texto re-treinado nos mesmos splits (ou
+`model.branches.text.trainable=true`) —
+`uv run python main.py mode=train +experiment=<melhor> "data.train_splits=[train,val,test]"
+data.calib_split=holdout` e depois `mode=submit split=test` com
+`data.paths.parquet_path=data/processed/external_windows.parquet`.
+
+### Comparação com o cross-attention do artigo (Luiz × Rodrigo)
+
+Todos os runs no mesmo protocolo OOF (mesmas dobras) → qualquer par se compara depois com
+`make oof-compare A=<run> B=<run>` (ΔF1@τ e ΔAP com IC por bootstrap pareado).
+
+| Experimento | Preset | O que muda |
+|---|---|---|
+| referência: cross-attention do artigo | `cross_attention` | — |
+| baseline do Rodrigo (arquitetura MoE completa) | `moe_r5_face` (texto da `moe_r1_text`, `TEXT_RUN`) | arquitetura + features dele |
+| artigo + vídeo do Rodrigo | `cross_attention_video` | `model.extra_columns=[face_crops_…]`: recortes faciais fundidos por token antes do pooling (opt-in; sem a coluna o modelo do artigo fica idêntico) |
+| MoE com áudio/texto do artigo + vídeo dele | `moe_luiz_features` | `moe_r5_face` com librosa 320 (`audio_emb`) e RoBERTa-emotion congelado (`text_emb`) no lugar de wav2vec2-emotion e GoEmotions |
+| ensemble dos baselines | `make route MEMBERS="<artigo> <moe_r5_face>"` | roteador + média simples, com gate vs o melhor membro |
+
+`featurize-moe-audio` e `featurize-moe-face` podem rodar ao mesmo tempo (uma GPU cada): o merge
+de colunas no Parquet é feito sob trava de arquivo e relê o arquivo antes de gravar.
+
+### Decisões de implementação (desvios do texto do plano)
+
+- **SoftMoE local, não importado da `vision-toolbelt-liga`.** Mesma formulação (router
+  `Linear → softmax(K)`, experts MLP de 2 camadas com GELU, soma ponderada), mas o MoE é o
+  agregador de TODAS as rodadas (inclusive texto + tabular): depender da toolbelt puxaria
+  `mlflow`, `timm`, `pytorch-metric-learning` e o `__init__` de `architectures` inteiro só por
+  esse bloco, e o `forward` dela não devolve os pesos do roteador (necessários p/ o
+  balanceamento e a telemetria).
+- **Recortes faciais sobre os rostos já alinhados do BAH** (`cropped-aligned-faces`, 256×256):
+  olhos e boca ficam em posições canônicas, então os recortes são caixas fracionárias
+  configuráveis (`vision_embedder.crops`) — sem rodar detector/Face Mesh por frame. Os
+  `EyesMeshCrop`/`MouthMeshCrop` da toolbelt usam a API legada `mp.solutions`, ausente no
+  MediaPipe 1.x. O backbone é qualquer `AutoModel` de visão do HuggingFace (default
+  `trpakov/vit-face-expression`); a única dependência nova é `torchvision` no grupo `vision`.
+- **`text_finetune.py` não foi reportado:** o modelo de texto da Rodada 1 é o próprio
+  `moe_fusion` com um ramo `hf_text` (mesma receita: GoEmotions, 4 camadas congeladas, CLS,
+  R-Drop α=4, label smoothing 0.1, `pos_weight` auto). Os membros unimodais (texto, áudio,
+  ASR) são presets da mesma classe — um código só.
+- **Cabeça auxiliar dos marcadores ligada ao caminho principal.** No `text_finetune` original
+  a cabeça auxiliar era um `Linear` isolado sobre o vetor tabular (perda própria, sem
+  parâmetros compartilhados — não influenciava a predição). Aqui o ramo dos marcadores entra
+  na cabeça MoE (`role: head`) e tem o classificador auxiliar (estilo AMF), então a perda
+  auxiliar molda uma representação que a cabeça usa.
+- **Empilhamento sem vazamento entre rodadas:** da Rodada 2 em diante o ramo de texto parte
+  do modelo da Rodada 1 da MESMA dobra (`init_from=<R1>/fold{fold}`, formatado pelo runner) e
+  fica fixo (`trainable: false`).
+- **MoERouter:** os "experts" são os membros treinados; o roteador lê
+  `[proj(embedding_m) ‖ logit_m]` e combina os logits com `softmax` sobre os membros. É
+  avaliado nas dobras dos próprios membros (stacking sem vazamento); no test, cada dobra é
+  roteada com as saídas dos modelos daquela dobra e as 5 são promediadas. Ressalva: embeddings
+  de modelos de dobras diferentes vivem em espaços diferentes (o `LayerNorm` por membro só
+  alinha escala) — `route.use_embeddings=false` dá o roteador só de logits p/ comparar.
+- **Mamba** não foi implementado (decisão do plano: só se a cabeça temporal virar gargalo).
+- **VideoMAE-v2 é opt-in** (`MOE_SCENE=videomae_v2`): o repositório roda código remoto
+  (`trust_remote_code`) e o checkpoint é CC BY-NC 4.0; o default do `make` segue o VideoMAE v1,
+  que roda com o transformers puro.
+
+### Observações sobre os dados (conferir antes das Rodadas 3 e 5)
+
+- Os chunks do Whisper são **contíguos** dentro de cada segmento de ~30 s (o fim de um chunk é
+  o início do próximo): os gaps do `asr_timing` saem quase sempre zerados (≈0,6 gap por vídeo
+  em train+val). O "tempo apagado" do IISERB pede timestamps por palavra — a Rodada 3 tende a
+  ser fraca com os chunks atuais.
+- A duração inferida dos chunks pode **passar da duração real** do vídeo (chunks sobrepostos
+  na timeline acumulada): num vídeo de 82,5 s as janelas iam até 115 s. As janelas finais
+  ficam sem áudio/rosto (zeros). É comportamento pré-existente do janelamento — não foi
+  alterado aqui para não mudar os caches nem a reprodução do artigo.
+
 ## Por que reestruturar (contexto desta revisão)
 
 O plano original (`references/improvement_plan.md`, já parcialmente implementado —
@@ -103,7 +264,8 @@ direção certa?" antes de abrir a próxima.
   marcadores de hesitação (peso 0.3), já implementado e testado.
 - **Pendência bloqueante:** falta `TextSequenceDataset` (tokeniza transcript bruto por
   vídeo) — hoje só existem consumidores de embeddings pré-computados. Sem isso o
-  treino real não roda.
+  treino real não roda. *(Resolvida na `feat/moe-fusion`: coluna `transcript` +
+  tokenização no `VideoSequenceDataset`; o modelo é o preset `moe_r1_text`.)*
 - **Gate de saída:** treinar de fato e medir OOF AP do texto sozinho. Critério ≥ 0.80
   (referência dos dois papers). Só passa para a Rodada 2 se isso for atingido — texto é
   a âncora de todo o resto, um texto fraco compromete a arquitetura inteira.
@@ -179,36 +341,41 @@ MoE-sem-sinal-novo no mesmo conjunto OOF — nunca comparação informal de núm
 
 ## Arquivos (consolidado)
 
-- **Já implementados** (branch `improve-macro-f1-beyond-router`): `src/eval/protocol.py`,
-  `scripts/ensemble_ap.py`, `src/features/asr_timing.py`, `src/models/text_finetune.py`.
-- **A criar nas próximas rodadas:** `src/models/moe_fusion.py` (Rodada 2),
-  `TextSequenceDataset` (Rodada 1, bloqueante), extensão do dump de predições para
-  embeddings (Rodada 2), `src/pipeline/featurize_face_frames.py` (Rodada 5), configs
-  Hydra correspondentes em `configs/model/`, `configs/experiment/`, `configs/audio_embedder/`.
+- **Herdados** (portados na integração): `src/eval/protocol.py`, `scripts/ensemble_ap.py`,
+  `src/features/asr_timing.py`. O `src/models/text_finetune.py` ficou na branch
+  `improve-macro-f1-beyond-router`: a receita dele virou o preset `moe_r1_text`.
+- **Implementados na `feat/moe-fusion`:**
+  - dados/features: `src/features/{columns,hesitation_markers,vision_embedder}.py`,
+    `src/pipeline/featurize_columns.py`; `VideoSequenceDataset` com colunas extras,
+    transcrição tokenizada, rótulos por janela, `subset` e o split `holdout`;
+  - modelo: `src/models/{blocks,encoders,moe_fusion,moe_router}.py`; dump de
+    `embeddings.npy` no `mode=evaluate`;
+  - avaliação: `src/pipeline/{oof,route}.py` (`mode=oof`, `mode=route`);
+  - configs: `configs/model/moe_fusion.yaml`, `configs/branch/*.yaml`,
+    `configs/experiment/moe_*.yaml`, `configs/{vision,scene}_embedder/`,
+    `configs/audio_embedder/wav2vec2_emotion_large.yaml`, blocos `oof`/`route`;
+  - testes: `tests/{test_moe_fusion,test_featurize_columns,test_oof_route}.py` (+ `conftest.py`).
 - **Reuso:** janelas/rótulos `src/data/windowing.py`; Whisper `src/data/schema.py`;
-  tabular `configs/data/default.yaml`; leitura de predições
-  `scripts/meta_router_ca_gnn_face.py:85-106`; ROI `src/data/face_roi.py`;
-  `vision_toolbelt` (já registrado como dependência local editável).
-- **Docs:** cada rodada concluída ganha uma entrada em `references/` com os números OOF
-  medidos, e uma linha em `CHANGELOG.md` sob `[Unreleased]`.
+  tabular `configs/data/default.yaml`; folds/bootstrap `src/eval/protocol.py`; trainer,
+  registry e ensemble da `develop`.
+- **Docs:** cada rodada medida ganha seus números OOF na seção de status acima.
 
-## Próximos passos imediatos desta revisão
+## Próximos passos
 
-1. Atualizar `references/improvement_plan.md` para refletir esta estrutura em rodadas (substitui
-   as seções de Fase 0–4 pelo conteúdo deste plano).
-2. Regenerar `docs/figures/architecture.png` (`scripts/plot_improvement_plan.py`, Graphviz)
-   mostrando o MoE como agregador central — troca o `MLP classifier` por `SoftMoE` no
-   diagrama, e adiciona o `MoERouter` substituindo o router antigo no painel RIGHT.
-3. Resolver a pendência bloqueante da Rodada 1 (`TextSequenceDataset`) antes de qualquer
-   treino real — é o único item que impede a Rodada 1 de fechar seu gate.
-4. Implementar `src/models/moe_fusion.py` (Rodada 2) assim que a Rodada 1 fechar.
+1. Rodar as Rodadas 0–5 na máquina com GPU (comandos na seção de status) e registrar, por
+   rodada, Macro-F1@0.5, AP e o veredito do gate pareado.
+2. Conferir `train_moe_max_usage` nos logs: se um expert passar de 70% do tráfego de forma
+   persistente, subir `model.loss.balance_weight`.
+3. Rodada 6: MoERouter final sobre os membros aprovados, medição única no public test e
+   re-treino com holdout de 8% para a submissão (taxa de positivos prevista ~50–55%).
 
 ## Verificação (aplicável a toda rodada)
 
 - `uv run pytest` deve passar antes de qualquer gate de decisão ser avaliado.
 - `make ci` (ruff) limpo.
-- Toda rodada produz `outputs/<run>/oof_predictions.csv` e a tabela OOF (F1, AP, IC do
-  bootstrap) comparando com/sem o sinal novo — é o artefato que sustenta o gate de saída.
+- Toda rodada produz `outputs/oof/<experiment_name>/<ts>/oof_predictions.csv` e o
+  `oof_metrics.json` (F1, AP, IC do bootstrap e o gate pareado vs `oof.baseline`) — é o
+  artefato que sustenta o gate de saída.
 - O public test só é avaliado **uma vez**, na Rodada 6 (consolidação) — nunca antes.
 - Submissão final: re-treino com todos os dados + holdout de 8%, checando que a taxa de
   positivos prevista no private fica em torno de 50–55% (mesma faixa do baseline atual).

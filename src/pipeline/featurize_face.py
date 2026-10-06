@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from src.data.windowing import load_window_index
 from src.features.face_mesh import FaceMeshExtractor
 from src.logger import get_logger
+from src.pipeline.featurize_columns import merge_window_columns
 
 log = get_logger("pipeline.featurize_face")
 
@@ -49,48 +50,26 @@ def run_featurize_face(cfg: DictConfig) -> dict[str, Any]:
     )
 
     video_root = Path(data.paths.data_root)
-    by_video: dict[str, list] = defaultdict(list)
-    for w in windows:
-        by_video[w.video_id].append(w)
+    by_video: dict[str, list[int]] = defaultdict(list)
+    for i, w in enumerate(windows):
+        by_video[w.video_id].append(i)
 
-    rows: list[dict[str, Any]] = []
+    landmarks: list[list[float] | None] = [None] * len(windows)
     try:
         from tqdm import tqdm
 
-        for _video_id, batch in tqdm(
+        for _video_id, idxs in tqdm(
             by_video.items(), desc="face_mesh", unit="video", total=len(by_video)
         ):
-            lm = extractor.extract(batch, video_root)
-            flat = extractor.flatten(lm)
-            for w, vec in zip(batch, flat, strict=True):
-                rows.append(
-                    {
-                        "id": w.video_id,
-                        "t0": float(w.t0),
-                        "t1": float(w.t1),
-                        "face_landmarks": vec.tolist(),
-                    }
-                )
+            flat = extractor.flatten(extractor.extract([windows[i] for i in idxs], video_root))
+            for i, vec in zip(idxs, flat, strict=True):
+                landmarks[i] = vec.tolist()
     finally:
         extractor.close()
 
-    face_df = pl.DataFrame(rows)
-    merged = df.join(face_df, on=["id", "t0", "t1"], how="left")
-    if merged.filter(pl.col("face_landmarks").is_null()).height:
-        n_miss = merged.filter(pl.col("face_landmarks").is_null()).height
-        log.warning(f"{n_miss} janelas sem face_landmarks após join — preenchendo com zeros.")
-        merged = merged.with_columns(
-            pl.when(pl.col("face_landmarks").is_null())
-            .then(pl.lit([0.0] * extractor.dim))
-            .otherwise(pl.col("face_landmarks"))
-            .alias("face_landmarks")
-        )
-
-    # Escrita atômica: o Parquet base (caro de recomputar) só é substituído quando o novo
-    # arquivo está completo — um crash no meio não corrompe o cache.
-    tmp_path = parquet_path.with_suffix(".face_tmp.parquet")
-    merged.write_parquet(tmp_path)
-    tmp_path.replace(parquet_path)
+    # Join por janela + zeros p/ janelas sem landmarks + escrita atômica (mesmo helper das
+    # colunas extras do plano MoE).
+    merge_window_columns(parquet_path, windows, {"face_landmarks": landmarks})
     log.info(f"face_landmarks gravado em {parquet_path} (d_face={extractor.dim}).")
 
     return {

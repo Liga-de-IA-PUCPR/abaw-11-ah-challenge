@@ -1,0 +1,15 @@
+# configs/audio_embedder/wav2vec2_emotion_large.yaml  (deep — emoção DIMENSIONAL, 1024-d)
+# Ramo de áudio do plano MoE ("wav2vec2-emotion + cabeça temporal [1024-d]"): wav2vec2-large
+# robusto fine-tunado em arousal/valence/dominance (MSP-Podcast). Carregado via AutoModel
+# (Wav2Vec2Model; a cabeça de regressão é ignorada) → last_hidden_state.mean(1).
+# Gravado como COLUNA extra (não substitui o audio_emb do cache):
+#   python main.py mode=featurize_columns "columns=[audio]" audio_embedder=wav2vec2_emotion_large
+#   → coluna audio_emb_wav2vec2_emotion_large
+name: wav2vec2_emotion_large
+backend: wav2vec2                      # factory: deep (AutoModel) — "hubert" não está no nome
+model_name: audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim
+sample_rate: 16000
+pooling: mean
+dim: 1024                              # informativo; o embedder lê do config do modelo
+normalize_waveform: true               # entrada média 0 / variância 1 (do_normalize do checkpoint)
+batch_size: 16

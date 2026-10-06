@@ -1,0 +1,14 @@
+# Áudio de emoção: wav2vec2-large (arousal/valence/dominance, 1024-d) por janela +
+# cabeça temporal (GRU bidirecional) + supervisão POR JANELA (rótulos de time_detailed_ah).
+# Outro embedder: model.branches.audio.column=audio_emb_<audio_embedder> (featurize_columns).
+role: residual
+encoder: sequence
+column: audio_emb_wav2vec2_emotion_large
+dim: 256
+norm: layer
+temporal: gru            # identity | gru | transformer (Mamba fora, decisão do plano)
+num_layers: 1
+pool: attention
+dropout: 0.3
+window_weight: 0.1       # BCE por janela (peso pequeno, como os termos auxiliares do RAS)
+aux_weight: 0.0

@@ -41,6 +41,16 @@ log = get_logger("outputs.submission")
 # ==============================================================================
 
 
+def read_reference_order(path: str | Path | None) -> list[str] | None:
+    """Ordem dos ``video_id`` do arquivo de referência do desafio (``trial-0.txt``); ``None``
+    sem referência. O validador oficial compara linha a linha, então a ordem importa."""
+    if not path:
+        return None
+    order = [ln.split(",")[0].strip() for ln in Path(path).read_text().splitlines() if ln.strip()]
+    log.info(f"Ordem da submissão vinda da referência: {path} ({len(order)} vídeos)")
+    return order
+
+
 def write_submission(
     video_preds: dict[str, int],
     path: str | Path,

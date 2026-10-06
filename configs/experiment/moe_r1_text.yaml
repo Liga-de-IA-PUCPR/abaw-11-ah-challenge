@@ -1,0 +1,31 @@
+# @package _global_
+# Rodada 1 — texto como âncora (membro UNIMODAL "texto fine-tune" do MoERouter):
+# RoBERTa-GoEmotions fine-tunado (4 camadas congeladas, CLS, R-Drop, label smoothing) +
+# 11 marcadores de hesitação com cabeça auxiliar (peso 0.3). Gate: OOF AP ≥ 0.80.
+# Pré-requisito: make featurize-moe (colunas transcript + hesitation_markers).
+defaults:
+  - /branch@model.branches.text: text_goemotions
+  - /branch@model.branches.markers: hesitation_markers
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-r1-text
+
+model:
+  fusion:
+    head: mlp
+    dropout: 0.1
+  loss:
+    label_smoothing: 0.1
+    rdrop_alpha: 4.0
+  optim:
+    lr: 1e-3
+    lr_backbone: 2e-5
+    weight_decay: 0.01
+
+data:
+  batch_size: 16
+
+trainer:
+  max_epochs: 8
+  patience: 3

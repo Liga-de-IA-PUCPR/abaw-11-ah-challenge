@@ -9,7 +9,8 @@
     (p/ recomputar/casar as features na inferência).
 
 Layout em disco (espelha o padrão da branch ``matheus`` e do visionT):
-    outputs/{model_name}/{timestamp}/
+    outputs/{model_name}/{timestamp}/    (= hydra.run.dir do mode=train, ver hydra_run_dir)
+    ├── .hydra/ + main.log       (Hydra: config composta, overrides, log do run)
     ├── bundle.joblib            (RF)            ── OU ──   checkpoints/best-*.ckpt  (neural)
     ├── sidecar.json             (neural: threshold + embedder_cfg + config)
     ├── metrics.json             (Reporter)
@@ -251,6 +252,31 @@ def resolve_output_dir(
     """
     ts = timestamp or datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
     return Path(output_root) / model_name / ts
+
+
+def hydra_run_dir() -> Path | None:
+    """Pasta do run Hydra em curso (``hydra.run.dir``), ou ``None`` fora do ``@hydra.main``.
+
+    Em ``python main.py mode=<train|oof|route>`` o Hydra já cria a pasta do run pelo
+    ``run_dirs`` de ``configs/config.yaml`` (com ``.hydra/`` + ``main.log`` dentro) e o modo
+    grava os artefatos NELA — um run = uma pasta. ``None`` no multirun (o Hydra usa
+    ``outputs/multirun/…``), no ``compose`` dos testes e fora do Hydra: o chamador cai no
+    caminho calculado por ele (mesmo layout). Relativa ao cwd quando possível (logs/paths
+    portáveis, como antes).
+    """
+    from hydra.core.hydra_config import HydraConfig
+    from hydra.types import RunMode
+
+    if not HydraConfig.initialized():
+        return None
+    hc = HydraConfig.get()
+    if hc.mode != RunMode.RUN or not hc.runtime.output_dir:
+        return None
+    out = Path(hc.runtime.output_dir)
+    try:
+        return out.relative_to(Path.cwd())
+    except ValueError:
+        return out
 
 
 def resolve_latest_checkpoint(

@@ -1,0 +1,19 @@
+# @package _global_
+# Membro UNIMODAL "ASR-erased time" do MoERouter: só os 16 gaps do Whisper (âncora).
+defaults:
+  - /branch@model.branches.asr: asr_timing
+  - override /model: moe_fusion
+  - override /trainer: lightning
+
+experiment_name: moe-unimodal-asr
+
+model:
+  branches:
+    asr:
+      role: anchor
+  fusion:
+    head: mlp
+
+trainer:
+  max_epochs: 60
+  patience: 12
