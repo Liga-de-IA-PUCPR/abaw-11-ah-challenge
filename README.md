@@ -547,6 +547,11 @@ make route MEMBERS="outputs/oof/moe-r5-face/<ts> outputs/oof/moe-r1-text/<ts> ..
 The final retrain (Round 6) uses `data.train_splits=[train,val,test] data.calib_split=holdout`
 (8% participant-wise holdout, `data.holdout_frac`).
 
+Comparison with the paper model, all on the same OOF folds: `cross_attention_video` (the paper's
+cross-attention + the face crops fused per window, via the opt-in `model.extra_columns`),
+`moe_luiz_features` (the MoE architecture with the paper's librosa audio and RoBERTa-emotion text),
+and `make oof-compare A=<oof run> B=<oof run>` for the paired gate between any two runs.
+
 ---
 
 ## 10. Project structure

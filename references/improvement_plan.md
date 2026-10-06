@@ -105,6 +105,22 @@ modelo único: re-treino com holdout, com o ramo de texto re-treinado nos mesmos
 data.calib_split=holdout` e depois `mode=submit split=test` com
 `data.paths.parquet_path=data/processed/external_windows.parquet`.
 
+### Comparação com o cross-attention do artigo (Luiz × Rodrigo)
+
+Todos os runs no mesmo protocolo OOF (mesmas dobras) → qualquer par se compara depois com
+`make oof-compare A=<run> B=<run>` (ΔF1@τ e ΔAP com IC por bootstrap pareado).
+
+| Experimento | Preset | O que muda |
+|---|---|---|
+| referência: cross-attention do artigo | `cross_attention` | — |
+| baseline do Rodrigo (arquitetura MoE completa) | `moe_r5_face` (texto da `moe_r1_text`, `TEXT_RUN`) | arquitetura + features dele |
+| artigo + vídeo do Rodrigo | `cross_attention_video` | `model.extra_columns=[face_crops_…]`: recortes faciais fundidos por token antes do pooling (opt-in; sem a coluna o modelo do artigo fica idêntico) |
+| MoE com áudio/texto do artigo + vídeo dele | `moe_luiz_features` | `moe_r5_face` com librosa 320 (`audio_emb`) e RoBERTa-emotion congelado (`text_emb`) no lugar de wav2vec2-emotion e GoEmotions |
+| ensemble dos baselines | `make route MEMBERS="<artigo> <moe_r5_face>"` | roteador + média simples, com gate vs o melhor membro |
+
+`featurize-moe-audio` e `featurize-moe-face` podem rodar ao mesmo tempo (uma GPU cada): o merge
+de colunas no Parquet é feito sob trava de arquivo e relê o arquivo antes de gravar.
+
 ### Decisões de implementação (desvios do texto do plano)
 
 - **SoftMoE local, não importado da `vision-toolbelt-liga`.** Mesma formulação (router
