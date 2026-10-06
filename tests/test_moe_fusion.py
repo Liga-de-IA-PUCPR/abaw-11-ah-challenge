@@ -52,6 +52,14 @@ def test_stats_pool_is_mu_sigma_and_deltas():
     torch.testing.assert_close(dmu, x[0, 1] - x[0, 0])  # 1 par válido
 
 
+def test_stats_pool_grad_is_finite_for_short_videos():
+    """T=1 e T=2 têm variância 0: sem piso, a raiz dá gradiente NaN e envenena o treino."""
+    x = _seq(b=3, t=4).requires_grad_()
+    mask = torch.tensor([[False, True, True, True], [False, False, True, True], [False] * 4])
+    StatsPool()(x, mask).sum().backward()
+    assert torch.isfinite(x.grad).all()
+
+
 @pytest.mark.parametrize("kind", ["gru", "transformer"])
 def test_temporal_encoder_valid_steps_ignore_padding(kind):
     enc = TemporalEncoder(kind, dim=4, num_heads=2, dropout=0.0).eval()

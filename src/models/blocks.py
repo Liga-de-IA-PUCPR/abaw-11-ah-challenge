@@ -86,12 +86,15 @@ class StatsPool(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
         valid = _valid(mask, x)
         mu = masked_mean(x, mask)
-        sigma = (((x - mu.unsqueeze(1)) ** 2 * valid).sum(1) / valid.sum(1).clamp_min(1.0)).sqrt()
+        var = ((x - mu.unsqueeze(1)) ** 2 * valid).sum(1) / valid.sum(1).clamp_min(1.0)
         dx = x[:, 1:] - x[:, :-1]
         dvalid = valid[:, 1:] * valid[:, :-1]  # par (t, t+1) só se ambas são reais
         n = dvalid.sum(1).clamp_min(1.0)
         dmu = (dx * dvalid).sum(1) / n
-        dsigma = (((dx - dmu.unsqueeze(1)) ** 2 * dvalid).sum(1) / n).sqrt()
+        dvar = ((dx - dmu.unsqueeze(1)) ** 2 * dvalid).sum(1) / n
+        # Piso antes da raiz: vídeos com T ≤ 2 têm variância 0 e sqrt(0) tem gradiente
+        # infinito (0·∞ = NaN) — um vídeo curto no lote envenenava todos os pesos.
+        sigma, dsigma = var.clamp_min(1e-6).sqrt(), dvar.clamp_min(1e-6).sqrt()
         return torch.cat([mu, sigma, dmu, dsigma], dim=-1)
 
 
