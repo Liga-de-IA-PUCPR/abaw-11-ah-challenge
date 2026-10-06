@@ -19,7 +19,7 @@ houver — ``oof_embeddings.npy`` (vetor pré-logit) e ``pred_<split>_folds.npz`
    (``out``, ``submission_reference``, ``submission_probabilities``, τ fixo).
 
 Saída em ``outputs/route/<route.name>/<timestamp>/`` (a pasta do run Hydra, com ``.hydra/`` e
-``main.log``): ``route_oof.csv``, ``route_metrics.json``, ``pred_<nome>.csv`` e, se
+``main.log``): ``route_oof.csv``, ``route_metrics.json``, ``plots/``, ``pred_<nome>.csv`` e, se
 pedida, a submissão.
 """
 
@@ -42,7 +42,7 @@ from src.eval.protocol import (
 from src.logger import get_logger
 from src.models.moe_router import MoERouter, RouterInputs, to_logit
 from src.outputs.checkpoint import hydra_run_dir
-from src.pipeline.oof import _metrics, _timestamp
+from src.pipeline.oof import _metrics, _timestamp, save_plots
 
 log = get_logger("pipeline.route")
 
@@ -105,6 +105,7 @@ def run_route(cfg: DictConfig) -> dict[str, Any]:
     if r.get("submit_split"):
         report["submission"] = str(write_route_submission(cfg, preds, str(r.submit_split), out_dir))
     (out_dir / "route_metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    save_plots(out_dir, y, proba, tau)
     _log_summary(report)
     return {"out_dir": str(out_dir), **report["router"]}
 

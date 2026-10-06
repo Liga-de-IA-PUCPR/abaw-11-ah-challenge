@@ -34,6 +34,15 @@ def test_oof_sklearn_covers_every_video_once_and_gates(compose_cfg, window_parqu
     assert (preds.groupby("participant_id")["fold"].nunique() == 1).all()
     test = pd.read_csv(first / "pred_test.csv")
     assert len(test) == len(video_table(window_parquet, ["test"]))
+    # plots/ do run (como no evaluate) — e regeneráveis depois do fato (make oof-plots)
+    plots = {f.name for f in (first / "plots").iterdir()}
+    assert {"confusion_matrix_video.png", "roc_curve.png", "precision_recall.png",
+            "threshold_calibration.png"} <= plots  # fmt: skip
+    from src.pipeline.oof import plot_run
+
+    for f in (first / "plots").iterdir():
+        f.unlink()
+    assert {f.name for f in plot_run(first).iterdir()} == plots
 
     # mesmo modelo contra si mesmo → Δ = 0 → empate
     again = run_oof(compose_cfg(*overrides, f"oof.baseline={first}"))["out_dir"]
@@ -105,6 +114,7 @@ def test_route_combines_members_on_their_folds(compose_cfg, tmp_path):
     assert sum(report["usage"].values()) == pytest.approx(1.0)
     assert len(pd.read_csv(out / "route_oof.csv")) == n
     assert len(pd.read_csv(out / "pred_test.csv")) == 6
+    assert (out / "plots" / "roc_curve.png").exists()
 
 
 def test_route_rejects_members_with_different_folds(compose_cfg, tmp_path):

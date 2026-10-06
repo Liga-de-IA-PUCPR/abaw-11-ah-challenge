@@ -20,7 +20,7 @@ na CLI: o Hydra lê ``{`` como início de dict).
 
 Saída em ``outputs/oof/<experiment_name>/<timestamp>/`` (a pasta do run Hydra, com ``.hydra/``
 e ``main.log``): ``oof_predictions.csv``, ``oof_embeddings.npy`` (linhas = csv),
-``oof_metrics.json``, ``pred_<nome>.csv`` (+
+``oof_metrics.json``, ``plots/`` (:func:`save_plots`), ``pred_<nome>.csv`` (+
 ``pred_<nome>_folds.npz``, por split/Parquet extra) e ``fold<k>/`` (run dir de cada dobra).
 """
 
@@ -97,6 +97,7 @@ def run_oof(cfg: DictConfig) -> dict[str, Any]:
 
     report = _report(cfg, videos, per_fold)
     (out_dir / "oof_metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    save_plots(out_dir, videos["label"].to_numpy(), proba, float(o.threshold))
     _log_summary(report)
     return {"out_dir": str(out_dir), **{k: report[k] for k in ("macro_f1", "ap")}}
 
@@ -252,6 +253,47 @@ def _format_fold(cfg: DictConfig, fold: int) -> DictConfig:
         return node.replace("{fold}", str(fold)) if isinstance(node, str) else node
 
     return OmegaConf.create(fmt(OmegaConf.to_container(cfg, resolve=True)))
+
+
+def save_plots(out_dir: Path, y: np.ndarray, proba: np.ndarray, threshold: float) -> None:
+    """``plots/`` do run, os mesmos do evaluate: matriz de confusão com τ, ROC, PR e a curva
+    limiar × Macro-F1 com o τ fixo marcado. Roda depois das predições/métricas gravadas e
+    nunca derruba o run (horas de GPU) — falha vira aviso."""
+    from src.outputs.reporter import Reporter
+    from src.training.aggregation import threshold_curve
+
+    try:
+        rep = Reporter(out_dir)
+        rep.plot_confusion_matrix(y, (proba >= threshold).astype(int))
+        rep.plot_roc_curve(y, proba)
+        rep.plot_precision_recall(y, proba)
+        grid, f1s = threshold_curve(y, proba)
+        rep.plot_threshold_curve(
+            grid,
+            f1s,
+            threshold,
+            label="τ fixo",
+            ylabel="Macro-F1 (OOF, nível de vídeo)",
+            title="Limiar × Macro-F1 (OOF)",
+        )
+    except Exception as exc:  # noqa: BLE001 — plots nunca derrubam o run
+        log.warning(f"Plots pulados em {out_dir}: {exc}")
+
+
+def plot_run(run_dir: str | Path) -> Path:
+    """(Re)gera ``plots/`` de um run OOF ou route já gravado (ex.: runs de antes dos plots)."""
+    run_dir = Path(run_dir)
+    for preds, metrics in (
+        ("oof_predictions.csv", "oof_metrics.json"),
+        ("route_oof.csv", "route_metrics.json"),
+    ):
+        if (run_dir / preds).exists():
+            df = pd.read_csv(run_dir / preds)
+            m = run_dir / metrics
+            tau = json.loads(m.read_text()).get("threshold", 0.5) if m.exists() else 0.5
+            save_plots(run_dir, df["y_true"].to_numpy(), df["y_proba"].to_numpy(), float(tau))
+            return run_dir / "plots"
+    raise FileNotFoundError(f"{run_dir}: sem oof_predictions.csv nem route_oof.csv")
 
 
 def _finish_wandb() -> None:

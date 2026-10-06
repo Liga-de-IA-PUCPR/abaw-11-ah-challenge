@@ -329,8 +329,14 @@ class Reporter:
         thresholds: np.ndarray,
         scores: np.ndarray,
         best_threshold: float,
+        label: str = "limiar*",
+        ylabel: str = "Macro-F1 (validação, nível de vídeo)",
+        title: str = "Calibração do limiar × Macro-F1",
     ) -> Path | None:
-        """Curva limiar × Macro-F1 da calibração (``training.aggregation`` / sigmoid)."""
+        """Curva limiar × Macro-F1 da calibração (``training.aggregation`` / sigmoid).
+
+        ``label``/``ylabel``/``title`` adaptam o plot a outro uso (ex.: OOF com τ fixo).
+        """
         try:
             import matplotlib.pyplot as plt
         except ImportError as exc:  # pragma: no cover
@@ -347,12 +353,12 @@ class Reporter:
             color="#4C72B0",
             ls="--",
             lw=1.5,
-            label=f"limiar* = {best_threshold:.3f}",
+            label=f"{label} = {best_threshold:.3f}",
         )
         ax.scatter([best_threshold], [scores[best_idx]], color="#4C72B0", zorder=5)
         ax.set_xlabel("Limiar de decisão")
-        ax.set_ylabel("Macro-F1 (validação, nível de vídeo)")
-        ax.set_title("Calibração do limiar × Macro-F1")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         ax.legend(loc="lower center")
         fig.tight_layout()
         path = self.plots_dir / "threshold_calibration.png"

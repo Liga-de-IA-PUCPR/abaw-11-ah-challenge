@@ -107,7 +107,7 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
         meta-router featurize-moe featurize-moe-audio featurize-moe-face featurize-moe-scene \
-        oof oof-compare route \
+        oof oof-compare oof-plots route \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -161,6 +161,7 @@ help:
 	@echo "    featurize-moe-scene  optional scene column (MOE_SCENE=$(MOE_SCENE); videomae_v2 = VideoMAE-v2)"
 	@echo "    oof              OOF protocol of EXPERIMENT (+ gate vs BASELINE=<oof run>)"
 	@echo "    oof-compare      paired gate between any two OOF runs: A=<oof run> B=<oof run>"
+	@echo "    oof-plots        plots/ of saved OOF/route runs (RUN_DIR=\"<run> ...\"; default: runs without plots/)"
 	@echo "    route            MoERouter over MEMBERS=\"<oof run> ...\""
 	@echo ""
 	@echo "  Quality (CI/CD):"
@@ -404,6 +405,11 @@ oof:
 oof-compare:
 	@test -n "$(A)" -a -n "$(B)" || (echo "Set A=<oof run> B=<oof run>"; exit 1)
 	$(PY) scripts/oof_compare.py $(A) $(B)
+
+# plots/ (confusion@τ, ROC, PR, threshold×F1) of saved OOF/route runs — nothing is retrained.
+# RUN_DIR="<run> <run> ..."; empty = every outputs/oof/*/* and outputs/route/*/* without plots/.
+oof-plots:
+	$(PY) scripts/oof_plots.py $(RUN_DIR)
 
 # MoERouter over OOF runs (same folds): evaluated on the members' folds + final prediction.
 route:

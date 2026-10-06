@@ -602,14 +602,17 @@ outputs/
 ├── oof/<experiment_name>/<YYYYMMDD_HHMMSS>/  # one OOF run (mode=oof)
 │   ├── .hydra/ + main.log
 │   ├── oof_predictions.csv · oof_metrics.json · pred_<split>.csv
+│   ├── plots/                              #   confusion@τ, ROC, PR, threshold × Macro-F1
 │   └── fold<k>/                            #   checkpoints/, trainer_state.json, wandb/ of each fold
-├── route/<route.name>/<YYYYMMDD_HHMMSS>/   # MoERouter (mode=route): route_*.csv/json
+├── route/<route.name>/<YYYYMMDD_HHMMSS>/   # MoERouter (mode=route): route_*.csv/json, plots/
 ├── logs/<mode>/<YYYYMMDD_HHMMSS>/          # .hydra/ + main.log of preprocess, featurize*, evaluate, submit
 ├── multirun/<YYYYMMDD_HHMMSS>/<n>/         # -m sweeps: Hydra files (artifacts still in <model>/<ts>)
 ├── cross_attention/ensemble_manifest.txt   # run dirs of the last `make train-ensemble`
 ├── cross_attention/ensemble_<n>/eval_test/ # ensemble reports
 └── submission.txt                          # `make submit` (OUT=<file>; format: src/outputs/submission.py)
 ```
+
+`make oof-plots` (re)generates `plots/` of OOF/route runs saved before the plots existed.
 
 ### 11.1 Versioned archive on the Hugging Face Hub
 
