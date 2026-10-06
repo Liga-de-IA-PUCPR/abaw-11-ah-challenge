@@ -40,6 +40,11 @@ def test_oof_sklearn_covers_every_video_once_and_gates(compose_cfg, window_parqu
     gate = json.loads((Path(again) / "oof_metrics.json").read_text())["gate"]
     assert gate["macro_f1"]["observed_diff"] == pytest.approx(0.0)
     assert gate["verdict"] == "empate"
+    # o mesmo gate entre dois runs quaisquer, depois do fato (make oof-compare)
+    from src.pipeline.oof import compare_runs
+
+    pair = compare_runs(again, first, n_boot=20)
+    assert pair["verdict"] == "empate" and pair["n_paired"] == len(videos)
 
 
 def _fake_member(

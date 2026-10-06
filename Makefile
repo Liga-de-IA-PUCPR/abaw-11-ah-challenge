@@ -107,7 +107,7 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
         meta-router featurize-moe featurize-moe-audio featurize-moe-face featurize-moe-scene \
-        oof route \
+        oof oof-compare route \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -160,6 +160,7 @@ help:
 	@echo "    featurize-moe-face   face/eyes/mouth column (MOE_VISION=$(MOE_VISION))"
 	@echo "    featurize-moe-scene  optional scene column (MOE_SCENE=$(MOE_SCENE); videomae_v2 = VideoMAE-v2)"
 	@echo "    oof              OOF protocol of EXPERIMENT (+ gate vs BASELINE=<oof run>)"
+	@echo "    oof-compare      paired gate between any two OOF runs: A=<oof run> B=<oof run>"
 	@echo "    route            MoERouter over MEMBERS=\"<oof run> ...\""
 	@echo ""
 	@echo "  Quality (CI/CD):"
@@ -398,6 +399,11 @@ oof:
 	$(MPS_FALLBACK) $(PY) $(MAIN) mode=oof $(_EXP) device=$(DEVICE) \
 	  $(if $(BASELINE),oof.baseline=$(BASELINE)) \
 	  $(if $(TEXT_RUN),"model.branches.text.init_from='$(TEXT_RUN)/fold{fold}'") $(ARGS)
+
+# Paired gate between ANY two OOF runs with the same folds (A − B): ΔMacro-F1@τ and ΔAP.
+oof-compare:
+	@test -n "$(A)" -a -n "$(B)" || (echo "Set A=<oof run> B=<oof run>"; exit 1)
+	$(PY) scripts/oof_compare.py $(A) $(B)
 
 # MoERouter over OOF runs (same folds): evaluated on the members' folds + final prediction.
 route:

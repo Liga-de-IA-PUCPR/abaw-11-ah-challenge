@@ -187,6 +187,15 @@ def gate(videos: pd.DataFrame, baseline_dir: Path, threshold: float, n_boot: int
     }
 
 
+def compare_runs(
+    run_a: str | Path, run_b: str | Path, threshold: float = 0.5, n_boot: int = 1000
+) -> dict[str, Any]:
+    """Gate pareado entre dois runs OOF quaisquer (A − B) nos vídeos em comum — ex.: o MoE
+    contra o cross-attention do artigo. Exige as mesmas dobras (mesma ``oof.seed``)."""
+    videos = pd.read_csv(Path(run_a) / "oof_predictions.csv").rename(columns={"y_true": "label"})
+    return {"run": str(run_a), **gate(videos, Path(run_b), threshold, n_boot)}
+
+
 # ==============================================================================
 # Helpers
 # ==============================================================================
