@@ -191,3 +191,33 @@ def test_route_measure_requires_the_split_prediction(compose_cfg, tmp_path):
                       "route.measure_splits=[val]")  # fmt: skip
     with pytest.raises(ValueError, match="predict_splits"):
         run_route(cfg)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        (["mode=oof", "+experiment=moe_r1_text"], "oof/moe-r1-text"),
+        (["mode=oof", "experiment_name=exp0"], "oof/exp0"),
+        (["mode=train", "+experiment=cross_attention"], "cross_attention"),
+        (["mode=route"], "route/moe_router"),
+        (["mode=featurize_columns"], "logs/featurize_columns"),
+        (["mode=evaluate"], "logs/evaluate"),
+    ],
+)
+def test_hydra_run_dir_is_the_run_folder_of_each_mode(overrides, expected):
+    """O Hydra grava .hydra/ + main.log NA pasta onde o modo grava os artefatos."""
+    from hydra import compose, initialize_config_dir
+
+    from tests.conftest import CONFIGS
+
+    with initialize_config_dir(config_dir=str(CONFIGS), version_base=None):
+        cfg = compose("config", overrides=overrides, return_hydra_config=True)
+        run_dir = Path(str(cfg.hydra.run.dir))
+    assert run_dir.parent == Path("outputs") / expected
+    assert len(run_dir.name) == len("20261006_120000")
+
+
+def test_hydra_run_dir_is_none_outside_a_hydra_run():
+    from src.outputs.checkpoint import hydra_run_dir
+
+    assert hydra_run_dir() is None

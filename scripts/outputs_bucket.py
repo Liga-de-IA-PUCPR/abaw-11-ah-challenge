@@ -89,7 +89,7 @@ from huggingface_hub.utils import disable_progress_bars
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: Raiz local default: ``data.paths.output_root`` (configs/data/default.yaml), o
-#: ``hydra.run.dir`` (configs/config.yaml) e o W&B gravam em ``outputs/`` do repositório.
+#: ``hydra.run.dir`` (``run_dirs`` em configs/config.yaml) e o W&B gravam em ``outputs/`` do repositório.
 DEFAULT_LOCAL_ROOT = REPO_ROOT / "outputs"
 
 #: Raiz RESERVADA no bucket: ``<versão>/manifest.json`` (o registro de cada push) e

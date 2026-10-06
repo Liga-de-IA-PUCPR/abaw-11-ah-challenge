@@ -18,6 +18,14 @@ mode: "train"                        # train | preprocess | featurize | featuriz
                                      # | hard_mining (lightning) | featurize_columns | oof | route
 experiment_name: "abaw-ah"
 
+# Pasta de cada run sob data.paths.output_root, por modo: o Hydra grava .hydra/ (config +
+# overrides) e main.log NELA, e o modo grava os artefatos na MESMA pasta (um run = uma pasta).
+# Modos sem artefato próprio (preprocess, featurize*, evaluate, submit, hard_mining) → logs/<mode>.
+run_dirs:
+  train: ${model.name}               # outputs/<modelo>/<ts> (checkpoints, trainer_state.json)
+  oof: oof/${experiment_name}        # outputs/oof/<exp>/<ts> (fold<k>/, oof_*.csv/json, plots/)
+  route: route/${route.name}         # outputs/route/<nome>/<ts>
+
 # Overrides opcionais de CLI por modo (evaluate/submit). null = default do handler
 # (split: val em evaluate / test em submit; checkpoint: bundle mais recente em outputs/).
 split: null                          # train | val | test
@@ -76,7 +84,7 @@ hydra:
   launcher:
     n_jobs: 1                        # multirun: -m hydra.launcher.n_jobs=4
   run:
-    dir: outputs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
-  sweep:
-    dir: outputs/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${data.paths.output_root}/${oc.select:run_dirs.${mode},logs/${mode}}/${now:%Y%m%d_%H%M%S}
+  sweep:                             # multirun (-m): .hydra/ aqui, artefatos em <run_dirs>/<ts>
+    dir: ${data.paths.output_root}/multirun/${now:%Y%m%d_%H%M%S}
     subdir: ${hydra.job.num}

@@ -136,7 +136,7 @@ def _run_train(cfg: DictConfig, device) -> int:
     """``mode=train`` — treina + calibra limiar + salva checkpoint (FASE 4/5)."""
     import src.models  # noqa: F401  — dispara os decorators @register_model
     from src.data.datasets import load_train_val
-    from src.outputs.checkpoint import resolve_output_dir
+    from src.outputs.checkpoint import hydra_run_dir, resolve_output_dir
 
     trainer, family = _build_trainer(cfg, device)
 
@@ -151,8 +151,9 @@ def _run_train(cfg: DictConfig, device) -> int:
 
     # Resolve o run dir ANTES do fit: o ModelCheckpoint do Lightning grava o .ckpt
     # DENTRO deste dir (junto do trainer_state.json), então evaluate/submit resolvem
-    # UM só diretório. O SklearnTrainer ignora self.output_dir.
-    out_dir = resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
+    # UM só diretório — o do run Hydra (outputs/<modelo>/<ts>, junto de .hydra/ + main.log).
+    # O SklearnTrainer ignora self.output_dir.
+    out_dir = hydra_run_dir() or resolve_output_dir(cfg.data.paths.output_root, cfg.model.name)
     trainer.output_dir = str(out_dir)
 
     result = trainer.fit(train_data, val_data)

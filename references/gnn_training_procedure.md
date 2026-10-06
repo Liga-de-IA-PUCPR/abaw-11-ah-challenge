@@ -475,7 +475,7 @@ Requer `data/raw/Videos/**/*.mp4` (mesmos paths do índice).
 ## Logging de experimentos
 
 O treino neural usa **Weights & Biases** (`wandb`, config `wandb.mode`) — **não** MLflow local.
-Checkpoints e métricas ficam em `outputs/<experiment_name>/...` (`.ckpt` + `trainer_state.json`).
+Checkpoints e métricas ficam em `outputs/<model>/<ts>/` (`.ckpt` + `trainer_state.json`, junto de `.hydra/` + `main.log`).
 
 Para desligar W&B: `wandb.mode=disabled`.
 

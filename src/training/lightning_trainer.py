@@ -94,15 +94,23 @@ class LightningTrainer(BaseTrainer):
 
         tcfg = self._cfg_block("trainer")
         wcfg = self._cfg_block("wandb")
-        # save_dir sob output_root (gitignored) — mantém logs/ckpts fora da raiz do repo.
+        # save_dir = o run dir (<run>/wandb/, no OOF <run>/fold<k>/wandb/): cada run W&B fica
+        # junto do run que o gerou. Sem run dir, sob output_root (gitignored).
         try:
             out_root = str(self.config.data.paths.output_root)
         except Exception:  # noqa: BLE001
             out_root = "outputs"
+        save_dir = self.output_dir or out_root
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        try:  # nome do run W&B = o run dir (ex.: oof/moe-r1-text/<ts>/fold0)
+            run_name = str(Path(save_dir).relative_to(out_root)) if self.output_dir else None
+        except ValueError:
+            run_name = None
         wandb_logger = WandbLogger(
             project=wcfg.get("project", "abaw-ah"),
+            name=run_name,
             mode=wcfg.get("mode", "online"),  # online|offline|disabled
-            save_dir=out_root,
+            save_dir=save_dir,
             log_model=True,
         )
         # Critério de seleção do checkpoint/early-stop. Default = val_ap (AP, livre de

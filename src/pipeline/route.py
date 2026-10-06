@@ -18,8 +18,9 @@ houver — ``oof_embeddings.npy`` (vetor pré-logit) e ``pred_<split>_folds.npz`
    × cada membro × média); ``route.submit_split=external`` escreve a submissão oficial
    (``out``, ``submission_reference``, ``submission_probabilities``, τ fixo).
 
-Saída em ``outputs/route/<route.name>/<timestamp>/``: ``route_oof.csv``, ``route_metrics.json``,
-``pred_<nome>.csv`` e, se pedida, a submissão.
+Saída em ``outputs/route/<route.name>/<timestamp>/`` (a pasta do run Hydra, com ``.hydra/`` e
+``main.log``): ``route_oof.csv``, ``route_metrics.json``, ``pred_<nome>.csv`` e, se
+pedida, a submissão.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from src.eval.protocol import (
 )
 from src.logger import get_logger
 from src.models.moe_router import MoERouter, RouterInputs, to_logit
+from src.outputs.checkpoint import hydra_run_dir
 from src.pipeline.oof import _metrics, _timestamp
 
 log = get_logger("pipeline.route")
@@ -54,7 +56,9 @@ def run_route(cfg: DictConfig) -> dict[str, Any]:
     table, inputs = load_members(members, bool(r.use_embeddings))
     names = [f"{m.parent.name}/{m.name}" for m in members]
     y, folds, tau = table["y_true"].to_numpy(), table["fold"].to_numpy(), float(r.threshold)
-    out_dir = Path(cfg.data.paths.output_root) / "route" / str(r.name) / _timestamp()
+    out_dir = hydra_run_dir() or (
+        Path(cfg.data.paths.output_root) / "route" / str(r.name) / _timestamp()
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     proba = np.zeros(len(table))

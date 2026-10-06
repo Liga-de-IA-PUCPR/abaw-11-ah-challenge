@@ -18,8 +18,9 @@ texto fine-tunado da MESMA dobra da Rodada 1:
 ``"model.branches.text.init_from='outputs/oof/moe-r1-text/<ts>/fold{fold}'"`` (entre aspas
 na CLI: o Hydra lê ``{`` como início de dict).
 
-Saída em ``outputs/oof/<experiment_name>/<timestamp>/``: ``oof_predictions.csv``,
-``oof_embeddings.npy`` (linhas = csv), ``oof_metrics.json``, ``pred_<nome>.csv`` (+
+Saída em ``outputs/oof/<experiment_name>/<timestamp>/`` (a pasta do run Hydra, com ``.hydra/``
+e ``main.log``): ``oof_predictions.csv``, ``oof_embeddings.npy`` (linhas = csv),
+``oof_metrics.json``, ``pred_<nome>.csv`` (+
 ``pred_<nome>_folds.npz``, por split/Parquet extra) e ``fold<k>/`` (run dir de cada dobra).
 """
 
@@ -43,6 +44,7 @@ from src.eval.protocol import (
     paired_bootstrap_macro_f1,
 )
 from src.logger import get_logger
+from src.outputs.checkpoint import hydra_run_dir
 
 log = get_logger("pipeline.oof")
 
@@ -56,7 +58,9 @@ def run_oof(cfg: DictConfig) -> dict[str, Any]:
     family = get_family(str(cfg.model.name))
     videos = video_table(cfg.data.paths.parquet_path, list(o.splits))
     folds = make_group_folds(videos, n_splits=int(o.n_splits), seed=int(o.seed))
-    out_dir = Path(cfg.data.paths.output_root) / "oof" / str(cfg.experiment_name) / _timestamp()
+    out_dir = hydra_run_dir() or (
+        Path(cfg.data.paths.output_root) / "oof" / str(cfg.experiment_name) / _timestamp()
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info(f"OOF de '{cfg.model.name}' ({family}): {len(videos)} vídeos → {out_dir}")
 
@@ -132,9 +136,9 @@ def _run_fold(cfg, k, videos, folds, pool, extra, family, out_dir):
 
     out = predict(pool.subset(set(test_ids)))
     order = pd.Index(out["video_ids"]).get_indexer(test_ids)
-    return {key: value[order] for key, value in out.items()}, {
-        s: predict(v) for s, v in extra.items()
-    }
+    extra_out = {s: predict(v) for s, v in extra.items()}
+    _finish_wandb()
+    return {key: value[order] for key, value in out.items()}, extra_out
 
 
 def _report(cfg: DictConfig, videos: pd.DataFrame, per_fold: list[dict]) -> dict[str, Any]:
@@ -248,6 +252,17 @@ def _format_fold(cfg: DictConfig, fold: int) -> DictConfig:
         return node.replace("{fold}", str(fold)) if isinstance(node, str) else node
 
     return OmegaConf.create(fmt(OmegaConf.to_container(cfg, resolve=True)))
+
+
+def _finish_wandb() -> None:
+    """Fecha o run W&B da dobra: senão a dobra seguinte REUSA o run aberto (o WandbLogger
+    adota o ``wandb.run`` ativo) e as 5 dobras gravam no mesmo run, em ``fold0/wandb``."""
+    try:
+        import wandb
+    except ImportError:
+        return
+    if wandb.run is not None:
+        wandb.finish()
 
 
 def _timestamp() -> str:

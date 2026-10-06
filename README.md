@@ -587,18 +587,27 @@ and `make oof-compare A=<oof run> B=<oof run>` for the paired gate between any t
 
 ## 11. Outputs & submission
 
-Everything a run produces lands in `outputs/` (git-ignored):
+Everything a run produces lands in `outputs/` (git-ignored), **one folder per run**: the Hydra
+run dir (`run_dirs` in `configs/config.yaml`) is the folder where the mode writes its
+artifacts, so `.hydra/` (composed config + overrides) and `main.log` sit next to them:
 
 ```
 outputs/
-├── <model>/<YYYYMMDD_HHMMSS>/              # one training run
+├── <model>/<YYYYMMDD_HHMMSS>/              # one training run (mode=train)
+│   ├── .hydra/ + main.log                  #   config, overrides, log of the run
 │   ├── checkpoints/best-*.ckpt             #   Lightning weights (RF/LightGBM: model.joblib)
 │   ├── trainer_state.json                  #   threshold + model config, written when training ENDS
+│   ├── wandb/                              #   W&B run (offline: `wandb sync <run>/wandb/offline-run-*`)
 │   └── eval_<split>/                       #   metrics.json, predictions.csv, results.txt, plots/
+├── oof/<experiment_name>/<YYYYMMDD_HHMMSS>/  # one OOF run (mode=oof)
+│   ├── .hydra/ + main.log
+│   ├── oof_predictions.csv · oof_metrics.json · pred_<split>.csv
+│   └── fold<k>/                            #   checkpoints/, trainer_state.json, wandb/ of each fold
+├── route/<route.name>/<YYYYMMDD_HHMMSS>/   # MoERouter (mode=route): route_*.csv/json
+├── logs/<mode>/<YYYYMMDD_HHMMSS>/          # .hydra/ + main.log of preprocess, featurize*, evaluate, submit
+├── multirun/<YYYYMMDD_HHMMSS>/<n>/         # -m sweeps: Hydra files (artifacts still in <model>/<ts>)
 ├── cross_attention/ensemble_manifest.txt   # run dirs of the last `make train-ensemble`
 ├── cross_attention/ensemble_<n>/eval_test/ # ensemble reports
-├── <experiment_name>/<date_time>/          # Hydra logs (.hydra/ + main.log)
-├── wandb/                                  # W&B runs
 └── submission.txt                          # `make submit` (OUT=<file>; format: src/outputs/submission.py)
 ```
 
