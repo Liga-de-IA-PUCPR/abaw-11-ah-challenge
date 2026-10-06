@@ -450,6 +450,7 @@ class ModelConfig:
     use_tabular: bool = False  # funde tab_seq (hesitação + tabulares) na cross-attention
     pool: Literal["mean", "attention", "max"] = "mean"  # agregação temporal janela→vídeo
     tab_fusion: Literal["late", "token"] = "late"  # tab: late (concat pós-pool) | token (pré-pool)
+    extra_columns: list[str] = field(default_factory=list)  # colunas por janela extras (ex.: vídeo)
     common_dim: int = 512
     num_heads: int = 4
     num_classes: int = 1

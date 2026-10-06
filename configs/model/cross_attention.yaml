@@ -26,3 +26,7 @@ tab_fusion: token
 # deixar isto false. dim_tab é inferido do cache no fit (null = auto).
 use_tabular: true
 dim_tab: null
+# Colunas EXTRAS por janela (opcional), cada uma fundida por token antes do pooling, como o
+# tab_fusion=token — ex.: o canal de vídeo do plano MoE (preset cross_attention_video).
+# Vazio = o modelo do artigo, intacto (mesmos parâmetros). dims inferidas do cache no fit.
+extra_columns: []

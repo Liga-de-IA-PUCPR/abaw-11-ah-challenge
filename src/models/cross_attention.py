@@ -11,6 +11,10 @@ Arquitetura (sobre tensores ``(B, T, D)``):
   POOLING TEMPORAL MASCARADO sobre T (média ignorando janelas de padding)
   MLP -> 1 logit por vídeo (BCEWithLogits).
 
+Opcional (``extra_columns``): colunas por janela do Parquet além de áudio/texto/tab — ex.: o
+canal de vídeo do plano MoE (recortes face/olhos/boca) — fundidas por token antes do pooling,
+como o ``tab_fusion=token``. Com a lista vazia (default) o modelo do artigo fica intacto.
+
 ⚠️ **Imports lazy:** ``torch``/``lightning``/``torchmetrics`` são importados DENTRO
 das funções/métodos. O módulo só é importado pelo registry quando
 ``model=cross_attention`` — mantendo o caminho RandomForest livre dessas deps.
@@ -41,6 +45,7 @@ def _build_fusion_module(
     use_tabular: bool = False,
     pool: str = "mean",
     tab_fusion: str = "late",
+    extra_dims: dict[str, int] | None = None,
 ):
     """Constrói o ``nn.Module`` de cross-attention (importa torch *lazy*).
 
@@ -65,6 +70,9 @@ def _build_fusion_module(
             soma ao token daquela janela ANTES do pooling — assim as features de suporte
             entram na representação por-janela e, com ``pool="attention"``, informam os
             pesos do pooling (janelas hesitantes ganham peso). Resolve o "esmagamento".
+        extra_dims: ``{coluna: d}`` de colunas por janela extras (ex.: vídeo), cada uma
+            projetada e fundida ao token da janela antes do pooling. ``None``/vazio = sem
+            módulos novos (o state_dict do artigo não muda).
     """
     import torch
     from torch import nn
@@ -117,6 +125,23 @@ def _build_fusion_module(
                 nn.Dropout(dropout),
                 nn.Linear(common_dim, 1),  # 1 logit por vídeo
             )
+            # Colunas EXTRAS por janela (ex.: vídeo): LN → proj → ReLU e fusão [token ‖ extra]
+            # → LN, como o tab "token". Vazio = nenhum parâmetro novo.
+            extras = extra_dims or {}
+            self.extra = nn.ModuleDict(
+                {
+                    c: nn.Sequential(nn.LayerNorm(d), nn.Linear(d, common_dim), nn.ReLU())
+                    for c, d in extras.items()
+                }
+            )
+            self.extra_fuse = nn.ModuleDict(
+                {
+                    c: nn.Sequential(
+                        nn.Linear(common_dim * 2, common_dim), nn.LayerNorm(common_dim)
+                    )
+                    for c in extras
+                }
+            )
 
         def forward(
             self,
@@ -124,6 +149,7 @@ def _build_fusion_module(
             feat_b: torch.Tensor,  # (B, T, dim_b) — texto por janela
             key_padding_mask: torch.Tensor | None = None,  # (B, T) True = padding
             feat_tab: torch.Tensor | None = None,  # (B, T, dim_tab) — tabular por janela
+            feat_extra: dict[str, torch.Tensor] | None = None,  # {coluna: (B, T, d)} extras
         ) -> torch.Tensor:
             """Devolve ``(B, 1)`` logits a nível de vídeo.
 
@@ -147,6 +173,12 @@ def _build_fusion_module(
             if self.token_tab:
                 tab_tok = self._tab_tokens(feat_tab, key_padding_mask)  # (B, T, C)
                 fused = self.token_norm(self.token_fuse(torch.cat([fused, tab_tok], dim=-1)))
+            # COLUNAS EXTRAS POR-TOKEN (ex.: vídeo): mesma lógica, uma fusão por coluna.
+            for col, proj in self.extra.items():
+                if feat_extra is None or col not in feat_extra:
+                    raise ValueError(f"Coluna extra '{col}' não veio no batch (features).")
+                tok = proj(feat_extra[col])  # (B, T, C)
+                fused = self.extra_fuse[col](torch.cat([fused, tok], dim=-1))
 
             pooled = self._pool(fused, key_padding_mask)  # (B, C) — agregação temporal
 
@@ -240,11 +272,24 @@ class CrossAttentionFusion:
         self.dropout = float(cfg.get("dropout", 0.1))
         self.lr = float(cfg.get("lr", 1e-3))
         self.weight_decay = float(cfg.get("weight_decay", 1e-2))
+        # Colunas extras por janela (ex.: vídeo do plano MoE); dims inferidas do cache no fit.
+        self.extra_columns = list(cfg.get("extra_columns") or [])
+        self.input_dims: dict[str, int] = dict(cfg.get("input_dims") or {})
 
     @classmethod
     def from_config(cls, config: Any) -> CrossAttentionFusion:
         """Lê ``configs/model/cross_attention.yaml`` (README §7, grupo ``model``)."""
         return cls(cfg=config)
+
+    @staticmethod
+    def data_spec(model_cfg: Any) -> dict[str, Any]:
+        """Colunas extras que o dataset precisa montar (``{}`` = o modelo do artigo)."""
+        columns = list(model_cfg.get("extra_columns") or [])
+        return {"columns": columns} if columns else {}
+
+    def infer_dims(self, dataset: Any) -> None:
+        """Dimensão de cada coluna extra, lida do cache (``VideoSequenceDataset.dims``)."""
+        self.input_dims = {c: int(dataset.dims[c]) for c in self.extra_columns}
 
     def build_module(self):
         """Instancia o ``nn.Module`` de fusão (importa torch *lazy*)."""
@@ -258,6 +303,7 @@ class CrossAttentionFusion:
             use_tabular=self.use_tabular,
             pool=self.pool,
             tab_fusion=self.tab_fusion,
+            extra_dims={c: self.input_dims[c] for c in self.extra_columns},
         )
 
     def build_lightning_module(self):
@@ -343,7 +389,13 @@ def _build_lit_module(fusion, lr: float, weight_decay: float):
             feat_tab = batch.get("tab_seq")  # (B, T, dim_tab) — usado só se use_tabular
             mask = batch["key_padding_mask"]  # (B, T) True = padding
             label = batch["label"].float()  # (B, 1) já vem do collate_sequences
-            logit = self.model(feat_a, feat_b, key_padding_mask=mask, feat_tab=feat_tab)
+            logit = self.model(
+                feat_a,
+                feat_b,
+                key_padding_mask=mask,
+                feat_tab=feat_tab,
+                feat_extra=batch.get("features"),  # colunas extras (só com extra_columns)
+            )
             loss = nn.functional.binary_cross_entropy_with_logits(logit, label)
             proba = torch.sigmoid(logit)  # (B, 1)
             return loss, proba, label.int()
