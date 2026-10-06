@@ -8,7 +8,8 @@ Fluxo (ver :mod:`src.features.columns`):
        (``data.force_columns=true`` recomputa).
     3. Monta o índice de vídeos só se algum featurizer precisar (transcrição/chunks/.mp4).
     4. Junta as colunas novas por janela (``id, t0, t1``) e reescreve o Parquet de forma
-       ATÔMICA (:func:`merge_window_columns`, também usada por ``featurize_face``).
+       ATÔMICA (:func:`merge_window_columns`, também usada por ``featurize_face``), sob uma
+       trava de arquivo — dá p/ rodar colunas diferentes em paralelo (ex.: uma por GPU).
 
 Ex.: ``python main.py mode=featurize_columns "columns=[transcript,asr_timing,hesitation_markers]"``
 """
@@ -16,6 +17,8 @@ Ex.: ``python main.py mode=featurize_columns "columns=[transcript,asr_timing,hes
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -77,9 +80,17 @@ def merge_window_columns(
 
     A junção é por ``(id, t0, t1)`` — independente da ordem das linhas. Janelas do Parquet
     sem valor (fora do índice) recebem zeros (vetores) ou ``""`` (texto), com aviso. Colunas
-    homônimas já presentes são substituídas.
+    homônimas já presentes são substituídas. Leitura → junção → escrita acontecem sob
+    :func:`parquet_lock`, então processos que gravam colunas diferentes não se sobrescrevem.
     """
     parquet_path = Path(parquet_path)
+    with parquet_lock(parquet_path):
+        return _merge_locked(parquet_path, windows, values)
+
+
+def _merge_locked(
+    parquet_path: Path, windows: list[WindowSample], values: dict[str, list[Any]]
+) -> pl.DataFrame:
     df = pl.read_parquet(parquet_path)
     keys = pl.DataFrame(
         {
@@ -112,9 +123,31 @@ def _update_sidecar(parquet_path: Path, names_by_col: dict[str, list[str]]) -> N
     sidecar = parquet_path.with_suffix(".json")
     if not sidecar.exists():
         return
-    meta = json.loads(sidecar.read_text(encoding="utf-8"))
-    for col, names in names_by_col.items():
-        if names:
-            meta.setdefault("feature_names", {})[col] = names
-            meta.setdefault("dims", {})[f"d_{col}"] = len(names)
-    sidecar.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    with parquet_lock(parquet_path):
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        for col, names in names_by_col.items():
+            if names:
+                meta.setdefault("feature_names", {})[col] = names
+                meta.setdefault("dims", {})[f"d_{col}"] = len(names)
+        sidecar.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@contextmanager
+def parquet_lock(parquet_path: Path) -> Iterator[None]:
+    """Trava exclusiva entre PROCESSOS sobre o Parquet (arquivo ``<parquet>.lock``).
+
+    Vários ``featurize_columns`` em paralelo (ex.: áudio numa GPU, rosto na outra) gravando
+    colunas diferentes no mesmo Parquet: cada um relê o arquivo DENTRO da trava antes de
+    juntar a sua coluna. Sem ``fcntl`` (Windows) a trava não existe — rode em sequência.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — POSIX only
+        yield
+        return
+    with open(Path(parquet_path).with_suffix(".lock"), "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)

@@ -164,3 +164,21 @@ def test_scene_embedder_supports_remote_videomae_v2_layout(monkeypatch):
     assert seen[-1] == (1, 3, 4, 8, 8)  # (B, C, T, H, W)
     with pytest.raises(ValueError, match="input_layout"):
         ve.SceneEmbedder("remote", input_layout="xyz", device="cpu")
+
+
+def test_parallel_merges_of_different_columns_keep_both(tmp_path):
+    """Duas colunas gravadas ao mesmo tempo no mesmo Parquet (ex.: áudio numa GPU, rosto na
+    outra): a trava faz cada merge reler o arquivo, então nenhuma sobrescreve a outra."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    windows = _windows()
+    pq = tmp_path / "f.parquet"
+    pl.DataFrame(
+        {"id": [w.video_id for w in windows], "t0": [w.t0 for w in windows],
+         "t1": [w.t1 for w in windows]},
+        schema_overrides={"t0": pl.Float32, "t1": pl.Float32},
+    ).write_parquet(pq)  # fmt: skip
+    cols = {f"c{i}": [[float(i)]] * len(windows) for i in range(4)}
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(lambda c: merge_window_columns(pq, windows, {c: cols[c]}), cols))
+    assert set(cols) <= set(pl.read_parquet(pq).columns)
