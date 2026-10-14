@@ -88,6 +88,49 @@ def _moving_average(y: np.ndarray, k: int) -> np.ndarray:
 # da faixa indistinguível do máximo, não uma borda dela.
 _PLATEAU_TOL = 0.01
 
+# Seleção 'bootstrap': reamostras (estratificadas por classe) da val e semente fixa —
+# o limiar é determinístico para as mesmas probas.
+_BOOTSTRAP_N = 1000
+_BOOTSTRAP_SEED = 0
+
+
+def _macro_f1_grid(y_true: np.ndarray, s: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """Macro-F1 (classes 0/1, ``zero_division=0``) em cada limiar do grid, vetorizado —
+    o mesmo valor de :func:`video_macro_f1` aplicado a ``s >= limiar``."""
+    pred = s[None, :] >= grid[:, None]
+    pos = np.asarray(y_true, dtype=bool)[None, :]
+    tp, fp = (pred & pos).sum(1), (pred & ~pos).sum(1)
+    fn, tn = (~pred & pos).sum(1), (~pred & ~pos).sum(1)
+
+    def f1(hit: np.ndarray, miss: np.ndarray) -> np.ndarray:
+        den = 2 * hit + miss
+        return np.divide(2 * hit, den, out=np.zeros(len(grid)), where=den > 0)
+
+    return (f1(tp, fp + fn) + f1(tn, fn + fp)) / 2
+
+
+def _bootstrap_threshold(y_true: np.ndarray, s: np.ndarray, grid: np.ndarray) -> float:
+    """Mediana, sobre reamostras da val, do limiar que maximiza o Macro-F1 em cada uma.
+
+    O pico de UMA curva F1×limiar numa val pequena depende de 1–2 vídeos (``argmax``); a
+    mediana dos picos de ``_BOOTSTRAP_N`` reamostras estima o mesmo ótimo com bem menos
+    variância, sem a janela fixa do ``smooth`` nem a hipótese do ``base_rate`` (ótimo =
+    prevalência). Reamostra por classe (mantém a prevalência da val); em cada reamostra
+    o pico é o centro dos limiares empatados no máximo (a curva é em degraus).
+    """
+    pos, neg = np.flatnonzero(y_true == 1), np.flatnonzero(y_true == 0)
+    if pos.size == 0 or neg.size == 0:  # classe única: não há curva a reamostrar
+        f1s = _macro_f1_grid(y_true, s, grid)
+        return float(grid[int(np.argmax(f1s))])
+    rng = np.random.default_rng(_BOOTSTRAP_SEED)
+    picks = np.empty(_BOOTSTRAP_N)
+    for b in range(_BOOTSTRAP_N):
+        idx = np.concatenate([rng.choice(pos, pos.size), rng.choice(neg, neg.size)])
+        f1s = _macro_f1_grid(y_true[idx], s[idx], grid)
+        top = np.flatnonzero(f1s >= f1s.max())
+        picks[b] = grid[top[len(top) // 2]]
+    return float(np.median(picks))
+
 
 def _select_threshold_index(
     grid: np.ndarray, f1s: np.ndarray, selection: str, smooth_window: float
@@ -143,6 +186,8 @@ def calibrate_threshold(
       É o mais ROBUSTO quando a val é pequena (a curva de F1 é ruidosa e seu pico não
       transfere pro test), pois só depende da prevalência — estável entre val/test/hidden.
       ``target_pos_rate=None`` usa a prevalência observada na própria val.
+    - ``"bootstrap"``: mediana do pico da curva em reamostras da val
+      (ver :func:`_bootstrap_threshold`) — o ótimo do Macro-F1 com variância de val grande.
 
     O Macro-F1 retornado é o **real** (não suavizado) no limiar escolhido.
 
@@ -246,6 +291,15 @@ def _calibrate_arrays(
         log.info(
             f"Limiar calibrado ({label}, selection='base_rate', "
             f"p+={p_plus:.3f}): thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
+        )
+        return best_thr, best_score
+
+    if selection == "bootstrap":
+        best_thr = _bootstrap_threshold(y_true, s, grid)
+        best_score = _f1_at(best_thr)
+        log.info(
+            f"Limiar calibrado ({label}, selection='bootstrap', n={_BOOTSTRAP_N}): "
+            f"thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
         )
         return best_thr, best_score
 

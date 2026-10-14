@@ -3,7 +3,8 @@
 method: mean_proba                     # mean_proba | max_proba | frac_positive | any
 threshold: auto                        # "auto" = calibrado na val; ou float fixo
 # Escolha do limiar na val. base_rate (default) = casa a prevalência (quantil), robusto a
-# val pequena; smooth = centro do platô da curva F1; argmax = pico cru (overfitta val pequena).
+# val pequena; smooth = centro do platô da curva F1; argmax = pico cru (overfitta val pequena);
+# bootstrap = mediana do pico em 1000 reamostras da val (o ótimo do F1 com menos variância).
 calibration: base_rate
 smooth_window: 0.10                    # largura da média móvel (unidades de limiar) p/ 'smooth'
 target_pos_rate: null                  # base_rate: prevalência-alvo (null = a observada na val)

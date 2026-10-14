@@ -497,7 +497,7 @@ class AggregationConfig:
 
     method: Literal["mean_proba", "max_proba", "frac_positive", "any"] = "mean_proba"
     threshold: float | str = "auto"  # "auto" = calibrado na val; ou float fixo
-    calibration: Literal["smooth", "argmax", "base_rate"] = "base_rate"  # escolha do limiar
+    calibration: Literal["smooth", "argmax", "base_rate", "bootstrap"] = "base_rate"
     smooth_window: float = 0.10  # largura da média móvel (unidades de limiar) p/ 'smooth'
     target_pos_rate: float | None = None  # 'base_rate': prevalência-alvo (None = a da val)
     recalibrate: bool = False  # evaluate/submit: recalibra na val (ignora o limiar salvo)
