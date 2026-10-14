@@ -11,8 +11,10 @@ import numpy as np
 import pandas as pd
 
 from src.training.aggregation import (
+    THRESHOLD_STRATEGIES,
     _macro_f1_grid,
     calibrate_threshold_from_video_scores,
+    compare_threshold_strategies,
 )
 from src.training.metrics import video_macro_f1
 
@@ -55,16 +57,46 @@ def _write_preds(path: Path, y: np.ndarray, s: np.ndarray) -> None:
     )
 
 
-def test_threshold_sweep_compares_every_strategy(tmp_path):
-    run = tmp_path / "ensemble" / "exp0"
-    _write_preds(run / "eval_val", *_noisy(seed=1))
-    _write_preds(run / "eval_test", *_noisy(n=300, seed=2))
+def test_compare_strategies_picks_on_calibration_and_scores_on_eval():
+    cal_y, cal_p = _noisy(seed=1)
+    ev_y, ev_p = _noisy(n=300, seed=2)
+    cmp = compare_threshold_strategies(cal_y, cal_p, ev_y, ev_p)
+    assert [r["strategy"] for r in cmp["strategies"]] == list(THRESHOLD_STRATEGIES)
+    for r in cmp["strategies"]:
+        pred = (ev_p >= r["threshold"]).astype(np.int64)
+        assert r["eval_f1"] == video_macro_f1(ev_y, pred)
+        assert r["eval_pos_rate_pred"] == pred.mean()
+    fixed = cmp["strategies"][0]
+    assert fixed["strategy"] == "fixo_0.5" and fixed["threshold"] == 0.5
+    assert cmp["n_calib"] == 124 and cmp["n_eval"] == 300
+
+
+def test_evaluate_on_test_writes_the_threshold_comparison(compose_cfg):
+    """mode=evaluate num split ≠ calibração grava eval_test/thresholds.json (caminho RF)."""
+    import main
+    from src.conf import resolve_device
+
+    overrides = ("model=random_forest", "trainer=sklearn", "model.n_estimators=20")
+    device = resolve_device("cpu")
+    assert main._run_train(compose_cfg(*overrides), device) == 0
+    run = next(Path(compose_cfg().data.paths.output_root).glob("random_forest/*/"))
+    main._run_evaluate(compose_cfg(*overrides, "split=test", f"checkpoint={run}"), device)
+    cmp = json.loads((run / "eval_test" / "thresholds.json").read_text())
+    assert [r["strategy"] for r in cmp["strategies"]] == list(THRESHOLD_STRATEGIES)
+    main._run_evaluate(compose_cfg(*overrides, "split=val", f"checkpoint={run}"), device)
+    assert not (run / "eval_val" / "thresholds.json").exists()  # val é o de calibração
+
+
+def test_threshold_table_reads_evaluated_runs_and_old_csvs(tmp_path):
     script = Path(__file__).resolve().parents[1] / "scripts" / "threshold_sweep.py"
+    old = tmp_path / "old_run"
+    _write_preds(old / "eval_val", *_noisy(seed=1))
+    _write_preds(old / "eval_test", *_noisy(n=300, seed=2))
+    val_csv, test_csv = old / "eval_val/predictions.csv", old / "eval_test/predictions.csv"
     out = subprocess.run(
-        [sys.executable, str(script), str(run)], capture_output=True, text=True, check=True
-    )
-    saved = json.loads((run / "threshold_sweep.json").read_text())
-    names = [r["strategy"] for r in saved["results"]]
-    assert names == ["fixo_0.5", "argmax", "smooth", "base_rate", "bootstrap"]
-    assert all(0.0 <= r["test_f1"] <= 1.0 for r in saved["results"])
-    assert "exp0" in out.stdout and "bootstrap" in out.stdout
+        [sys.executable, str(script), "--val-csv", str(val_csv), "--test-csv", str(test_csv),
+         str(old)],
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert (old / "eval_test" / "thresholds.json").exists()  # o modo CSV grava, o run lê
+    assert out.stdout.count("old_run") == 2 and "bootstrap" in out.stdout

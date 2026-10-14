@@ -206,17 +206,54 @@ def _maybe_recalibrate(cfg: DictConfig, trainer, family: str) -> None:
     if not hasattr(trainer, "recalibrate_on_val"):
         log.warning(f"family={family} não suporta recalibrar-na-val; mantendo limiar salvo.")
         return
+    trainer.recalibrate_on_val(_calib_loader(cfg, trainer, family))
+
+
+def _calib_loader(cfg: DictConfig, trainer, family: str):
+    """Dados do split de calibração do treino (``data.calib_split``, default val).
+
+    Lidos de ``data.paths.calib_parquet_path`` se definido (senão do parquet de predição):
+    permite PREDIZER num parquet (ex.: externo) e CALIBRAR noutro (ex.: raw test).
+    """
     from src.data.datasets import load_split
 
-    # Recalibra no MESMO split usado no treino (data.calib_split), lido de
-    # data.paths.calib_parquet_path se definido (senão do parquet de predição). Isso
-    # permite PREDIZER num parquet (ex.: externo) e CALIBRAR noutro (ex.: raw test).
     calib_split = cfg.data.get("calib_split", "val")
     calib_pq = cfg.data.paths.get("calib_parquet_path", None)
-    data_cfg = _data_cfg(cfg, trainer)
-    calib_view = load_split(data_cfg, calib_split, family=family, parquet_path=calib_pq)
-    calib_loader = _as_loader(cfg, calib_view, family, str(calib_split))
-    trainer.recalibrate_on_val(calib_loader)
+    view = load_split(_data_cfg(cfg, trainer), calib_split, family=family, parquet_path=calib_pq)
+    return _as_loader(cfg, view, family, str(calib_split))
+
+
+def _write_threshold_comparison(cfg: DictConfig, trainer, family: str, data, out_dir) -> None:
+    """``<out_dir>/thresholds.json``: cada estratégia de limiar escolhida SÓ no split de
+    calibração e aplicada UMA vez no split avaliado
+    (:func:`~src.training.aggregation.compare_threshold_strategies`) — uma linha de log por
+    estratégia. Nunca derruba o evaluate; pulada sem rótulos das duas classes."""
+    import json
+    from pathlib import Path
+
+    import numpy as np
+
+    from src.training.aggregation import compare_threshold_strategies
+
+    try:
+        calib = trainer.video_outputs(_calib_loader(cfg, trainer, family))
+        ev = trainer.video_outputs(data)
+        if min(len(np.unique(calib["y_true"])), len(np.unique(ev["y_true"]))) < 2:
+            return
+        cmp = compare_threshold_strategies(
+            calib["y_true"], calib["y_proba"], ev["y_true"], ev["y_proba"]
+        )
+    except Exception as exc:  # noqa: BLE001 — a comparação nunca derruba o evaluate
+        log.warning(f"Comparação de limiares pulada: {exc}")
+        return
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / "thresholds.json").write_text(json.dumps(cmp, indent=2, ensure_ascii=False))
+    real = cmp["eval_pos_rate_true"]
+    for r in cmp["strategies"]:
+        log.info(
+            f"  limiar {r['strategy']:<9} τ={r['threshold']:.3f} → Macro-F1={r['eval_f1']:.4f} "
+            f"(prevê {r['eval_pos_rate_pred']:.1%} positivos; reais {real:.1%})"
+        )
 
 
 def _data_cfg(cfg: DictConfig, trainer) -> DictConfig:
@@ -436,8 +473,13 @@ def _write_eval_report(cfg: DictConfig, trainer, data, report, split: str, ckpt_
 
 
 def _run_evaluate(cfg: DictConfig, device) -> int:
-    """``mode=evaluate`` — métricas a nível de vídeo num split (FASE 4/5)."""
+    """``mode=evaluate`` — métricas a nível de vídeo num split (FASE 4/5).
+
+    Num split diferente do de calibração (ex.: test), grava também
+    ``eval_<split>/thresholds.json``: as estratégias de limiar escolhidas no val.
+    """
     import json
+    from pathlib import Path
 
     from src.data.datasets import load_split
 
@@ -457,6 +499,9 @@ def _run_evaluate(cfg: DictConfig, device) -> int:
         f"AP={report.get('average_precision', 0.0):.4f} (n={report['n_videos']})."
     )
     _write_eval_report(cfg, trainer, data, report, split, ckpt_dir)  # plots + relatórios (FASE 5)
+    if split != cfg.data.get("calib_split", "val"):  # estratégias de limiar: val → este split
+        out_dir = Path(ckpt_dir) / f"eval_{split}"
+        _write_threshold_comparison(cfg, trainer, family, data, out_dir)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

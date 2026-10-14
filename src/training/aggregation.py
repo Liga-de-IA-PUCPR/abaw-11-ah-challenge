@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.logger import get_logger
-from src.training.metrics import video_macro_f1
+from src.training.metrics import average_precision, video_macro_f1
 
 log = get_logger("training.aggregation")
 
@@ -312,6 +312,50 @@ def _calibrate_arrays(
         f"thr={best_thr:.3f} -> macro_f1={best_score:.4f}"
     )
     return best_thr, best_score
+
+
+# Estratégias comparadas por compare_threshold_strategies: sem calibração + as 4 seleções.
+THRESHOLD_STRATEGIES = ("fixo_0.5", "argmax", "smooth", "base_rate", "bootstrap")
+
+
+def compare_threshold_strategies(
+    calib_y: np.ndarray, calib_p: np.ndarray, eval_y: np.ndarray, eval_p: np.ndarray
+) -> dict:
+    """Cada estratégia escolhe o limiar SÓ na calibração (val) e é aplicada UMA vez na
+    avaliação (test) — todas lado a lado, sem eleger "a melhor no test".
+
+    Args:
+        calib_y, calib_p: rótulos e scores por vídeo do split de calibração.
+        eval_y, eval_p: rótulos e scores por vídeo do split avaliado.
+
+    Returns:
+        ``{n_calib, n_eval, eval_pos_rate_true, eval_ap, strategies: [{strategy, threshold,
+        calib_f1, eval_f1, eval_pos_rate_pred}, ...]}`` na ordem de ``THRESHOLD_STRATEGIES``.
+    """
+    calib_y, eval_y = np.asarray(calib_y, np.int64), np.asarray(eval_y, np.int64)
+    calib_p, eval_p = np.asarray(calib_p, np.float32), np.asarray(eval_p, np.float32)
+    rows = []
+    for name in THRESHOLD_STRATEGIES:
+        thr = 0.5
+        if name != "fixo_0.5":
+            thr, _ = calibrate_threshold_from_video_scores(calib_p, calib_y, selection=name)
+        pred = (eval_p >= thr).astype(np.int64)
+        rows.append(
+            {
+                "strategy": name,
+                "threshold": float(thr),
+                "calib_f1": video_macro_f1(calib_y, (calib_p >= thr).astype(np.int64)),
+                "eval_f1": video_macro_f1(eval_y, pred),
+                "eval_pos_rate_pred": float(pred.mean()),
+            }
+        )
+    return {
+        "n_calib": len(calib_y),
+        "n_eval": len(eval_y),
+        "eval_pos_rate_true": float(eval_y.mean()),
+        "eval_ap": average_precision(eval_y, eval_p),
+        "strategies": rows,
+    }
 
 
 def threshold_curve(
