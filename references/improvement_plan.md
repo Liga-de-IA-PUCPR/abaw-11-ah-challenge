@@ -121,6 +121,28 @@ Todos os runs no mesmo protocolo OOF (mesmas dobras) → qualquer par se compara
 `featurize-moe-audio` e `featurize-moe-face` podem rodar ao mesmo tempo (uma GPU cada): o merge
 de colunas no Parquet é feito sob trava de arquivo e relê o arquivo antes de gravar.
 
+**Resultado da bateria OOF (06/10, τ=0.5):** todos os gates de Macro-F1 deram empate; no test
+oficial nada superou o cross-attention do artigo com significância. Duas distorções da régua
+apareceram: o τ fixo pune modelos com escala de probabilidade deslocada (o artigo + vídeo prevê
+37% de positivos com o mesmo AP por dobra do artigo) e o AP do OOF agrupado pune modelos cujas
+dobras têm escalas diferentes (o MoE completo tem o maior AP por dobra, 0.825, e AP agrupado 0.742).
+
+### Mesma comparação no protocolo oficial, com calibração do limiar
+
+A contraprova da bateria OOF segue o protocolo do artigo (`make reproduce-best`): treino no
+**train**, early stopping e limiar no **val**, medição única no **test** — cada experimento como
+ensemble de 5 seeds. `make train-seeds EXPERIMENT=<preset> NAME=<pasta>` treina as seeds em
+`outputs/<pasta>/s<seed>/` e grava `outputs/<pasta>/manifest.txt` (`TEXT_NAME=` liga cada seed
+da Rodada 5 ao texto da mesma seed da Rodada 1); `make ensemble-evaluate` com esse manifesto e
+`SPLIT=val`/`SPLIT=test` grava as predições do ensemble.
+
+O limiar é comparado entre estratégias escolhidas SÓ no val e aplicadas uma vez no test
+(`scripts/threshold_sweep.py <pastas>`): `fixo_0.5`, `argmax`, `smooth` (a do artigo),
+`base_rate` e `bootstrap` — nova (`aggregation.calibration=bootstrap`): mediana, sobre 1000
+reamostras estratificadas do val, do limiar que maximiza o Macro-F1 em cada uma. Mira o mesmo
+ótimo do `argmax` com muito menos variância, sem a janela fixa do `smooth` nem a hipótese do
+`base_rate` (ótimo = prevalência).
+
 ### Decisões de implementação (desvios do texto do plano)
 
 - **SoftMoE local, não importado da `vision-toolbelt-liga`.** Mesma formulação (router
