@@ -1,8 +1,14 @@
-"""Testes da calibração do limiar (seleção ``bootstrap``)."""
+"""Testes da calibração do limiar (seleção ``bootstrap``) e da varredura val→test."""
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 
 from src.training.aggregation import (
     _macro_f1_grid,
@@ -39,3 +45,26 @@ def test_bootstrap_lands_inside_the_gap_of_separable_scores():
     s = np.concatenate([np.linspace(0.05, 0.30, 40), np.linspace(0.70, 0.95, 60)])
     thr, f1 = calibrate_threshold_from_video_scores(s, y, selection="bootstrap")
     assert 0.30 < thr <= 0.70 and f1 == 1.0
+
+
+def _write_preds(path: Path, y: np.ndarray, s: np.ndarray) -> None:
+    path.mkdir(parents=True)
+    ids = [f"v{i}" for i in range(len(y))]
+    pd.DataFrame({"video_id": ids, "y_true": y, "y_proba": s}).to_csv(
+        path / "predictions.csv", index=False
+    )
+
+
+def test_threshold_sweep_compares_every_strategy(tmp_path):
+    run = tmp_path / "ensemble" / "exp0"
+    _write_preds(run / "eval_val", *_noisy(seed=1))
+    _write_preds(run / "eval_test", *_noisy(n=300, seed=2))
+    script = Path(__file__).resolve().parents[1] / "scripts" / "threshold_sweep.py"
+    out = subprocess.run(
+        [sys.executable, str(script), str(run)], capture_output=True, text=True, check=True
+    )
+    saved = json.loads((run / "threshold_sweep.json").read_text())
+    names = [r["strategy"] for r in saved["results"]]
+    assert names == ["fixo_0.5", "argmax", "smooth", "base_rate", "bootstrap"]
+    assert all(0.0 <= r["test_f1"] <= 1.0 for r in saved["results"])
+    assert "exp0" in out.stdout and "bootstrap" in out.stdout
