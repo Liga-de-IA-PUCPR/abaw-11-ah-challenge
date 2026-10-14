@@ -91,6 +91,7 @@ TEXT_RUN          ?=
 NAME              ?=
 TEXT_NAME         ?=
 MEMBERS           ?=
+RUNS              ?=
 
 # MPS (Apple Metal): fall back to CPU for ops not yet supported by Metal.
 MPS_FALLBACK  := PYTORCH_ENABLE_MPS_FALLBACK=1
@@ -109,7 +110,7 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
         meta-router featurize-moe featurize-moe-audio featurize-moe-face featurize-moe-scene \
-        oof oof-compare oof-plots route \
+        oof oof-compare oof-plots route thresholds \
         lint format format-check typecheck test compile ci check \
         clean clean-cache clean-outputs clean-all
 
@@ -139,6 +140,7 @@ help:
 	@echo "    submit           writes the submission file (SPLIT=test, OUT=$(OUT))"
 	@echo "    train-ensemble   trains N seeds (SEEDS=\"$(SEEDS)\") for the ensemble"
 	@echo "    train-seeds      N seeds of any preset (EXPERIMENT=, NAME=) + manifest"
+	@echo "    thresholds       threshold strategies val→test of evaluated runs (RUNS=)"
 	@echo "    ensemble-evaluate  Macro-F1/AP of the ensemble (probability averaging)"
 	@echo "    ensemble-submit    submission from the ensemble"
 	@echo "    reproduce-best   PAPER RESULT: data + 5-seed ensemble + eval on test"
@@ -298,6 +300,13 @@ train-seeds:
 	  ls -dt outputs/$(NAME)/s$$s/*/ | head -1 | sed 's#/$$##' >> outputs/$(NAME)/manifest.txt; \
 	done
 	@echo "✓ $(words $(SEEDS)) seeds of $(EXPERIMENT). Manifest: outputs/$(NAME)/manifest.txt"
+
+# Table of the threshold strategies (fixed 0.5, argmax, smooth, base_rate, bootstrap) chosen
+# on val and applied once on test, for runs/ensembles already evaluated with SPLIT=test
+# (mode=evaluate writes eval_test/thresholds.json).
+thresholds:
+	@test -n "$(RUNS)" || (echo "Set RUNS=\"<run or ensemble dir> ...\""; exit 1)
+	$(PY) scripts/threshold_sweep.py $(RUNS)
 
 # Manifest run dirs in Hydra list format (dir1,dir2,...).
 _ENS_LIST = $(shell paste -sd, $(ENSEMBLE_MANIFEST) 2>/dev/null)

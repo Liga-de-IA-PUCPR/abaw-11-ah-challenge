@@ -134,10 +134,12 @@ A contraprova da bateria OOF segue o protocolo do artigo (`make reproduce-best`)
 ensemble de 5 seeds. `make train-seeds EXPERIMENT=<preset> NAME=<pasta>` treina as seeds em
 `outputs/<pasta>/s<seed>/` e grava `outputs/<pasta>/manifest.txt` (`TEXT_NAME=` liga cada seed
 da Rodada 5 ao texto da mesma seed da Rodada 1); `make ensemble-evaluate` com esse manifesto e
-`SPLIT=val`/`SPLIT=test` grava as predições do ensemble.
+`SPLIT=test` mede o ensemble no test.
 
-O limiar é comparado entre estratégias escolhidas SÓ no val e aplicadas uma vez no test
-(`scripts/threshold_sweep.py <pastas>`): `fixo_0.5`, `argmax`, `smooth` (a do artigo),
+O limiar é comparado entre estratégias escolhidas SÓ no val e aplicadas uma vez no test: o
+`mode=evaluate` com `SPLIT=test` grava `eval_test/thresholds.json`
+(`compare_threshold_strategies`, em `src/training/aggregation.py`) e
+`make thresholds RUNS="<pastas>"` junta os runs numa tabela — `fixo_0.5`, `argmax`, `smooth` (a do artigo),
 `base_rate` e `bootstrap` — nova (`aggregation.calibration=bootstrap`): mediana, sobre 1000
 reamostras estratificadas do val, do limiar que maximiza o Macro-F1 em cada uma. Mira o mesmo
 ótimo do `argmax` com muito menos variância, sem a janela fixa do `smooth` nem a hipótese do
