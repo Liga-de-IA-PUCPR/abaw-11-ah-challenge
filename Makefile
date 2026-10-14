@@ -88,6 +88,8 @@ MOE_VISION        ?= vit_face_expression
 MOE_SCENE         ?= videomae
 BASELINE          ?=
 TEXT_RUN          ?=
+NAME              ?=
+TEXT_NAME         ?=
 MEMBERS           ?=
 
 # MPS (Apple Metal): fall back to CPU for ops not yet supported by Metal.
@@ -103,7 +105,7 @@ _SPLIT        := $(if $(SPLIT),split=$(SPLIT),)
 .PHONY: help setup setup-neural setup-all ffmpeg-check \
         extract-audio preprocess featurize data \
         train train-rf train-neural sweep evaluate submit pipeline \
-        train-ensemble ensemble-evaluate ensemble-submit reproduce-best \
+        train-ensemble train-seeds ensemble-evaluate ensemble-submit reproduce-best \
         setup-gnn setup-vision featurize-w2v featurize-face train-gnn train-face \
         eval-run eval-ensemble-members ensemble-multimodal ensemble-multimodal-submit \
         meta-router featurize-moe featurize-moe-audio featurize-moe-face featurize-moe-scene \
@@ -136,6 +138,7 @@ help:
 	@echo "    evaluate         Macro-F1/AP on a split (SPLIT=val by default)"
 	@echo "    submit           writes the submission file (SPLIT=test, OUT=$(OUT))"
 	@echo "    train-ensemble   trains N seeds (SEEDS=\"$(SEEDS)\") for the ensemble"
+	@echo "    train-seeds      N seeds of any preset (EXPERIMENT=, NAME=) + manifest"
 	@echo "    ensemble-evaluate  Macro-F1/AP of the ensemble (probability averaging)"
 	@echo "    ensemble-submit    submission from the ensemble"
 	@echo "    reproduce-best   PAPER RESULT: data + 5-seed ensemble + eval on test"
@@ -275,6 +278,26 @@ train-ensemble:
 	done
 	@echo "✓ Ensemble trained ($(words $(SEEDS)) seeds). Manifest: $(ENSEMBLE_MANIFEST)"
 	@cat $(ENSEMBLE_MANIFEST)
+
+# Trains N seeds of ANY preset in the traditional protocol (train → val early stopping +
+# threshold calibration → test later), each seed in its own folder outputs/<NAME>/s<seed>/<ts>
+# (isolated, so two GPUs never mix runs of the same model), and writes the run dirs to
+# outputs/<NAME>/manifest.txt — the ENSEMBLE_MANIFEST of ensemble-evaluate.
+# TEXT_NAME=<NAME of a moe_r1_text train-seeds> starts each seed's text branch from the
+# same seed of that run (Round 2+ of the MoE plan, as TEXT_RUN does in the OOF protocol).
+train-seeds:
+	@test -n "$(EXPERIMENT)" -a -n "$(NAME)" || (echo "Set EXPERIMENT=<preset> NAME=<folder>"; exit 1)
+	@mkdir -p outputs/$(NAME)
+	@: > outputs/$(NAME)/manifest.txt
+	@for s in $(SEEDS); do \
+	  echo ">>> $(EXPERIMENT) seed=$$s"; \
+	  $(MPS_FALLBACK) $(PY) $(MAIN) mode=train +experiment=$(EXPERIMENT) device=$(DEVICE) \
+	    seed=$$s run_dirs.train=$(NAME)/s$$s \
+	    $(if $(TEXT_NAME),model.branches.text.init_from=$$(ls -dt outputs/$(TEXT_NAME)/s$$s/*/ | head -1 | sed 's#/$$##')) \
+	    $(ARGS) || exit 1; \
+	  ls -dt outputs/$(NAME)/s$$s/*/ | head -1 | sed 's#/$$##' >> outputs/$(NAME)/manifest.txt; \
+	done
+	@echo "✓ $(words $(SEEDS)) seeds of $(EXPERIMENT). Manifest: outputs/$(NAME)/manifest.txt"
 
 # Manifest run dirs in Hydra list format (dir1,dir2,...).
 _ENS_LIST = $(shell paste -sd, $(ENSEMBLE_MANIFEST) 2>/dev/null)
