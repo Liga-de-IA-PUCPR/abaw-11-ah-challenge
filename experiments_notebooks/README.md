@@ -83,3 +83,4 @@ código que gerou os runs.
 
 | # | Experimento | Modelo | Status | Resultado (X) | Data |
 |---|---|---|---|---|---|
+| [001](001_bateria_oof_artigo_x_moe.md) | Bateria OOF: cross-attention do artigo × MoE do Rodrigo (4 variantes + roteador) | `cross_attention`, `moe_*` | concluído | todos os gates de Macro-F1 `empate` (Exp 1 −0,0121; roteador +0,0067 vs o melhor membro); no test, nada acima do artigo com significância: refutada | 2026-10-06 |
