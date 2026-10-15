@@ -84,3 +84,4 @@ código que gerou os runs.
 | # | Experimento | Modelo | Status | Resultado (X) | Data |
 |---|---|---|---|---|---|
 | [001](001_bateria_oof_artigo_x_moe.md) | Bateria OOF: cross-attention do artigo × MoE do Rodrigo (4 variantes + roteador) | `cross_attention`, `moe_*` | concluído | todos os gates de Macro-F1 `empate` (Exp 1 −0,0121; roteador +0,0067 vs o melhor membro); no test, nada acima do artigo com significância: refutada | 2026-10-06 |
+| [002](002_protocolo_oficial_calibracao.md) | Protocolo oficial (train → val → test, 5 seeds) com 5 estratégias de limiar | `cross_attention`, `moe_*` | concluído | média das estratégias: `base_rate` 0,7077 ≈ fixo 0,7074 > `bootstrap` 0,7001; artigo reproduzido (0,7251 / 0,8759); Exp 0 + Exp 1 ΔAP +0,0085 sem significância: refutada | 2026-10-14 |
