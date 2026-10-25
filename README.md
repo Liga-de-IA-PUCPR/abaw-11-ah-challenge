@@ -2,6 +2,11 @@
 
 # BAH AH-Challenge (ABAW11) — Audio + Text
 
+> [!NOTE]
+> This repository is **archived** and frozen at the state published with the paper.
+> The original weights of our best model (5-seed cross-attention ensemble) are on
+> Hugging Face: **[LF-BF/CAM-AH](https://huggingface.co/LF-BF/CAM-AH)**.
+
 **Multimodal audio + text (no video frames)** pipeline for predicting **ambivalence/hesitancy (A/H)**
 in spoken answers — *AH Video Recognition Challenge, 3rd edition (ABAW11 @ ECCV 2026)*.
 Task: **video-level binary classification** (`1` = A/H present, `0` = absent). Official
@@ -140,6 +145,11 @@ train/val/test protocol**:
 | Model weights | `train` (778 videos) | 5 identical models, seeds `{42, 1, 2, 3, 4}` |
 | Threshold calibration | `val` (124 videos) | ensemble probabilities, `smooth` plateau selection |
 | Reported metrics | `test` (525 videos) | **Macro-F1 0.722 · AP 0.875** (threshold 0.50) |
+
+**Pretrained weights.** The 5 original checkpoints of the ensemble behind our best official
+submission (fixed threshold 0.595, official private test **Macro-F1 0.7456 · AP 0.8182**) are
+available, with an `ensemble_config.json` describing members, combination rule and threshold,
+at [huggingface.co/LF-BF/CAM-AH](https://huggingface.co/LF-BF/CAM-AH).
 
 One command runs the whole thing (data prep → 5 trainings → ensemble evaluation):
 
